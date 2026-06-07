@@ -1,0 +1,22 @@
+# Local raw data assets
+data/
+*.csv
+
+# Python virtual environment & interpreter artifacts
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+
+# Credentials & Service Account Secrets
+*.json
+.env
+
+# Context
+context/
+
+
