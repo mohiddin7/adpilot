@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+
+# Logs (generated at runtime, not committed)
+marketing-analytics-pipeline/logs/*.log
+marketing-analytics-pipeline/logs/*.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Credentials (never commit)
+*.json
+!marketing-analytics-pipeline/config/*.json
+.env
