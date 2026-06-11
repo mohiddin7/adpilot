@@ -274,6 +274,13 @@ class BudgetOptimizerEngine:
                 f"Platforms with zero or negative: "
                 f"{df[df['total_conversions'] <= 0]['platform'].tolist()}"
             )
+        # Zero-spend guard: CPA = 0 / spend = 0 → efficiency = 1/0 = ZeroDivisionError
+        if (df["total_spend"] <= 0).any():
+            raise ValueError(
+                "All platforms must have positive total_spend. "
+                f"Platforms with zero or negative: "
+                f"{df[df['total_spend'] <= 0]['platform'].tolist()}"
+            )
         # Verify alphabetical sort (alignment critical)
         names = list(df["platform"])
         if names != sorted(names):
@@ -397,8 +404,9 @@ class BudgetOptimizerPipeline:
         Do NOT use AVG(cpa) — that would average daily CPAs which weights
         high-volume days the same as low-volume days (mathematically wrong).
 
-        HAVING SUM(conversions) > 0: excludes platforms with no conversions
-        in the window (CPA would be undefined and LP would fail).
+        HAVING SUM(conversions) > 0 AND SUM(spend) > 0:
+          excludes platforms with no conversions (CPA undefined) AND
+          platforms with zero spend (CPA = 0 → efficiency = 1/0 = ZeroDivisionError).
 
         ORDER BY platform: explicit deterministic sort applied here AND in
         Python after fetch (belt-and-suspenders for alignment safety).
@@ -427,6 +435,7 @@ class BudgetOptimizerPipeline:
             )
         GROUP BY platform
         HAVING SUM(conversions) > 0
+           AND SUM(spend) > 0
         ORDER BY platform
         """
 
@@ -451,7 +460,14 @@ class BudgetOptimizerPipeline:
 
     def _build_output(self, result_df: pd.DataFrame) -> pd.DataFrame:
         """
-        Build the final output DataFrame with all 13 columns + a TOTAL summary row.
+        Build the output DataFrame with all 13 columns — platform rows ONLY.
+
+        Gap 1 fix: the TOTAL summary row has been deliberately removed from
+        the BigQuery write.  Adding platform='TOTAL' breaks any SUM() query
+        downstream: SELECT SUM(recommended_spend) would double-count since the
+        TOTAL row already includes the sum of all platform rows.
+        Totals are displayed in the terminal log (_log_summary) but are computed
+        dynamically from the platform rows — never written to BigQuery.
         """
         now     = datetime.now(timezone.utc)
         p_start = str(result_df["period_start"].min())
@@ -482,29 +498,8 @@ class BudgetOptimizerPipeline:
                 "assumption_note":       assumption,
             })
 
-        # TOTAL summary row (platform='TOTAL') — useful for dashboard summary cards
-        total_current_spend   = result_df["total_spend"].sum()
-        total_current_conv    = result_df["total_conversions"].sum()
-        total_rec_spend       = result_df["recommended_spend"].sum()
-        total_proj_conv       = result_df["projected_conversions"].sum()
-        total_delta           = result_df["conversion_delta"].sum()
-
-        rows.append({
-            "generated_at":          now,
-            "analysis_period_start": p_start,
-            "analysis_period_end":   p_end,
-            "platform":              "TOTAL",
-            "current_spend":         round(float(total_current_spend), 2),
-            "current_spend_pct":     100.0,
-            "current_conversions":   round(float(total_current_conv),  2),
-            "current_cpa":           round(float(total_current_spend / total_current_conv), 4),
-            "recommended_spend":     round(float(total_rec_spend),     2),
-            "recommended_spend_pct": 100.0,
-            "projected_conversions": round(float(total_proj_conv),     2),
-            "conversion_delta":      round(float(total_delta),         2),
-            "assumption_note":       assumption,
-        })
-
+        # TOTAL row intentionally excluded from BQ write (see docstring above).
+        # Terminal summary is computed in _log_summary from these platform rows.
         return pd.DataFrame(rows)[Config.OUTPUT_COLUMNS]
 
     def _write_output(self, df: pd.DataFrame) -> None:
@@ -549,19 +544,26 @@ class BudgetOptimizerPipeline:
     def _log_summary(self, df: pd.DataFrame) -> None:
         """Log the complete recommendation table and uplift summary.
 
+        df contains only platform rows — TOTAL row is not written to BigQuery
+        (Gap 1 fix).  Totals are computed dynamically from the platform rows.
+
         Note: logging.info() uses Python's %-operator for interpolation which
-        does NOT support the comma thousands-separator (e.g. %,.2f is invalid).
-        Numeric values are pre-formatted with f-strings before passing to log.
+        does NOT support the comma thousands-separator (%,.2f raises ValueError).
+        All numeric values are pre-formatted with f-strings before passing to log.
         """
-        platform_rows = df[df["platform"] != "TOTAL"]
-        total_row     = df[df["platform"] == "TOTAL"].iloc[0]
+        # Compute totals from the 3 platform rows (no TOTAL row in df)
+        total_curr_spend = float(df["current_spend"].sum())
+        total_rec_spend  = float(df["recommended_spend"].sum())
+        total_curr_conv  = float(df["current_conversions"].sum())
+        total_delta      = float(df["conversion_delta"].sum())
+        uplift_pct       = total_delta / total_curr_conv * 100 if total_curr_conv else 0
 
         self._log.info("-" * 72)
         self._log.info("  %-10s  %12s  %5s    %12s  %5s    %10s",
                        "Platform", "Current $", "Shr%", "Recom. $", "Shr%", "Conv Δ")
         self._log.info("-" * 72)
 
-        for _, r in platform_rows.iterrows():
+        for _, r in df.iterrows():
             line = (
                 f"  {r['platform']:<10}"
                 f"  ${float(r['current_spend']):>12,.2f}  {float(r['current_spend_pct']):>5.1f}%"
@@ -571,25 +573,22 @@ class BudgetOptimizerPipeline:
             self._log.info(line)
 
         self._log.info("-" * 72)
-        curr_total = float(total_row["current_conversions"])
-        delta      = float(total_row["conversion_delta"])
-        uplift_pct = delta / curr_total * 100 if curr_total else 0
-
         total_line = (
             f"  {'TOTAL':<10}"
-            f"  ${float(total_row['current_spend']):>12,.2f}  {'100.0':>5}%"
-            f"    ${float(total_row['recommended_spend']):>12,.2f}  {'100.0':>5}%"
-            f"    {delta:>+10,.0f}  ({uplift_pct:+.1f}%)"
+            f"  ${total_curr_spend:>12,.2f}  {'100.0':>5}%"
+            f"    ${total_rec_spend:>12,.2f}  {'100.0':>5}%"
+            f"    {total_delta:>+10,.0f}  ({uplift_pct:+.1f}%)"
         )
         self._log.info(total_line)
         self._log.info("-" * 72)
+        # Fix: use single % not %% (in f-strings, %% = two literal percent chars)
         self._log.info(
             "Uplift: %s conversions  (%s)  at same total spend of $%s",
-            f"{delta:+,.0f}",
-            f"{uplift_pct:+.1f}%%",
-            f"{float(total_row['current_spend']):,.2f}",
+            f"{total_delta:+,.0f}",
+            f"{uplift_pct:+.1f}%",
+            f"{total_curr_spend:,.2f}",
         )
-        self._log.info("Note: %s", total_row["assumption_note"])
+        self._log.info("Note: %s", df.iloc[0]["assumption_note"])
 
 
 # =============================================================================
@@ -597,7 +596,10 @@ class BudgetOptimizerPipeline:
 # =============================================================================
 
 def main() -> None:
-    log = logging.getLogger("04_budget_optimizer")
+    # Gap 3 fix: setup_logging is the absolute first step.
+    # If BudgetOptimizerPipeline() itself raises (e.g. BQ auth failure)
+    # the handler is already attached and the error is captured correctly.
+    log = setup_logging(Config.LOGS_DIR / "04_budget_optimizer.log")
     try:
         BudgetOptimizerPipeline().run()
     except Exception as exc:
