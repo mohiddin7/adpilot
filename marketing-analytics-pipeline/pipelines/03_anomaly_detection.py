@@ -2,42 +2,46 @@
 """
 03_anomaly_detection.py
 =======================
-Tier 2 — Rolling Z-score anomaly detection on CPA.
+Tier 2 — Modified Z-score anomaly detection on CPA.
 
-Two statistical improvements over the naive approach (both implemented):
+Algorithm: MAD-based modified Z-score with day-of-week-aware baseline.
+See documentation/ANOMALY_DETECTION_REFACTOR_SPEC.md for full design notes.
 
-  Gap A — Time-based windowing (FIXED):
-    Uses '7D' DatetimeIndex offset instead of row-count rolling(7).
-    Our data has ~2.5 missing days per campaign per month — campaigns
-    don't run every calendar day.  Row-based rolling(7) treats a
-    3-week-old data point as "yesterday" for a paused-and-resumed
-    campaign, producing a corrupted baseline.  DatetimeIndex rolling
-    correctly spans 7 calendar days regardless of how many rows fall
-    within the window.
+Why this algorithm (vs. the previous rolling standard Z-score):
 
-  Gap C — Log-scale Z-score (FIXED):
-    CPA is strictly non-negative and right-skewed (log-normal is a
-    better distributional model than Gaussian).  Z-score on raw CPA
-    suffers from the masking effect: a single spike inflates σ and
-    makes subsequent moderate anomalies statistically invisible.
-    Computing Z on log(CPA) is scale-invariant and robust to extremes.
-    Display metrics (rolling_mean_cpa, rolling_std_cpa) remain in
-    dollar terms for human readability; only the Z-score uses log scale.
+  1. Modified Z (median + MAD) replaces standard Z (mean + std).
+     CPA distributions are right-skewed and contain real outliers.
+     Mean/std are pulled by those outliers, masking subsequent moderate
+     anomalies (one bad day inflates std → next day's z stays small even
+     when the underlying CPA is genuinely off).  Median and MAD are
+     robust: a single extreme value cannot shift them.
 
-Two gaps documented but intentionally NOT implemented for 30-day data:
+  2. Day-of-week-aware baseline (when ≥4 same-DOW prior samples exist).
+     Marketing data has weekly seasonality.  Monday CPAs ≠ Saturday CPAs.
+     A rolling 7- or 14-day baseline averages across DOWs and treats
+     naturally low Mondays as anomalous and naturally high Sundays as
+     normal.  Same-DOW baseline removes that bias.
 
-  Gap B — Cold-start lookahead bias (DOCUMENTED):
-    global_mean/std for cold-start rows includes future dates.  For a
-    30-day window this introduces <1% shift in the global baseline —
-    negligible.  At multi-year production scale, compute an expanding
-    historical baseline strictly on dates ≤ the current row's date.
+  3. Hard warm-up gate (≥7 baseline points required).
+     The previous 3-day fallback emitted z-scores on days 1–3 that were
+     essentially noise.  Now: < 7 prior points → severity=NORMAL,
+     confidence=low, baseline_method='insufficient_history'.  No false
+     anomalies on new campaigns.
 
-  Gap D — Memory bottleneck (DOCUMENTED):
-    job.to_dataframe() loads the full window into pandas.  For 330 rows
-    this is trivial.  At enterprise scale (millions of campaign-day
-    records), migrate the rolling window logic to BigQuery SQL using
-    OVER (PARTITION BY ... ORDER BY date ROWS BETWEEN 6 PRECEDING AND
-    CURRENT ROW) to keep compute colocated with the data.
+  4. Four-tier severity (NORMAL / MODERATE / SEVERE / CRITICAL).
+     Downstream consumers can distinguish "worth a glance" from
+     "act this week" rather than treating every z=2.1 the same as z=6.
+
+  5. Confidence label (high / medium / low).
+     Dashboards can filter to high-confidence flags by default and
+     surface medium/low only on demand.
+
+Backward compatibility:
+  Existing columns `rolling_mean_cpa`, `rolling_std_cpa`, `z_score` are
+  retained with the same names but now carry baseline median, baseline
+  MAD, and modified Z respectively.  `is_anomaly = 1` iff
+  `severity != NORMAL`.  New columns: `modified_z_score`, `severity`,
+  `baseline_method`, `baseline_size`, `confidence`, `days_of_history`.
 
 Data source : fct_unified_marketing_performance  (gold mart)
 Output      : fct_anomaly_flags                  (WRITE_TRUNCATE, Tier-2)
@@ -54,6 +58,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -76,10 +81,34 @@ class Config:
     OUTPUT_TABLE = "fct_anomaly_flags"
 
     # ── Tier-2 analysis parameters ──────────────────────────────────────────
-    LOOKBACK_DAYS    = 90    # window anchored to MAX(date) in gold, not CURRENT_DATE
-    ROLLING_WINDOW   = 7     # calendar days (used as '7D' DatetimeIndex offset)
-    Z_THRESHOLD      = 2.0   # |z| > this → anomaly flag
-    MIN_HISTORY_DAYS = 3     # group needs ≥ this many obs before using group stats
+    LOOKBACK_WINDOW_DAYS  = 90    # how far back to compute anomalies for
+    BASELINE_WINDOW_DAYS  = 28    # per-row baseline lookback (see note below)
+    MIN_BASELINE_SIZE     = 7     # min points required to emit any flag
+    MIN_DOW_BASELINE_SIZE = 4     # min same-DOW points to prefer DOW baseline
+
+    # NOTE on BASELINE_WINDOW_DAYS = 28 (deviation from spec's literal 14):
+    # The refactor spec's skeleton sets baseline_window_days=14 alongside
+    # min_dow_baseline_size=4 — but in a 14-day window the same-DOW subset
+    # contains at most 2 samples (each weekday occurs twice in 14 days), so
+    # the DOW threshold of 4 would be mathematically unreachable and the
+    # day-of-week branch would be dead code.  The spec's narrative resolves
+    # the ambiguity: "A campaign typically has at least 4 same-day-of-week
+    # samples after 28 days" and the smoke test in §5.2 expects DOW baselines
+    # "when same-DOW count ≥ 4".  28 days is the smallest window that lets
+    # min_dow_baseline_size=4 actually trigger, so we use it here.  The
+    # baseline_method string contract ("rolling_14d") is kept verbatim to
+    # match the spec's output schema; a follow-up PR may rename it to
+    # "rolling" along with the column renames mentioned in spec §3.
+
+    # |modified_z| thresholds for severity bucketing.
+    # Values map to standard-normal sigma intuition via the 0.6745 constant
+    # (|mod_z| > 3.5 ≈ outside 99.95th percentile under normality).
+    SEVERITY_THRESHOLDS: dict[str, float] = {
+        "MODERATE": 3.5,
+        "SEVERE":   4.5,
+        "CRITICAL": 6.0,
+    }
+    MAD_CONSTANT = 0.6745         # calibrates MAD-based modified Z
 
     # ── Cost guardrails ──────────────────────────────────────────────────────
     MAX_READ_BYTES   = 5   * 1_024 ** 3   # 5 GB
@@ -92,22 +121,39 @@ class Config:
 
     # ── Output contract ──────────────────────────────────────────────────────
     OUTPUT_COLUMNS: list[str] = [
+        # Existing columns (semantics changed but names kept for compat)
         "date", "platform", "campaign_id", "campaign_name",
-        "observed_cpa", "rolling_mean_cpa", "rolling_std_cpa",
-        "z_score", "is_anomaly", "anomaly_direction",
+        "observed_cpa",
+        "rolling_mean_cpa", "rolling_std_cpa", "z_score",
+        "is_anomaly", "anomaly_direction",
+        # New columns
+        "modified_z_score", "severity",
+        "baseline_method", "baseline_size",
+        "confidence", "days_of_history",
     ]
 
     OUTPUT_SCHEMA: list[bigquery.SchemaField] = [
-        bigquery.SchemaField("date",             "DATE"),
-        bigquery.SchemaField("platform",          "STRING"),
-        bigquery.SchemaField("campaign_id",       "STRING"),
-        bigquery.SchemaField("campaign_name",     "STRING"),
-        bigquery.SchemaField("observed_cpa",      "FLOAT64"),
-        bigquery.SchemaField("rolling_mean_cpa",  "FLOAT64"),
-        bigquery.SchemaField("rolling_std_cpa",   "FLOAT64"),
-        bigquery.SchemaField("z_score",           "FLOAT64"),
-        bigquery.SchemaField("is_anomaly",        "INT64"),
-        bigquery.SchemaField("anomaly_direction", "STRING"),
+        bigquery.SchemaField("date",             "DATE",    mode="REQUIRED"),
+        bigquery.SchemaField("platform",          "STRING",  mode="REQUIRED"),
+        bigquery.SchemaField("campaign_id",       "STRING",  mode="REQUIRED"),
+        bigquery.SchemaField("campaign_name",     "STRING",  mode="NULLABLE"),
+        bigquery.SchemaField("observed_cpa",      "FLOAT64", mode="NULLABLE"),
+        # Existing columns — semantics changed but names kept for backward compat
+        bigquery.SchemaField("rolling_mean_cpa",  "FLOAT64", mode="NULLABLE",
+                              description="Baseline median CPA (was rolling mean)"),
+        bigquery.SchemaField("rolling_std_cpa",   "FLOAT64", mode="NULLABLE",
+                              description="Baseline MAD (was rolling std)"),
+        bigquery.SchemaField("z_score",           "FLOAT64", mode="NULLABLE",
+                              description="Modified Z-score (was standard Z)"),
+        bigquery.SchemaField("is_anomaly",        "INT64",   mode="REQUIRED"),
+        bigquery.SchemaField("anomaly_direction", "STRING",  mode="REQUIRED"),
+        # New columns
+        bigquery.SchemaField("modified_z_score",  "FLOAT64", mode="NULLABLE"),
+        bigquery.SchemaField("severity",          "STRING",  mode="REQUIRED"),
+        bigquery.SchemaField("baseline_method",   "STRING",  mode="REQUIRED"),
+        bigquery.SchemaField("baseline_size",     "INT64",   mode="REQUIRED"),
+        bigquery.SchemaField("confidence",        "STRING",  mode="REQUIRED"),
+        bigquery.SchemaField("days_of_history",   "INT64",   mode="REQUIRED"),
     ]
 
     @classmethod
@@ -143,159 +189,272 @@ def setup_logging(log_file: Path) -> logging.Logger:
 
 
 # =============================================================================
-# AnomalyDetectionEngine  —  pure pandas, zero I/O
+# AnomalyDetectionEngine  —  pure pandas / numpy, zero I/O
 # =============================================================================
 
 class AnomalyDetectionEngine:
     """
     Stateless computation class.
-    Input:  DataFrame with [date, platform, campaign_id, campaign_name, observed_cpa].
-    Output: Same DataFrame extended with the six anomaly columns.
+    Input:  DataFrame with [date, platform, campaign_id, campaign_name,
+            spend, conversions].
+    Output: DataFrame matching Config.OUTPUT_COLUMNS.
 
-    No BigQuery calls — fully testable in isolation.
+    No BigQuery calls — fully unit-testable in isolation.
 
-    Statistical choices for 30-day marketing data:
-      • DatetimeIndex '7D' rolling window — gap-aware, not row-count-based
-      • Log-scale Z-score — handles CPA's log-normal distribution correctly
-      • Rolling mean/std in dollar output — human-readable display
-      • cold-start fallback uses global stats (minor lookahead bias acceptable
-        at 30-day scale; document at production scale for remediation)
+    Algorithm (one row at a time, per (platform, campaign_id) group):
+      1. baseline_window = prior BASELINE_WINDOW_DAYS days for this campaign,
+         strictly before the target date.
+      2. dow_subset = baseline_window filtered to same day-of-week as target.
+      3. If |dow_subset| ≥ MIN_DOW_BASELINE_SIZE: use it (method='day_of_week').
+         Else: use full baseline_window (method='rolling_14d').
+      4. If |baseline| < MIN_BASELINE_SIZE: emit NORMAL/low/insufficient_history.
+      5. Else: compute median, MAD.  If MAD == 0: emit NORMAL/low (stable).
+      6. Else: mod_z = 0.6745 * (observed - median) / MAD.
+         Bucket into NORMAL/MODERATE/SEVERE/CRITICAL by |mod_z| thresholds.
     """
+
+    # ── Public entry point ───────────────────────────────────────────────────
 
     @classmethod
     def compute(
         cls,
         df: pd.DataFrame,
-        rolling_window: int   = Config.ROLLING_WINDOW,
-        z_threshold:    float = Config.Z_THRESHOLD,
-        min_history:    int   = Config.MIN_HISTORY_DAYS,
+        baseline_window_days:  int = Config.BASELINE_WINDOW_DAYS,
+        min_baseline_size:     int = Config.MIN_BASELINE_SIZE,
+        min_dow_baseline_size: int = Config.MIN_DOW_BASELINE_SIZE,
+        severity_thresholds:   dict[str, float] | None = None,
+        mad_constant:          float = Config.MAD_CONSTANT,
     ) -> pd.DataFrame:
         """
-        Compute rolling Z-score anomaly detection.
+        Compute modified-Z anomaly flags.
 
-        Key implementation decisions:
-
-        1. Per-group DatetimeIndex rolling ('7D' offset, not row-count 7).
-           Implementation: iterate each (platform, campaign_id) group,
-           set DatetimeIndex, apply rolling('7D').  This is more explicit
-           than groupby().transform() for time-based offsets, which
-           require a DateTime-indexed DataFrame and behave inconsistently
-           across pandas versions.
-
-        2. Z-score computed on log(CPA), not raw CPA.
-           Masking problem with raw CPA: one extreme spike inflates σ so
-           much that the z-threshold effectively auto-adjusts upward,
-           hiding moderate anomalies that follow the spike.  Log scale
-           prevents this.  Both rolling_mean_cpa and rolling_std_cpa in
-           the output remain in raw dollars for interpretability.
-
-        3. groupby sort=False + pre-sorted DataFrame = no redundant sorts.
+        Args:
+            df: DataFrame with columns [date, platform, campaign_id,
+                campaign_name, spend, conversions].
+            baseline_window_days: lookback window for baseline (days).
+            min_baseline_size: minimum baseline points to emit a non-NORMAL flag.
+            min_dow_baseline_size: minimum same-DOW points to prefer DOW baseline.
+            severity_thresholds: dict of |mod_z| cutoffs for MODERATE/SEVERE/CRITICAL.
+            mad_constant: scaling constant (0.6745 standard for MAD-based Z).
 
         Returns:
-            df with columns added:
-              rolling_mean_cpa  FLOAT64  (7-day rolling mean, $ scale, display)
-              rolling_std_cpa   FLOAT64  (7-day rolling std,  $ scale, display)
-              z_score           FLOAT64  (log-scale Z, used for anomaly flagging)
-              is_anomaly        INT64    (1 if |z_score| > z_threshold)
-              anomaly_direction STRING   (HIGH_CPA / LOW_CPA / NORMAL)
+            DataFrame with all Config.OUTPUT_COLUMNS populated.
+
+        Rows where conversions == 0 or spend / conversions is NULL are
+        dropped (no CPA defined) and absent from the output.
         """
+        if severity_thresholds is None:
+            severity_thresholds = Config.SEVERITY_THRESHOLDS
+
         if df.empty:
-            return cls._empty_output(df)
+            return cls._empty_output()
 
         df = df.copy()
-        df['date'] = pd.to_datetime(df['date'])
-        df = df.sort_values(['platform', 'campaign_id', 'date']).reset_index(drop=True)
 
-        # ── Global fallback for cold-start ────────────────────────────────────
-        # Uses the full 90-day window → minor lookahead bias for early rows.
-        # For 30-day data: ~0 practical impact (global mean shifts by <1%).
-        # Production remediation: compute per-date expanding baseline strictly
-        # from dates ≤ current row — adds O(n) overhead, worth it at scale.
-        log_cpa_all     = np.log(df['observed_cpa'].clip(lower=1e-6))
-        global_log_mean = float(log_cpa_all.mean())
-        global_log_std  = float(log_cpa_all.std(ddof=1))
-        global_mean     = float(df['observed_cpa'].mean())
-        global_std      = float(df['observed_cpa'].std(ddof=1))
-        if pd.isna(global_log_std) or global_log_std < 1e-9:
-            global_log_std = 0.1
-        if pd.isna(global_std) or global_std < 1e-9:
-            global_std = 1.0
+        # Compute CPA. Rows with conversions == 0 → CPA = NaN → dropped below.
+        # We use .where() rather than division to avoid div-by-zero warnings.
+        safe_conv = df["conversions"].where(df["conversions"] > 0)
+        df["observed_cpa"] = df["spend"] / safe_conv
+        df = df.dropna(subset=["observed_cpa"]).reset_index(drop=True)
 
-        # ── Per-group time-based rolling via DatetimeIndex ────────────────────
-        # '7D' = 7 calendar days.  With a DatetimeIndex, pandas rolling()
-        # correctly handles sparse data: a campaign that pauses for 3 days
-        # and resumes will NOT use 10-day-old data in its "7-day" baseline.
-        window_str: str = f'{rolling_window}D'
-        group_results: list[pd.DataFrame] = []
+        if df.empty:
+            return cls._empty_output()
 
+        # Normalize date dtype and add day-of-week for baseline selection.
+        df["date"] = pd.to_datetime(df["date"])
+        df["_dow"] = df["date"].dt.dayofweek  # Mon=0 … Sun=6
+
+        df = df.sort_values(["platform", "campaign_id", "date"]).reset_index(drop=True)
+
+        out_rows: list[dict[str, Any]] = []
         for (platform, campaign_id), grp in df.groupby(
-            ['platform', 'campaign_id'], sort=False
+            ["platform", "campaign_id"], sort=False
         ):
-            grp = grp.copy().sort_values('date').set_index('date')
+            grp = grp.sort_values("date").reset_index(drop=True)
+            for _, target in grp.iterrows():
+                out_rows.append(cls._compute_row(
+                    target           = target,
+                    group            = grp,
+                    platform         = platform,
+                    campaign_id      = campaign_id,
+                    baseline_window_days  = baseline_window_days,
+                    min_baseline_size     = min_baseline_size,
+                    min_dow_baseline_size = min_dow_baseline_size,
+                    severity_thresholds   = severity_thresholds,
+                    mad_constant          = mad_constant,
+                ))
 
-            log_cpa  = np.log(grp['observed_cpa'].clip(lower=1e-6))
+        result = pd.DataFrame(out_rows, columns=Config.OUTPUT_COLUMNS)
+        return result
 
-            # Log-scale stats for Z-score computation
-            grp['_log_mean'] = log_cpa.rolling(window_str, min_periods=1).mean()
-            grp['_log_std']  = log_cpa.rolling(window_str, min_periods=2).std(ddof=1)
+    # ── Per-row computation ──────────────────────────────────────────────────
 
-            # Dollar-scale stats for output display (NOT used in Z-score)
-            grp['rolling_mean_cpa'] = grp['observed_cpa'].rolling(window_str, min_periods=1).mean()
-            grp['rolling_std_cpa']  = grp['observed_cpa'].rolling(window_str, min_periods=2).std(ddof=1)
+    @classmethod
+    def _compute_row(
+        cls,
+        *,
+        target: pd.Series,
+        group: pd.DataFrame,
+        platform: str,
+        campaign_id: str,
+        baseline_window_days: int,
+        min_baseline_size: int,
+        min_dow_baseline_size: int,
+        severity_thresholds: dict[str, float],
+        mad_constant: float,
+    ) -> dict[str, Any]:
+        """Compute one output row for one target observation."""
+        target_date = target["date"]
+        cutoff_lo   = target_date - pd.Timedelta(days=baseline_window_days)
 
-            # Sequential row count (1, 2, 3, …) within this group for cold-start
-            grp['_obs_count'] = range(1, len(grp) + 1)
+        # Baseline window: strictly prior dates within lookback range.
+        baseline_window = group[
+            (group["date"] < target_date) & (group["date"] >= cutoff_lo)
+        ]
+        days_of_history = len(baseline_window)
 
-            group_results.append(grp.reset_index())
+        # Baseline selection.
+        #
+        # Note on gating: the refactor spec's pseudo-code applies the
+        # min_baseline_size=7 check uniformly after baseline selection,
+        # which would reject a day_of_week baseline with 4 same-DOW samples
+        # (4 < 7).  But the spec's own confidence rules in the same section
+        # treat day_of_week with 4–5 samples as a valid *medium*-confidence
+        # flag — meaning the author must have intended min_baseline_size to
+        # gate only the rolling path.  We resolve in favor of the confidence
+        # rules: day_of_week gates on min_dow_baseline_size only;
+        # rolling_14d gates on min_baseline_size; insufficient_history is
+        # emitted only when neither is satisfied.
+        dow_subset = baseline_window[baseline_window["_dow"] == target["_dow"]]
 
-        df = pd.concat(group_results, ignore_index=True)
+        if len(dow_subset) >= min_dow_baseline_size:
+            baseline = dow_subset
+            method   = "day_of_week"
+        elif len(baseline_window) >= min_baseline_size:
+            baseline = baseline_window
+            method   = "rolling_14d"
+        else:
+            return cls._make_row(
+                target=target, platform=platform, campaign_id=campaign_id,
+                median=None, mad=None, mod_z=None,
+                severity="NORMAL", direction="NORMAL",
+                method="insufficient_history",
+                baseline_size=len(baseline_window),
+                days_of_history=days_of_history,
+                confidence="low",
+            )
 
-        # ── Cold-start override ───────────────────────────────────────────────
-        # Groups with < min_history obs use global stats.
-        # Avoids flagging every new campaign as anomalous on its first few days.
-        cold = df['_obs_count'] < min_history
-        df.loc[cold, '_log_mean']        = global_log_mean
-        df.loc[cold, '_log_std']         = global_log_std
-        df.loc[cold, 'rolling_mean_cpa'] = global_mean
-        df.loc[cold, 'rolling_std_cpa']  = global_std
+        obs    = baseline["observed_cpa"].to_numpy()
+        median = float(np.median(obs))
+        mad    = float(np.median(np.abs(obs - median)))
 
-        # ── Z-score on log scale ──────────────────────────────────────────────
-        # NaN log_std (< 2 obs in window) → substitute global_log_std.
-        # Zero log_std (all identical CPAs in window) → substitute global_log_std.
-        log_std_denom = (
-            df['_log_std']
-            .fillna(global_log_std)
-            .where(lambda s: s.abs() > 1e-9, other=global_log_std)
+        # Gate 2: zero variance → can't compute Z, emit stable/NORMAL.
+        if mad == 0.0:
+            return cls._make_row(
+                target=target, platform=platform, campaign_id=campaign_id,
+                median=median, mad=mad, mod_z=0.0,
+                severity="NORMAL", direction="NORMAL",
+                method=method,
+                baseline_size=len(baseline),
+                days_of_history=days_of_history,
+                confidence="low",
+            )
+
+        mod_z      = mad_constant * (float(target["observed_cpa"]) - median) / mad
+        severity   = cls._severity_for(abs(mod_z), severity_thresholds)
+        direction  = cls._direction_for(severity, mod_z)
+        confidence = cls._confidence_for(method, len(baseline))
+
+        return cls._make_row(
+            target=target, platform=platform, campaign_id=campaign_id,
+            median=median, mad=mad, mod_z=mod_z,
+            severity=severity, direction=direction,
+            method=method,
+            baseline_size=len(baseline),
+            days_of_history=days_of_history,
+            confidence=confidence,
         )
 
-        df['z_score'] = (
-            (np.log(df['observed_cpa'].clip(lower=1e-6)) - df['_log_mean'])
-            / log_std_denom
-        ).fillna(0.0).round(6)
-
-        # ── Anomaly flags ─────────────────────────────────────────────────────
-        df['is_anomaly'] = (df['z_score'].abs() > z_threshold).astype('int64')
-        df['anomaly_direction'] = np.where(
-            df['z_score'] >  z_threshold, 'HIGH_CPA',
-            np.where(df['z_score'] < -z_threshold, 'LOW_CPA', 'NORMAL'),
-        )
-
-        # ── Round display metrics ─────────────────────────────────────────────
-        for col in ['observed_cpa', 'rolling_mean_cpa', 'rolling_std_cpa']:
-            df[col] = df[col].round(4)
-
-        return df.drop(columns=['_log_mean', '_log_std', '_obs_count'])
+    # ── Helpers: severity / direction / confidence ───────────────────────────
 
     @staticmethod
-    def _empty_output(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-        for col, dtype in [
-            ('rolling_mean_cpa', 'float64'), ('rolling_std_cpa', 'float64'),
-            ('z_score', 'float64'), ('is_anomaly', 'int64'),
-        ]:
-            df[col] = pd.array([], dtype=dtype)
-        df['anomaly_direction'] = pd.array([], dtype=object)
-        return df
+    def _severity_for(abs_z: float, thresholds: dict[str, float]) -> str:
+        if abs_z >= thresholds["CRITICAL"]:
+            return "CRITICAL"
+        if abs_z >= thresholds["SEVERE"]:
+            return "SEVERE"
+        if abs_z >= thresholds["MODERATE"]:
+            return "MODERATE"
+        return "NORMAL"
+
+    @staticmethod
+    def _direction_for(severity: str, mod_z: float) -> str:
+        if severity == "NORMAL":
+            return "NORMAL"
+        return "HIGH_CPA" if mod_z > 0 else "LOW_CPA"
+
+    @staticmethod
+    def _confidence_for(method: str, baseline_size: int) -> str:
+        if method == "insufficient_history":
+            return "low"
+        if method == "rolling_14d" and baseline_size < 10:
+            return "medium"
+        if method == "day_of_week" and baseline_size < 6:
+            return "medium"
+        return "high"
+
+    # ── Row builder ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_row(
+        *,
+        target: pd.Series,
+        platform: str,
+        campaign_id: str,
+        median: float | None,
+        mad: float | None,
+        mod_z: float | None,
+        severity: str,
+        direction: str,
+        method: str,
+        baseline_size: int,
+        days_of_history: int,
+        confidence: str,
+    ) -> dict[str, Any]:
+        """Assemble one output row matching Config.OUTPUT_COLUMNS."""
+        observed_cpa = round(float(target["observed_cpa"]), 4)
+        median_out   = None if median is None else round(median, 4)
+        mad_out      = None if mad    is None else round(mad,    4)
+        mod_z_out    = None if mod_z  is None else round(mod_z,  6)
+
+        return {
+            "date":               target["date"].date(),
+            "platform":           platform,
+            "campaign_id":        campaign_id,
+            "campaign_name":      target.get("campaign_name"),
+            "observed_cpa":       observed_cpa,
+            # Repurposed legacy columns (median / MAD / modified Z):
+            "rolling_mean_cpa":   median_out,
+            "rolling_std_cpa":    mad_out,
+            "z_score":            mod_z_out,
+            # Backward-compat binary flag:
+            "is_anomaly":         0 if severity == "NORMAL" else 1,
+            "anomaly_direction":  direction,
+            # New explicit columns:
+            "modified_z_score":   mod_z_out,
+            "severity":           severity,
+            "baseline_method":    method,
+            "baseline_size":      int(baseline_size),
+            "confidence":         confidence,
+            "days_of_history":    int(days_of_history),
+        }
+
+    # ── Empty input fallback ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _empty_output() -> pd.DataFrame:
+        return pd.DataFrame({col: pd.Series(dtype="object")
+                              for col in Config.OUTPUT_COLUMNS})
 
 
 # =============================================================================
@@ -315,15 +474,18 @@ class AnomalyDetectionPipeline:
     def run(self) -> None:
         self._log.info("=" * 72)
         self._log.info(
-            "Script 03 — Anomaly Detection  started at %s",
+            "Script 03 — Anomaly Detection (modified-Z + MAD)  started at %s",
             datetime.now(timezone.utc).isoformat(),
         )
         self._log.info("=" * 72)
         self._log.info(
-            "Parameters  lookback=%d d  rolling=%d d  z_threshold=%.1f  "
-            "min_history=%d d  z_scale=log(CPA)  window=time-based",
-            Config.LOOKBACK_DAYS, Config.ROLLING_WINDOW,
-            Config.Z_THRESHOLD,   Config.MIN_HISTORY_DAYS,
+            "Params: lookback=%dd  baseline_window=%dd  min_baseline=%d  "
+            "min_dow=%d  severity={MOD=%.1f, SEV=%.1f, CRIT=%.1f}",
+            Config.LOOKBACK_WINDOW_DAYS, Config.BASELINE_WINDOW_DAYS,
+            Config.MIN_BASELINE_SIZE,    Config.MIN_DOW_BASELINE_SIZE,
+            Config.SEVERITY_THRESHOLDS["MODERATE"],
+            Config.SEVERITY_THRESHOLDS["SEVERE"],
+            Config.SEVERITY_THRESHOLDS["CRITICAL"],
         )
 
         df = self._fetch_gold_data()
@@ -334,12 +496,12 @@ class AnomalyDetectionPipeline:
         date_min = str(df["date"].min())
         date_max = str(df["date"].max())
         self._log.info(
-            "Fetched %d rows  |  window: %s → %s  |  unique campaigns: %d",
+            "Fetched %d (date, platform, campaign) rows  |  %s → %s  |  "
+            "%d unique campaigns",
             len(df), date_min, date_max, df["campaign_id"].nunique(),
         )
 
         df_out = AnomalyDetectionEngine.compute(df)
-
         self._log_summary(df_out)
 
         self._write_output(df_out[Config.OUTPUT_COLUMNS])
@@ -352,9 +514,14 @@ class AnomalyDetectionPipeline:
 
     def _fetch_gold_data(self) -> pd.DataFrame:
         """
-        Pull LOOKBACK_DAYS of valid CPA rows from the gold mart.
-        Anchored to MAX(date) in gold — script is data-date-agnostic.
-        Rows where cpa IS NULL or cpa = 0 are excluded (no conversions = no CPA).
+        Pull LOOKBACK_WINDOW_DAYS of campaign-day spend/conversions from the
+        gold mart.  Aggregates to (date, platform, campaign_id, campaign_name)
+        because the gold grain includes sub_group_id — we want CPA at the
+        campaign level (SUM(spend) / SUM(conversions)), not per ad set.
+
+        Anchored to MAX(date) in gold so the script is data-date-agnostic.
+        Rows with zero conversions are filtered out in the engine, not here,
+        so the engine has visibility into a campaign's full history.
         """
         try:
             self._client.get_table(Config.gold_ref())
@@ -366,24 +533,26 @@ class AnomalyDetectionPipeline:
             return pd.DataFrame()
 
         sql = f"""
+        WITH bounds AS (
+            SELECT MAX(date) AS max_d FROM `{Config.gold_ref()}`
+        )
         SELECT
             date,
             platform,
             campaign_id,
             campaign_name,
-            cpa   AS observed_cpa
+            SUM(spend)       AS spend,
+            SUM(conversions) AS conversions
         FROM `{Config.gold_ref()}`
-        WHERE
-            date >= DATE_SUB(
-                (SELECT MAX(date) FROM `{Config.gold_ref()}`),
-                INTERVAL {Config.LOOKBACK_DAYS - 1} DAY
-            )
-            AND cpa IS NOT NULL
-            AND cpa > 0
+        CROSS JOIN bounds
+        WHERE date >= DATE_SUB(bounds.max_d,
+                               INTERVAL {Config.LOOKBACK_WINDOW_DAYS - 1} DAY)
+        GROUP BY date, platform, campaign_id, campaign_name
         ORDER BY platform, campaign_id, date
         """
 
-        self._log.info("Querying gold mart (last %d days) …", Config.LOOKBACK_DAYS)
+        self._log.info("Querying gold mart (last %d days) …",
+                       Config.LOOKBACK_WINDOW_DAYS)
         job = self._client.query(
             sql,
             job_config=bigquery.QueryJobConfig(
@@ -395,6 +564,7 @@ class AnomalyDetectionPipeline:
     def _write_output(self, df: pd.DataFrame) -> None:
         """Write to fct_anomaly_flags (WRITE_TRUNCATE) with retry."""
         df = df.copy()
+        # Ensure pandas-gbq can convert the date column to BQ DATE.
         df["date"] = pd.to_datetime(df["date"])
 
         job_config = bigquery.LoadJobConfig(
@@ -417,7 +587,8 @@ class AnomalyDetectionPipeline:
                 last_exc = exc
                 wait = Config.RETRY_BASE_S ** attempt
                 self._log.warning(
-                    "Write attempt %d failed: %s — retry in %ds", attempt, exc, wait
+                    "Write attempt %d failed: %s — retry in %ds",
+                    attempt, exc, wait,
                 )
                 time.sleep(wait)
             except Exception as exc:
@@ -429,33 +600,47 @@ class AnomalyDetectionPipeline:
         ) from last_exc
 
     def _log_summary(self, df: pd.DataFrame) -> None:
-        """Log anomaly rate, per-platform breakdown, and top 5 by |z_score|."""
+        """Log severity / method / confidence breakdowns plus top anomalies."""
         n_total   = len(df)
-        n_anomaly = int(df["is_anomaly"].sum())
+        n_anomaly = int((df["severity"] != "NORMAL").sum())
         pct       = 100.0 * n_anomaly / n_total if n_total else 0.0
 
         self._log.info(
-            "Anomaly summary  total=%d  flagged=%d (%.1f%%)  "
-            "[z_score is log-scale — threshold ±%.1f]",
-            n_total, n_anomaly, pct, Config.Z_THRESHOLD,
+            "Output summary  rows=%d  flagged=%d (%.1f%%)",
+            n_total, n_anomaly, pct,
         )
 
+        # Severity distribution
+        sev_counts = df["severity"].value_counts().to_dict()
+        for sev in ("NORMAL", "MODERATE", "SEVERE", "CRITICAL"):
+            self._log.info("  severity=%-9s  %4d", sev, sev_counts.get(sev, 0))
+
+        # Baseline method distribution
+        for method, count in df["baseline_method"].value_counts().items():
+            self._log.info("  method=%-22s  %4d", method, int(count))
+
+        # Confidence distribution
+        for conf, count in df["confidence"].value_counts().items():
+            self._log.info("  confidence=%-7s  %4d", conf, int(count))
+
+        # Per-platform breakdown
         by_platform = (
             df.groupby("platform")
-            .agg(
-                rows     =("is_anomaly", "count"),
-                anomalies=("is_anomaly", "sum"),
-                high_cpa =("anomaly_direction", lambda x: (x == "HIGH_CPA").sum()),
-                low_cpa  =("anomaly_direction", lambda x: (x == "LOW_CPA").sum()),
-            )
-            .reset_index()
+              .agg(
+                  rows      = ("severity",          "count"),
+                  flagged   = ("is_anomaly",        "sum"),
+                  high_cpa  = ("anomaly_direction", lambda x: (x == "HIGH_CPA").sum()),
+                  low_cpa   = ("anomaly_direction", lambda x: (x == "LOW_CPA").sum()),
+                  critical  = ("severity",          lambda x: (x == "CRITICAL").sum()),
+              )
+              .reset_index()
         )
-        for _, row in by_platform.iterrows():
+        self._log.info("Per-platform breakdown:")
+        for _, r in by_platform.iterrows():
             self._log.info(
-                "  %-10s  rows=%3d  anomalies=%2d  "
-                "(HIGH_CPA=%d  LOW_CPA=%d)",
-                row["platform"], row["rows"], row["anomalies"],
-                row["high_cpa"], row["low_cpa"],
+                "  %-10s  rows=%3d  flagged=%2d  HIGH=%d LOW=%d  CRITICAL=%d",
+                r["platform"], r["rows"], r["flagged"],
+                r["high_cpa"], r["low_cpa"], r["critical"],
             )
 
         if n_anomaly == 0:
@@ -463,21 +648,24 @@ class AnomalyDetectionPipeline:
             return
 
         top5 = (
-            df[df["is_anomaly"] == 1]
-            .assign(_abs_z=lambda d: d["z_score"].abs())
+            df[df["severity"] != "NORMAL"]
+            .assign(_abs_z=lambda d: d["modified_z_score"].abs())
             .nlargest(5, "_abs_z")
         )
-        self._log.info("Top anomalies (by |z_score|, log-scale):")
+        self._log.info("Top anomalies (by |modified_z|):")
         for _, r in top5.iterrows():
             self._log.info(
-                "  [%s] %-10s %-28s  CPA=$%7.2f  mean=$%7.2f  z=%+.3f  %s",
+                "  [%s] %-10s %-28s  CPA=$%7.2f  median=$%7.2f  "
+                "mod_z=%+.3f  %s  (%s, %s)",
                 r["date"],
                 r["platform"],
                 str(r["campaign_name"])[:28],
                 r["observed_cpa"],
                 r["rolling_mean_cpa"],
-                r["z_score"],
-                r["anomaly_direction"],
+                r["modified_z_score"],
+                r["severity"],
+                r["baseline_method"],
+                r["confidence"],
             )
 
 
