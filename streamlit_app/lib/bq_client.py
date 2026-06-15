@@ -196,19 +196,38 @@ def _translate_bq_error(exc: Exception, max_bytes: int) -> BQUserFriendlyError:
 def discover_table_schema(table_ref: str) -> Optional[str]:
     """
     Return column names and types for a fully-qualified table reference.
-    Uses client.get_table() — no query job, no Storage API, works with
-    dataset-scoped dataViewer.
-    Returns "col1 (TYPE), col2 (TYPE), ..." or None if inaccessible.
+    Uses client.get_table() to preserve low-privilege (Data Viewer) access,
+    but normalizes legacy API types back to Standard SQL types for the LLM.
     """
+    # Map BigQuery API SchemaField types to Standard SQL types
+    TYPE_MAPPING = {
+        "INTEGER": "INT64",
+        "FLOAT": "FLOAT64",
+        "BOOLEAN": "BOOL",
+        "RECORD": "STRUCT"
+    }
+    
     try:
-        table = get_client().get_table(table_ref)
+        client = get_client()
+        # Strip any accidental backticks if they leaked into the string reference
+        clean_ref = table_ref.replace("`", "")
+        
+        table = client.get_table(clean_ref)
         if not table.schema:
             return None
-        return ", ".join(
-            f"{field.name} ({field.field_type})" for field in table.schema
-        )
+        
+        # Format matching the original: "column_name (STANDARD_SQL_TYPE)"
+        formatted_fields = []
+        for field in table.schema:
+            # Convert legacy types (e.g., INTEGER -> INT64)
+            standard_type = TYPE_MAPPING.get(field.field_type, field.field_type)
+            formatted_fields.append(f"{field.name} ({standard_type})")
+            
+        return ", ".join(formatted_fields)
+
     except Exception as exc:
-        log.warning("Schema discovery failed for %s: %s", table_ref, exc)
+        # Changed to error level with stack trace to uncover permission/auth blocks immediately
+        log.error("Schema discovery failed for %s. Check service account permissions: %s", table_ref, exc, exc_info=True)
         return None
 
 
