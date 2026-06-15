@@ -30,3 +30,5 @@ streamlit_app/.streamlit/
 marketing-analytics-pipeline/documentation/git-commit-script-context.md
 phase_1_branch_a.sh
 phase_2_branch_b.sh
+
+secrets/
