@@ -78,8 +78,8 @@ class Config:
     # production are created with the same value in _ensure_infrastructure().
     BQ_LOCATION = "US"
 
-    QUERIES_DIR = Path("marketing-analytics-pipeline/queries")
-    LOGS_DIR    = Path("marketing-analytics-pipeline/logs")
+    QUERIES_DIR = Path(__file__).resolve().parent / "queries"
+    LOGS_DIR    = Path(__file__).resolve().parent / "logs"
     # FIRST_RUN_SQL removed — SqlBuilder.create_gold_schema() + incremental_transaction()
     # single source of truth; gold_unified_performance_mart.sql is doc-only.
 

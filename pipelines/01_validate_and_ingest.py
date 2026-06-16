@@ -57,7 +57,7 @@ from google.cloud import storage
 from google.cloud.exceptions import NotFound
 
 # Logging setup
-_LOG_DIR = pathlib.Path(__file__).parent.parent / "logs"
+_LOG_DIR = pathlib.Path(__file__).parent / "logs"
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -754,9 +754,9 @@ def main() -> None:
 
     if args.all:
         files = [
-            "marketing-analytics-pipeline/data/raw/01_facebook_ads.csv",
-            "marketing-analytics-pipeline/data/raw/02_google_ads.csv",
-            "marketing-analytics-pipeline/data/raw/03_tiktok_ads.csv",
+            "data/raw/01_facebook_ads.csv",
+            "data/raw/02_google_ads.csv",
+            "data/raw/03_tiktok_ads.csv",
         ]
         for fp in files:
             result = pipeline.run(fp)

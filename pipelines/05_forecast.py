@@ -111,7 +111,7 @@ class Config:
     MAX_RETRIES  = 3
     RETRY_BASE_S = 2
 
-    LOGS_DIR = Path("marketing-analytics-pipeline/logs")
+    LOGS_DIR = Path(__file__).resolve().parent / "logs"
 
     # ── Output contract (8 columns, LLD §13.5) ──────────────────────────────
     OUTPUT_COLUMNS: list[str] = [
