@@ -9,6 +9,11 @@ from __future__ import annotations
 
 import os
 import logging
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 log = logging.getLogger(__name__)
 
@@ -26,29 +31,26 @@ def _get(section: str, key: str, env_var: str, default: str = "") -> str:
 
 
 # ── LLM config ──────────────────────────────────────────────────────────────
+# Any OpenAI-compatible chat-completions endpoint works. OpenRouter free tier by default.
 LLM_ENDPOINT_URL: str = _get("llm", "LLM_ENDPOINT_URL", "LLM_ENDPOINT_URL",
-                              "https://api.groq.com/openai/v1/chat/completions")
+                              "https://openrouter.ai/api/v1/chat/completions")
 LLM_BEARER_TOKEN: str = _get("llm", "LLM_BEARER_TOKEN", "LLM_BEARER_TOKEN", "")
 LLM_TARGET_MODEL: str = _get("llm", "LLM_TARGET_MODEL", "LLM_TARGET_MODEL",
-                              "llama-3.3-70b-versatile")
-# Optional: a larger-context model used when the primary hits TPM limits
-# or when the request needs a wider context window. Groq examples:
-#   - meta-llama/llama-4-scout-17b-16e-instruct (30K TPM)
-#   - groq/compound (70K TPM)
-# If unset, the primary model is used for every call.
-LLM_FALLBACK_MODEL: str = _get("llm", "LLM_FALLBACK_MODEL", "LLM_FALLBACK_MODEL", "groq/compound")
+                              "inclusionai/ling-3.0-flash-vl:free")
+# Optional: a second model tried when the primary is rate-limited or unavailable.
+LLM_FALLBACK_MODEL: str = _get("llm", "LLM_FALLBACK_MODEL", "LLM_FALLBACK_MODEL",
+                                "google/gemma-4-26b-a4b-it:free")
 
 # ── GCP config ──────────────────────────────────────────────────────────────
-GCP_PROJECT: str = _get("gcp", "project_id", "GOOGLE_CLOUD_PROJECT",
-                        "improvado-analytics-lakehouse")
+GCP_PROJECT: str = _get("gcp", "project_id", "BQ_PROJECT_ID", "adpilot-lakehouse")
 
 # Optional: service account JSON for Streamlit Cloud deployments
 GCP_SERVICE_ACCOUNT_JSON: str = _get("gcp", "GCP_SERVICE_ACCOUNT_JSON",
                                      "GCP_SERVICE_ACCOUNT_JSON", "")
 
 # ── Dataset references ───────────────────────────────────────────────────────
-_PROD_DS   = f"{GCP_PROJECT}.improvado_analytics_production"
-_STG_DS    = f"{GCP_PROJECT}.improvado_analytics_staging"
+_PROD_DS = f"{GCP_PROJECT}." + _get("gcp", "production_dataset", "BQ_PRODUCTION_DATASET", "adpilot_production")
+_STG_DS  = f"{GCP_PROJECT}." + _get("gcp", "staging_dataset",    "BQ_STAGING_DATASET",    "adpilot_staging")
 
 GOLD_REF     = f"{_PROD_DS}.fct_unified_marketing_performance"
 ANOMALY_REF  = f"{_STG_DS}.fct_anomaly_flags"

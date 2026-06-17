@@ -58,7 +58,7 @@ def _get_session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
         "Content-Type": "application/json",
-        "User-Agent":   "improvado-streamlit/1.1",
+        "User-Agent":   "adpilot/0.1",
     })
     return s
 

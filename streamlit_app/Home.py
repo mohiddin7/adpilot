@@ -18,7 +18,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
-    page_title="Marketing Performance — Improvado",
+    page_title="AdPilot — Marketing Performance",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -106,7 +106,7 @@ with st.sidebar:
     <div style='padding: 4px 0 16px 0;'>
         <div style='font-size:10px; color:rgba(255,255,255,0.4); text-transform:uppercase;
                     letter-spacing:0.14em; margin-bottom:4px;'>
-            Improvado
+            AdPilot
         </div>
         <div style='font-size:18px; font-weight:700; color:#fff; line-height:1.2;'>
             Marketing Performance
