@@ -21,13 +21,16 @@ import os
 import sys
 from google.cloud import bigquery
 
+import common
+
 
 # ---------------------------------------------------------------------------
 # Resolve paths relative to repo root (works from any working directory)
 # ---------------------------------------------------------------------------
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_REPO_DIR   = os.path.dirname(_SCRIPT_DIR)          # pipelines/ → repo root
-_LOG_FILE   = os.path.join(_REPO_DIR, "logs", "07_qa_validation.log")
+_LOG_DIR    = os.path.join(_SCRIPT_DIR, "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+_LOG_FILE   = os.path.join(_LOG_DIR, "07_qa_validation.log")
 
 
 # ---------------------------------------------------------------------------
@@ -48,10 +51,10 @@ logging.basicConfig(
 # Config — matches other pipeline scripts
 # ---------------------------------------------------------------------------
 class Config:
-    PROJECT            = "improvado-analytics-lakehouse"
-    BRONZE_DATASET     = f"{PROJECT}.improvado_analytics_bronze"
-    STAGING_DATASET    = f"{PROJECT}.improvado_analytics_staging"
-    PRODUCTION_DATASET = f"{PROJECT}.improvado_analytics_production"
+    PROJECT            = common.PROJECT
+    BRONZE_DATASET     = f"{PROJECT}.{common.BRONZE_DS}"
+    STAGING_DATASET    = f"{PROJECT}.{common.STAGING_DS}"
+    PRODUCTION_DATASET = f"{PROJECT}.{common.PRODUCTION_DS}"
 
     GOLD_TABLE         = f"{PRODUCTION_DATASET}.fct_unified_marketing_performance"
     QUARANTINE_TABLE   = f"{STAGING_DATASET}.stg_quarantine_logs"

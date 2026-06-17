@@ -57,6 +57,8 @@ from google.api_core.exceptions import (
 )
 from google.cloud import bigquery
 
+import common
+
 # ── statsmodels: top-level import so missing dep fails fast with a clear message
 try:
     from statsmodels.tsa.holtwinters import (
@@ -87,9 +89,9 @@ warnings.filterwarnings(
 # =============================================================================
 
 class Config:
-    PROJECT       = "improvado-analytics-lakehouse"
-    PRODUCTION_DS = "improvado_analytics_production"
-    STAGING_DS    = "improvado_analytics_staging"
+    PROJECT       = common.PROJECT
+    PRODUCTION_DS = common.PRODUCTION_DS
+    STAGING_DS    = common.STAGING_DS
 
     GOLD_TABLE   = "fct_unified_marketing_performance"
     OUTPUT_TABLE = "tbl_forecast"

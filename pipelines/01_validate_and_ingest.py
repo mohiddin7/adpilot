@@ -70,8 +70,7 @@ logging.basicConfig(
 )
 
 # Constants
-BRONZE_DATASET = "improvado_analytics_bronze"
-STAGING_DATASET = "improvado_analytics_staging"
+from common import BRONZE_DS as BRONZE_DATASET, STAGING_DS as STAGING_DATASET  # noqa: E402
 QUARANTINE_TABLE = f"{STAGING_DATASET}.stg_quarantine_logs"
 AUDIT_TABLE = f"{STAGING_DATASET}.tbl_ingestion_audit"
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "")

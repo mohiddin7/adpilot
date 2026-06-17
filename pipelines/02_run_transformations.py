@@ -43,16 +43,18 @@ from google.api_core.exceptions import (
 )
 from google.cloud import bigquery
 
+import common
+
 
 # =============================================================================
 # Config
 # =============================================================================
 
 class Config:
-    PROJECT           = "improvado-analytics-lakehouse"
-    BRONZE_DS         = "improvado_analytics_bronze"
-    STAGING_DS        = "improvado_analytics_staging"
-    PRODUCTION_DS     = "improvado_analytics_production"
+    PROJECT           = common.PROJECT
+    BRONZE_DS         = common.BRONZE_DS
+    STAGING_DS        = common.STAGING_DS
+    PRODUCTION_DS     = common.PRODUCTION_DS
 
     GOLD_TABLE        = "fct_unified_marketing_performance"
     AUDIT_TABLE       = "tbl_ingestion_audit"
@@ -239,7 +241,7 @@ class BQExecutor:
 #     FROM (
 #       SELECT *, ROW_NUMBER() OVER (
 #           PARTITION BY audit_id ORDER BY last_updated_at DESC) AS rn
-#       FROM `improvado_analytics_staging.tbl_ingestion_audit`
+#       FROM `{STAGING_DS}.tbl_ingestion_audit`
 #     ) WHERE rn = 1
 # =============================================================================
 

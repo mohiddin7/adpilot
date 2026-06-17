@@ -24,6 +24,7 @@ import pytest
 
 _PIPELINES_DIR = Path(__file__).resolve().parent.parent
 _MODULE_PATH   = _PIPELINES_DIR / "03_anomaly_detection.py"
+sys.path.insert(0, str(_PIPELINES_DIR))
 
 _spec = importlib.util.spec_from_file_location("anomaly_03", _MODULE_PATH)
 _mod  = importlib.util.module_from_spec(_spec)

@@ -25,7 +25,7 @@ Critical implementation note (LLD §12.4):
   row order is non-deterministic. The DataFrame is sorted by platform name
   BEFORE building the LP coefficient and bounds arrays, and the result vector
   is mapped back to platforms by the same sorted index.
-  A silent misassignment here would recommend the TikTok budget go to Facebook
+  A silent mislabelling here would recommend the TikTok budget go to Facebook
   — the exact opposite of the correct recommendation.
 
 Assumptions (stated in every output row):
@@ -57,15 +57,17 @@ from google.api_core.exceptions import (
 )
 from google.cloud import bigquery
 
+import common
+
 
 # =============================================================================
 # Config
 # =============================================================================
 
 class Config:
-    PROJECT       = "improvado-analytics-lakehouse"
-    PRODUCTION_DS = "improvado_analytics_production"
-    STAGING_DS    = "improvado_analytics_staging"
+    PROJECT       = common.PROJECT
+    PRODUCTION_DS = common.PRODUCTION_DS
+    STAGING_DS    = common.STAGING_DS
 
     GOLD_TABLE   = "fct_unified_marketing_performance"
     OUTPUT_TABLE = "tbl_budget_recommendations"

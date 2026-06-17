@@ -67,15 +67,17 @@ from google.api_core.exceptions import (
 )
 from google.cloud import bigquery
 
+import common
+
 
 # =============================================================================
 # Config
 # =============================================================================
 
 class Config:
-    PROJECT        = "improvado-analytics-lakehouse"
-    PRODUCTION_DS  = "improvado_analytics_production"
-    STAGING_DS     = "improvado_analytics_staging"
+    PROJECT        = common.PROJECT
+    PRODUCTION_DS  = common.PRODUCTION_DS
+    STAGING_DS     = common.STAGING_DS
 
     GOLD_TABLE   = "fct_unified_marketing_performance"
     OUTPUT_TABLE = "fct_anomaly_flags"
