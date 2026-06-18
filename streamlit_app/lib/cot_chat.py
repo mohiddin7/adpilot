@@ -658,7 +658,7 @@ def _process_factual(
             max_tokens=300,
         )
         narrative = _sanitize_narrative(narrative)
-    except Exception as exc:
+    except Exception:
         log.exception("Narration failed")
         narrative = None
 
@@ -853,7 +853,7 @@ def _process_chain_of_thought(
             prefer_long_context=len(history) >= 3,
         )
         answer = _sanitize_narrative(answer)
-    except Exception as exc:
+    except Exception:
         log.exception("Synthesizer failed")
         answer = None
 

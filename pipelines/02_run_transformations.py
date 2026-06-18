@@ -515,7 +515,7 @@ class SqlBuilder:
         Returns 24 columns: 6 dims + 18 metrics (engagement_rate intentionally absent).
         """
         lines = [
-            f"CAST(date AS DATE)   AS date",
+            "CAST(date AS DATE)   AS date",
             f"{pspec['name_literal']}  AS platform",
             "campaign_id",
             "campaign_name",

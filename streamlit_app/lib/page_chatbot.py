@@ -472,7 +472,7 @@ def render_page_chatbot(
 
         # Page-context preamble (visible inside the bordered box)
         st.markdown(
-            f"""
+            """
             <div class='page-chatbot-container'>
               <div class='page-chatbot-title'>💬 Ask about this page</div>
               <div class='page-chatbot-subtitle'>
@@ -601,7 +601,7 @@ def _process(
             llm=llm,
             history=history,
         )
-    except Exception as exc:
+    except Exception:
         log.exception("Page chatbot processing failed")
         st.session_state[state_key].append({
             "role":    "bot",
