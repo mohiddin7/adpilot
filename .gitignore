@@ -1,34 +1,37 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
 *.egg-info/
 .venv/
 venv/
 .pytest_cache/
+.ruff_cache/
 
-# Logs (generated at runtime, not committed)
+# Runtime output
 pipelines/logs/
+logs/
 
-# OS
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+secrets/
+*service*account*.json
+*-key-*.json
+*.pem
+streamlit_app/.streamlit/secrets.toml
+
+# OS / IDE
 .DS_Store
 Thumbs.db
 *:Zone.Identifier
-
-# IDE
 .vscode/
 .idea/
 *.swp
 
-# Credentials & secrets (never commit)
-.env
-*.json
-streamlit_app/.streamlit/
-
-# Context & local tooling (not part of the shared project)
+# Local-only tooling
 phase_1_branch_a.sh
 phase_2_branch_b.sh
 
-secrets/
 # AI working docs (never committed)
 docs/superpowers/
