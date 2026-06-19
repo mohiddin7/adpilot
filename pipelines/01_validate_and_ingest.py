@@ -13,7 +13,7 @@ failure, moved to a failed/ folder with error metadata.
 
 Execution modes
 ---------------
-  CLI (assignment mode):
+  CLI (local mode):
       python pipelines/01_validate_and_ingest.py data/raw/01_facebook_ads.csv
       python pipelines/01_validate_and_ingest.py --all
 
