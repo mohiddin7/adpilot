@@ -17,10 +17,23 @@ dependencies = [
   "sqlparse>=0.5",
   "requests>=2.32",
   "python-dotenv>=1.0",
+  "pydantic-ai-slim[openrouter]>=2.43",
+  "duckdb>=1.5",
+  "pyyaml>=6",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+adpilot = "adpilot.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["adpilot*"]
 
 [tool.ruff]
 line-length = 110
@@ -28,8 +41,13 @@ target-version = "py311"
 extend-exclude = ["streamlit_app/pages"]
 
 [tool.ruff.lint]
-select = ["E9", "F"]   # syntax errors + pyflakes; widen in Phase 1
-ignore = ["F401"]      # unused imports in legacy scripts; clean up in Phase 1
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Legacy code: syntax errors + pyflakes only; cleaned up when deleted in Phase 3.
+"pipelines/*" = ["E", "I", "UP", "B", "F401"]
+"streamlit_app/*" = ["E", "I", "UP", "B", "F401"]
 
 [tool.pytest.ini_options]
-testpaths = ["pipelines/tests"]
+testpaths = ["pipelines/tests", "tests"]

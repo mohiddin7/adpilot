@@ -11,3 +11,6 @@ statsmodels>=0.14
 sqlparse>=0.5
 requests>=2.32
 python-dotenv>=1.0
+pydantic-ai-slim[openrouter]>=2.43
+duckdb>=1.5
+pyyaml>=6
