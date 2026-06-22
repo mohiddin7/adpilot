@@ -1,0 +1,122 @@
+# AdPilot "ads" pack — everything the agent knows about paid-media data lives here.
+# Swap this directory to point the same agent at a different domain.
+name: ads
+connector: duckdb                 # default; env ADPILOT_CONNECTOR or --connector overrides
+date_column: date
+max_result_rows: 100
+max_bytes_billed: 10485760        # 10 MB per chat query (BigQuery only)
+
+duckdb:
+  csv_dir: data/raw
+  init_sql: duckdb_setup.sql
+
+bigquery:
+  project_env: BQ_PROJECT_ID
+  project_default: adpilot-lakehouse
+  staging_env: BQ_STAGING_DATASET
+  staging_default: adpilot_staging
+  production_env: BQ_PRODUCTION_DATASET
+  production_default: adpilot_production
+
+# Logical name -> physical reference per connector. {project}/{staging}/{production}
+# resolve from the env vars above. Only these tables are queryable.
+tables:
+  gold:
+    duckdb: fct_unified_marketing_performance
+    bigquery: "{project}.{production}.fct_unified_marketing_performance"
+    description: Daily campaign-level facts for every platform. Use for almost every question.
+    columns:
+      date: campaign date (partition key)
+      platform: one of Facebook | Google | TikTok
+      campaign_id: platform-native campaign identifier
+      campaign_name: human-readable campaign name
+      sub_group_id: ad set (Facebook) / ad group (Google) / adgroup (TikTok) id
+      sub_group_name: human-readable sub-group name
+      impressions: ad impressions served
+      clicks: ad clicks
+      spend: cost in USD
+      conversions: conversion events
+      conversion_value: attributed revenue in USD (Google only; 0 elsewhere)
+      video_views: video view events (Facebook + TikTok; 0 for Google)
+      video_watch_25: viewers reaching 25% (TikTok only)
+      video_watch_50: viewers reaching 50% (TikTok only)
+      video_watch_75: viewers reaching 75% (TikTok only)
+      video_watch_100: viewers reaching 100% (TikTok only)
+      likes: post likes (TikTok only)
+      shares: post shares (TikTok only)
+      comments: post comments (TikTok only)
+      reach: unique users reached (Facebook only)
+      frequency: avg impressions per user (Facebook only)
+      quality_score: Google quality score 1-10 (0 when n/a)
+      search_impression_share: share of eligible search impressions 0-1 (Google only)
+      avg_cpc: Google-reported average cost per click (0 elsewhere)
+      engagement_rate: (likes + shares + comments) / impressions
+      cpa: spend / conversions (NULL when no conversions)
+      ctr: clicks / impressions
+      cpc: spend / clicks
+      cpm: spend / impressions * 1000
+      roas: conversion_value / spend (Google only)
+  anomalies:
+    duckdb: fct_anomaly_flags
+    bigquery: "{project}.{staging}.fct_anomaly_flags"
+    description: Z-score anomaly flags per (date, platform, campaign) on cost per acquisition.
+    columns:
+      date: date of the observation
+      platform: platform
+      campaign_id: campaign id
+      campaign_name: campaign name
+      observed_cpa: CPA on that day
+      rolling_mean_cpa: trailing mean CPA
+      rolling_std_cpa: trailing std-dev of CPA
+      z_score: (observed - mean) / std
+      is_anomaly: 1 when |z_score| exceeds threshold
+      anomaly_direction: spike | drop
+  budget:
+    duckdb: tbl_budget_recommendations
+    bigquery: "{project}.{staging}.tbl_budget_recommendations"
+    description: Linear-programming budget reallocation, one row per platform.
+    columns:
+      platform: platform
+      current_spend: current spend USD
+      current_spend_pct: current share of total
+      recommended_spend: recommended spend USD
+      recommended_spend_pct: recommended share of total
+      projected_conversions: conversions expected at recommended spend
+      conversion_delta: projected minus current conversions
+  forecast:
+    duckdb: tbl_forecast
+    bigquery: "{project}.{staging}.tbl_forecast"
+    description: 14-day Holt-Winters forecast per platform and metric.
+    columns:
+      forecast_execution_date: when the forecast was produced
+      target_date: forecasted date
+      platform: platform
+      metric_name: forecasted metric (e.g. spend)
+      predicted_value: point forecast
+      lower_bound: lower confidence bound
+      upper_bound: upper confidence bound
+      model_used: model identifier
+
+# Deterministic answers used when every model in the chain is unavailable.
+# First entry whose keywords all appear in the question wins. {gold} etc. are rendered.
+fallback_queries:
+  - keywords: [spend, platform]
+    title: Total spend by platform
+    sql: SELECT platform, ROUND(SUM(spend), 2) AS spend FROM {gold} GROUP BY platform ORDER BY spend DESC
+  - keywords: [worst, cpa]
+    title: Campaigns ranked by cost per acquisition (worst first)
+    sql: >-
+      SELECT platform, campaign_name, ROUND(SUM(spend), 2) AS spend, SUM(conversions) AS conversions,
+      ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa FROM {gold}
+      GROUP BY platform, campaign_name HAVING SUM(conversions) > 0 ORDER BY cpa DESC LIMIT 10
+  - keywords: [cpa]
+    title: Cost per acquisition by platform
+    sql: >-
+      SELECT platform, ROUND(SUM(spend), 2) AS spend, SUM(conversions) AS conversions,
+      ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa FROM {gold} GROUP BY platform ORDER BY cpa
+  - keywords: [conversions]
+    title: Conversions by platform
+    sql: SELECT platform, SUM(conversions) AS conversions FROM {gold} GROUP BY platform ORDER BY conversions DESC
+  - keywords: [spend]
+    title: Total spend by platform
+    sql: SELECT platform, ROUND(SUM(spend), 2) AS spend FROM {gold} GROUP BY platform ORDER BY spend DESC
