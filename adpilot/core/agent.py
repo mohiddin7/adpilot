@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 
 from pydantic import BaseModel, Field
@@ -89,7 +90,7 @@ def ask(
         )
     except Exception as exc:  # noqa: BLE001 — every failure mode maps to a typed fallback
         kind, detail = _classify(exc)
-        log.warning("agent run failed (%s): %s", kind, detail)
+        log.warning("agent run failed (%s): %s", kind, detail[:300])
         return _rule_based(deps, question, kind, detail), []
 
     out = result.output
@@ -122,10 +123,9 @@ def _classify(exc: Exception) -> tuple[ErrorKind, str]:
 def _rule_based(deps: AgentDeps, question: str, kind: ErrorKind, detail: str) -> AnalystAnswer:
     """No model: answer from the pack's canned queries when the question matches one."""
     caveat = f"{kind}: answered without the language model ({detail[:160]})."
-    words = question.lower()
     deps.budget = Budget()
     for fq in deps.pack.raw.get("fallback_queries", []):
-        if all(k in words for k in fq["keywords"]):
+        if all(re.search(k, question, re.IGNORECASE) for k in fq["keywords"]):
             res = execute(deps, deps.pack.render(fq["sql"], deps.connector.dialect))
             if isinstance(res, SqlResult):
                 numeric = [c for c in res.columns if res.rows and isinstance(res.rows[0].get(c), int | float)]

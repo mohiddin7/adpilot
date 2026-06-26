@@ -98,23 +98,23 @@ tables:
       model_used: model identifier
 
 # Deterministic answers used when every model in the chain is unavailable.
-# First entry whose keywords all appear in the question wins. {gold} etc. are rendered.
+# First entry whose keywords (regex, case-insensitive) all match the question wins. {gold} etc. are rendered.
 fallback_queries:
   - keywords: [spend, platform]
     title: Total spend by platform
     sql: SELECT platform, ROUND(SUM(spend), 2) AS spend FROM {gold} GROUP BY platform ORDER BY spend DESC
-  - keywords: [worst, cpa]
+  - keywords: [worst|highest|expensive, "cpa|cost per acquisition|acquisition"]
     title: Campaigns ranked by cost per acquisition (worst first)
     sql: >-
       SELECT platform, campaign_name, ROUND(SUM(spend), 2) AS spend, SUM(conversions) AS conversions,
       ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa FROM {gold}
       GROUP BY platform, campaign_name HAVING SUM(conversions) > 0 ORDER BY cpa DESC LIMIT 10
-  - keywords: [cpa]
+  - keywords: ["cpa|cost per acquisition|acquisition"]
     title: Cost per acquisition by platform
     sql: >-
       SELECT platform, ROUND(SUM(spend), 2) AS spend, SUM(conversions) AS conversions,
       ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa FROM {gold} GROUP BY platform ORDER BY cpa
-  - keywords: [conversions]
+  - keywords: [conversion]
     title: Conversions by platform
     sql: SELECT platform, SUM(conversions) AS conversions FROM {gold} GROUP BY platform ORDER BY conversions DESC
   - keywords: [spend]
