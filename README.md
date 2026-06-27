@@ -2,19 +2,22 @@
 
 **An agentic analytics platform for marketing data.** Unifies multi-channel ad performance in a BigQuery lakehouse, enriches it with anomaly detection, forecasting and budget optimization, and puts an AI analyst on top that answers questions in plain English — with guardrails, self-healing SQL and an evaluation harness.
 
-> Status: active rebuild. The agent core is being re-architected on Pydantic AI with a data-agnostic "pack" system, a FastAPI service, a proactive briefing agent and an MCP server. See the roadmap below.
+> Status: active rebuild. The agent core now runs on Pydantic AI with a data-agnostic "pack" system. Next up: the eval harness, a FastAPI service, a proactive briefing agent and an MCP server. See the roadmap below.
 
 ## What it does today
 
+- **Agent** (`adpilot/`): one Pydantic AI agent with typed tools (`run_sql`, `get_anomalies`, `get_forecast`, `get_budget_plan`, `render_chart`) over any SQL source. Model-written SQL goes through a defense-in-depth validator; data-source errors are returned to the model as structured hints so it repairs its own query (max 3 executions, 4 model calls per question). Primary → fallback model chain on 429s, then a deterministic rule-based answer so the user never sees a stack trace.
+- **Packs** (`packs/ads/`): everything domain-specific — table allowlist, column descriptions, glossary, system prompt, canned fallback queries and a DuckDB bootstrap. Swap the directory to point the same agent at different data.
+- **Connectors**: BigQuery (bytes-billed cap) and DuckDB over the raw CSVs, so the agent and tests run with zero credentials.
 - **Pipeline** (`pipelines/`): validate → Bronze MERGE → Gold MERGE (30-column contract) → anomaly flags (MAD z-score) → budget optimizer (LP) → 14-day forecast (Holt-Winters) → QA reconciliation. Idempotent, audited, cost-capped.
-- **Dashboard** (`streamlit_app/`): performance overview, per-channel deep dives, AI insight cards, and a chat that turns questions into validated BigQuery SQL and explains the result.
+- **Dashboard** (`streamlit_app/`): performance overview, per-channel deep dives, AI insight cards and chat. Being replaced by a pack-driven dashboard in Phase 3.
 
 ## Roadmap
 
 | Phase | Deliverable |
 |---|---|
 | 0 | Repo hygiene, env-driven config, CI ✅ |
-| 1 | Data-agnostic agent core (Pydantic AI), typed tools, guardrails, `adpilot chat` CLI |
+| 1 | Data-agnostic agent core (Pydantic AI), typed tools, guardrails, `adpilot chat` CLI ✅ |
 | 2 | Eval harness: golden cases, red-team, self-heal rate, LLM judge, scorecard |
 | 3 | FastAPI streaming API + generic dashboard driven by pack config |
 | 4 | Proactive briefing agent + human-in-the-loop budget approvals |
@@ -25,9 +28,19 @@
 ```bash
 git clone https://github.com/mohiddin7/adpilot.git && cd adpilot
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env        # fill in BigQuery + LLM values
+pip install -e .[dev]
+cp .env.example .env        # add OPENROUTER_API_KEY; BigQuery values only if you use that connector
 ```
+
+Ask the agent (DuckDB over the bundled CSVs — no cloud account needed):
+
+```bash
+adpilot --connector duckdb chat -q "Which campaign has the worst cost per acquisition?"
+adpilot --connector duckdb chat --session demo      # REPL; remembers the last 3 turns
+adpilot --connector duckdb schema                   # what the agent can query
+```
+
+Without an API key the CLI still answers common questions from the pack's pre-defined queries and says so.
 
 Pipeline (needs a GCP project with BigQuery and `gcloud auth application-default login`):
 
@@ -38,6 +51,7 @@ python pipelines/03_anomaly_detection.py
 python pipelines/04_budget_optimizer.py
 python pipelines/05_forecast.py
 python pipelines/07_qa_validation.py
+adpilot --connector bigquery chat
 ```
 
 Dashboard:
@@ -46,30 +60,28 @@ Dashboard:
 cd streamlit_app && streamlit run Home.py
 ```
 
-Tests:
+Tests (deterministic — the model is scripted with pydantic-ai's `TestModel`/`FunctionModel`, the data is DuckDB):
 
 ```bash
-pytest -q
+ruff check . && pytest -q
 ```
 
 ## Configuration
 
-All names and keys come from `.env` (local) or `secrets.toml` (Streamlit Cloud). See `.env.example`. The LLM layer speaks the OpenAI chat-completions format, so any provider works — OpenRouter free models are the default.
+All names and keys come from `.env` (local) or `secrets.toml` (Streamlit Cloud). See `.env.example`. Models are OpenRouter free-tier by default (`LLM_TARGET_MODEL`, `LLM_FALLBACK_MODEL`); the connector is picked by `--connector`, `ADPILOT_CONNECTOR`, or the pack default.
 
-## Architecture (current)
+## Architecture
 
 ```
-data/raw/*.csv ──► 01 validate+ingest ──► Bronze (all-STRING landing)
-                          │
-                          ▼
-                   02 transformations ──► Gold mart (30-col contract) + quarantine
-                          │
-            ┌─────────────┼─────────────┐
-            ▼             ▼             ▼
-      03 anomalies   04 optimizer   05 forecast      07 QA reconciliation
-            └─────────────┴─────────────┘
-                          ▼
-                  Streamlit dashboard + SQL chat agent
+                 packs/ads/  (allowlist · glossary · prompt · fallback queries · duckdb_setup.sql)
+                        │
+ question ─► guardrails ─► Agent (Pydantic AI) ─► tools ─► SQL validator ─► connector ─► DuckDB | BigQuery
+             scope/inject     │  primary → fallback → rule-based      ▲                      │
+                              └────── SqlError{kind, hint, columns} ◄─┘  (self-heal loop)    ▼
+                                                                                     AnalystAnswer
+                                                                       {answer_md, sql, data, chart, confidence, caveats}
+
+ data/raw/*.csv ─► 01 ingest ─► Bronze ─► 02 transform ─► Gold mart ─► 03 anomalies · 04 optimizer · 05 forecast · 07 QA
 ```
 
 ## History
