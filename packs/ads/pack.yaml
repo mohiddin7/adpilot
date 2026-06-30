@@ -59,30 +59,42 @@ tables:
   anomalies:
     duckdb: fct_anomaly_flags
     bigquery: "{project}.{staging}.fct_anomaly_flags"
-    description: Z-score anomaly flags per (date, platform, campaign) on cost per acquisition.
+    description: Robust (median/MAD) anomaly flags per (date, platform, campaign) on cost per acquisition.
     columns:
       date: date of the observation
       platform: platform
       campaign_id: campaign id
       campaign_name: campaign name
       observed_cpa: CPA on that day
-      rolling_mean_cpa: trailing mean CPA
-      rolling_std_cpa: trailing std-dev of CPA
-      z_score: (observed - mean) / std
-      is_anomaly: 1 when |z_score| exceeds threshold
-      anomaly_direction: spike | drop
+      rolling_mean_cpa: baseline median CPA over the baseline window (name kept for compatibility)
+      rolling_std_cpa: baseline median absolute deviation (MAD) of CPA (name kept for compatibility)
+      z_score: modified z-score = 0.6745 * (observed - median) / MAD (same value as modified_z_score)
+      is_anomaly: 1 when severity is not NORMAL
+      anomaly_direction: HIGH_CPA (CPA spiked) | LOW_CPA (CPA dropped) | NORMAL
+      modified_z_score: modified z-score (duplicate of z_score, explicit name)
+      severity: NORMAL | MODERATE (|z| >= 3.5) | SEVERE (|z| >= 4.5) | CRITICAL (|z| >= 6.0)
+      baseline_method: rolling_14d | day_of_week | insufficient_history (fewer than 7 prior points)
+      baseline_size: number of prior observations in the baseline
+      confidence: low | medium | high — how much history backed the flag
+      days_of_history: days of campaign history available on that date
   budget:
     duckdb: tbl_budget_recommendations
     bigquery: "{project}.{staging}.tbl_budget_recommendations"
-    description: Linear-programming budget reallocation, one row per platform.
+    description: Linear-programming budget reallocation, one row per platform, computed over a 30-day lookback.
     columns:
+      generated_at: UTC timestamp when the optimizer produced this plan
+      analysis_period_start: first day of the 30-day lookback window the plan is based on
+      analysis_period_end: last day of the lookback window
       platform: platform
-      current_spend: current spend USD
-      current_spend_pct: current share of total
+      current_spend: spend in the lookback window, USD
+      current_spend_pct: current share of total spend (percent)
+      current_conversions: conversions in the lookback window
+      current_cpa: current_spend / current_conversions over the window (assumed constant by the optimizer)
       recommended_spend: recommended spend USD
-      recommended_spend_pct: recommended share of total
+      recommended_spend_pct: recommended share of total (percent)
       projected_conversions: conversions expected at recommended spend
       conversion_delta: projected minus current conversions
+      assumption_note: text describing optimizer assumptions and constraints (floor 10%, cap 2x)
   forecast:
     duckdb: tbl_forecast
     bigquery: "{project}.{staging}.tbl_forecast"
