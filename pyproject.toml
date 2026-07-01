@@ -20,6 +20,7 @@ dependencies = [
   "pydantic-ai-slim[openrouter]>=2.43",
   "duckdb>=1.5",
   "pyyaml>=6",
+  "pydantic-evals>=2.43",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +34,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["adpilot*"]
+include = ["adpilot*", "evals*"]
 
 [tool.ruff]
 line-length = 110
