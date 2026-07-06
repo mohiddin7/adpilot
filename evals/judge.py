@@ -25,6 +25,8 @@ DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1"
 JUDGE_RELIABLE_MIN = 0.8
 JUDGE_PASS_MIN = 0.75
 
+CALLS = {"n": 0}
+
 
 @dataclass
 class JudgeConfig:
@@ -95,6 +97,7 @@ def judge_answer(model: Model, question: str, rubric: str, data_rows: list[dict]
     agent: Agent[None, JudgeVerdict] = Agent(model, output_type=JudgeVerdict, instructions=_JUDGE_INSTRUCTIONS, retries=1, name="adpilot-judge")
     prompt = f"Question: {question}\n\nRubric: {rubric}\n\nData rows (max 30): {data_rows[:30]}\n\nAnswer to grade:\n{answer_md}"
     try:
+        CALLS["n"] += 1
         return agent.run_sync(prompt).output
     except Exception as exc:  # noqa: BLE001 — a judge outage must not crash the run
         return JudgeVerdict(grounded=False, answers_question=False, honest_caveats=False, no_invented_numbers=False, reason=f"judge_error: {exc}"[:200])

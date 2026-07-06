@@ -46,6 +46,27 @@ def cmd_schema(args, out) -> int:
     return 0
 
 
+def cmd_eval(args, out) -> int:
+    from evals.run import run
+
+    res = run(
+        tier=args.tier, families=set(args.family) if args.family else None, repeat=args.repeat, limit=args.limit,
+        out_dir=Path(args.out) if args.out else None, check_only=args.check_cases, baseline_update=args.baseline_update, no_judge=args.no_judge,
+        pack_name=args.pack,
+    )
+    for p in res.problems:
+        print(f"problem: {p}", file=out)
+    if res.scorecard is None:
+        print("cases OK" if res.ok else "harness error", file=out)
+        return 0 if res.ok else (1 if args.check_cases else 2)
+    from evals.scorecard import render_markdown
+
+    print(render_markdown(res.scorecard, res.baseline), file=out)
+    for r in res.reasons:
+        print(f"GATE: {r}", file=out)
+    return 0 if res.ok else 1
+
+
 def cmd_chat(args, out) -> int:
     deps = _deps(args)
     model = build_model()
@@ -86,8 +107,17 @@ def main(argv: list[str] | None = None, out=None) -> int:
     chat.add_argument("-q", "--question")
     chat.add_argument("--session", help="session id; keeps the last 3 turns as context")
     sub.add_parser("schema", help="print the tables the agent can query")
+    ev = sub.add_parser("eval", help="run the eval harness")
+    ev.add_argument("--tier", choices=["deterministic", "model"], default="deterministic")
+    ev.add_argument("--family", action="append", help="restrict to a family (repeatable)")
+    ev.add_argument("--repeat", type=int, default=3, help="runs per consistency case (model tier)")
+    ev.add_argument("--limit", type=int)
+    ev.add_argument("--check-cases", action="store_true", help="only verify reference values; no model")
+    ev.add_argument("--out", help="report directory (default: evals/reports for model tier)")
+    ev.add_argument("--baseline-update", action="store_true", help="write baseline.json from this run")
+    ev.add_argument("--no-judge", action="store_true")
     args = p.parse_args(argv)
-    return {"chat": cmd_chat, "schema": cmd_schema}[args.cmd](args, out)
+    return {"chat": cmd_chat, "schema": cmd_schema, "eval": cmd_eval}[args.cmd](args, out)
 
 
 if __name__ == "__main__":
