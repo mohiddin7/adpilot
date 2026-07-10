@@ -83,9 +83,13 @@ class ExecutionAccuracy(Evaluator[Any, Trace, dict]):
         if not trace.answer.sql:
             return {"execution": EvaluationReason(value=False, reason="no SQL in answer")}
         try:
+            safe_sql = validate_sql(trace.answer.sql, self.pack.allowed_tables(self.connector.dialect), self.pack.max_result_rows)
+        except AdPilotError as exc:
+            return {"execution": EvaluationReason(value=False, reason=f"unsafe SQL: {exc}"[:200])}
+        try:
             expected_rows = reference_rows(self.connector, self.pack, exp)
-            actual_rows = reference_rows(self.connector, self.pack, Expected(sql=trace.answer.sql))
-        except (AdPilotError, Exception) as exc:  # noqa: BLE001 — a failing query is a failed grade, not a crash
+            actual_rows = reference_rows(self.connector, self.pack, Expected(sql=safe_sql))
+        except Exception as exc:  # noqa: BLE001 — a failing query is a failed grade, not a crash
             return {"execution": EvaluationReason(value=False, reason=f"query failed: {exc}"[:200])}
         ok, why = rows_equivalent(expected_rows, actual_rows, exp.tolerance)
         return {"execution": EvaluationReason(value=ok, reason=why)}

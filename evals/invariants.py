@@ -65,6 +65,7 @@ def _worst_in_ranking(d, con, pack):
 def _top_platform(d, con, pack):
     top_platform = max(d["spend_by_platform"], key=lambda r: _num(r, "spend") or 0)
     camp = _str(d["top_spend_campaign"][0], "campaign_name")
+    camp = str(camp).replace("'", "''")
     rows = con.query(pack.render("SELECT platform FROM {gold} WHERE campaign_name = ? LIMIT 1".replace("?", f"'{camp}'"), con.dialect))
     plat = rows["platform"][0] if len(rows) else None
     return plat == _str(top_platform, "platform"), f"top campaign {camp} is on {plat}; top platform {_str(top_platform, 'platform')}"

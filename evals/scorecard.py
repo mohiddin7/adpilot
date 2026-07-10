@@ -86,7 +86,7 @@ def collect(report: Any, judge_reliable: bool) -> list[CaseResult]:
             name=c.name, family=fam, group=meta.get("group"), consistency=bool(meta.get("consistency")), passed=passed,
             judge=s.get("judge"), judge_rescued=a.get("judge_rescued"), safe_sql=bool(a.get("safe_sql", True)),
             trajectory={k: bool(a[k]) for k in ("calls_ok", "sql_ok", "no_loop", "tool_ok") if k in a},
-            error_kind=getattr(c.output, "error_kind", None),
+            error_kind="JudgeError" if a.get("judge_error") else getattr(c.output, "error_kind", None),
         ))
     for f in getattr(report, "failures", []) or []:
         out.append(CaseResult(name=f.name, family=(f.metadata or {}).get("family", ""), passed=False, error_kind="HarnessError"))

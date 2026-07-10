@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import anyio
 import yaml
 from pydantic import BaseModel
 from pydantic_ai import Agent
@@ -119,15 +120,26 @@ class CalibratedJudge(Evaluator[Any, Trace, dict]):
         if family == "narrative":
             rows = reference_rows(self.connector, self.pack, exp) if exp.sql else (trace.answer.data or [])
             v = judge_answer(self.model, question, exp.rubric or "", rows, trace.answer.answer_md)
-            return {"judge": v.score, "judge_pass": v.score >= JUDGE_PASS_MIN}
+            out: dict = {"judge": v.score, "judge_pass": v.score >= JUDGE_PASS_MIN}
+            if v.reason.startswith("judge_error"):
+                out["judge_error"] = True
+            return out
         if family in ACCURACY_FAMILIES:
             if Factual(self.connector, self.pack).evaluate(ctx)["factual"].value:
                 return {}
             rows = reference_rows(self.connector, self.pack, exp)
             rubric = "The answer states the same figures (and the same winner/ranking, if any) as the reference rows."
             v = judge_answer(self.model, question, rubric, rows, trace.answer.answer_md)
-            return {"judge_rescued": v.grounded and v.no_invented_numbers and v.answers_question}
+            out = {"judge_rescued": v.grounded and v.no_invented_numbers and v.answers_question}
+            if v.reason.startswith("judge_error"):
+                out["judge_error"] = True
+            return out
         return {}
+
+    async def evaluate_async(self, ctx: EvaluatorContext) -> dict:
+        # pydantic-evals calls evaluate() synchronously from the running event-loop thread; judge_answer()
+        # uses Agent.run_sync(), which raises if called on that thread. Run it on a worker thread instead.
+        return await anyio.to_thread.run_sync(self.evaluate, ctx)
 
 
 @dataclass

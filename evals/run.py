@@ -115,11 +115,11 @@ def run(
 
     baseline = load_baseline(out_dir / "baseline.json")
     sc = build_scorecard(results, repeats, invariants, calibration, tier=tier, prompt_hash=prompt_hash(pack), models=models, calls_used=calls, baseline=baseline)
-    write_reports(sc, out_dir, baseline)
     if baseline_update:
         write_baseline(sc, out_dir / "baseline.json")
         baseline = sc
-    if tier == "model" and out_dir == MODEL_REPORTS and Path(readme).exists():
+    write_reports(sc, out_dir, baseline)
+    if tier == "model" and Path(out_dir).resolve() == MODEL_REPORTS.resolve() and Path(readme).exists():
         update_badge(readme, sc.overall)
     ok, reasons = gate(sc, baseline)
     return RunResult(sc, ok, reasons=reasons, baseline=baseline)

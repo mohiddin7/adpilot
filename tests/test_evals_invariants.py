@@ -31,6 +31,20 @@ def test_missing_case_is_skipped(eval_duck, pack):
     assert all(r.passed is None for r in res.values())
 
 
+def test_top_platform_escapes_quotes_in_campaign_name(eval_duck, pack):
+    """Regression test: the campaign name is interpolated into SQL unescaped. A name containing a
+    single quote used to break the generated SQL; it must no longer raise, and the rule reports a
+    result (pass or fail on the merits) instead of an 'error: ...' reason."""
+    traces = {
+        "spend_by_platform": t([{"platform": "TikTok", "spend": 100.0}, {"platform": "Google", "spend": 50.0}]),
+        "top_spend_campaign": t([{"campaign_name": "O'Brien's Ads", "spend": 100.0}]),
+    }
+    res = {r.name: r for r in evaluate_invariants(traces, eval_duck, pack)}
+    result = res["top_spend_platform_consistent"]
+    assert result.passed in (True, False)
+    assert not result.reason.startswith("error")
+
+
 def test_membership_and_budget_rules(eval_duck, pack):
     traces = {
         "worst_cpa_campaign": t([{"platform": "Google", "campaign_name": "Search_Generic_Terms", "cpa": 24.8}]),

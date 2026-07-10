@@ -57,6 +57,15 @@ def test_execution_accuracy_against_duckdb(eval_duck, pack):
     assert ExecutionAccuracy(eval_duck, pack).evaluate(ctx(trace(), exp, family="redteam")) == {}
 
 
+def test_execution_accuracy_rejects_unsafe_sql(eval_duck, pack):
+    """Regression test: model-written SQL used to be executed on DuckDB without validate_sql first."""
+    exp = Expected(sql="SELECT platform, ROUND(SUM(spend), 2) AS spend FROM {gold} GROUP BY platform")
+    unsafe = f"DELETE FROM {GOLD}"
+    result = ExecutionAccuracy(eval_duck, pack).evaluate(ctx(trace(sql=unsafe), exp))["execution"]
+    assert result.value is False
+    assert "unsafe" in result.reason
+
+
 def test_value_within_tolerance():
     exp = Expected(sql="x", value=130244.9, column="spend")
     assert ValueWithinTolerance().evaluate(ctx(trace(md="Total spend was $130,244.90."), exp)) == {"value": True}

@@ -39,6 +39,7 @@ jobs:
         id: label
         run: |
           if [ "${{ steps.evals.outputs.code }}" = "0" ]; then echo "name=evals:refresh" >> "$GITHUB_OUTPUT"; else echo "name=evals:regression" >> "$GITHUB_OUTPUT"; fi
+          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - name: Open or update the review PR
         uses: peter-evans/create-pull-request@v7
         with:
@@ -49,7 +50,7 @@ jobs:
             evals/reports/latest.json
             README.md
           commit-message: "evals: nightly scorecard"
-          title: "evals: nightly scorecard ${{ github.run_started_at }}"
+          title: "evals: nightly scorecard ${{ steps.label.outputs.date }}"
           body-path: /tmp/pr_body.md
           labels: ${{ steps.label.outputs.name }}
           delete-branch: true
