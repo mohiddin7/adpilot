@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import duckdb
@@ -16,6 +17,7 @@ class DuckDBSource:
     def __init__(self, csv_dir: Path, init_sql: str) -> None:
         self._con = duckdb.connect()
         self._con.execute(init_sql.replace("{csv_dir}", Path(csv_dir).as_posix()))
+        self._lock = threading.Lock()  # one shared connection; the eval harness can query it from two threads
 
     def execute_script(self, sql: str) -> None:
         """Run trusted setup SQL (fixtures). Never called with model-written text."""
@@ -23,7 +25,8 @@ class DuckDBSource:
 
     def query(self, sql: str, max_bytes: int | None = None) -> pd.DataFrame:
         try:
-            return self._con.execute(sql).df()
+            with self._lock:
+                return self._con.execute(sql).df()
         except duckdb.ParserException as exc:
             raise AdPilotError("SqlSyntax", _first_line(exc)) from exc
         except duckdb.BinderException as exc:
