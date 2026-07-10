@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import time
 from collections.abc import Callable
 from typing import Any
@@ -16,8 +15,6 @@ from pydantic_ai.models import Model
 from adpilot.core.agent import REFUSAL_TEXT, AnalystAnswer, ask
 from adpilot.core.tools import AgentDeps
 from adpilot.packs.loader import Pack
-
-log = logging.getLogger(__name__)
 
 
 class EvalInputs(BaseModel):
@@ -103,7 +100,6 @@ def make_task(
         start = time.perf_counter()
         trace = Trace(answer=AnalystAnswer(answer_md=""))
         for i, q in enumerate(turns):
-            log.debug("case %s: turn %d/%d %r", inputs.name, i + 1, len(turns), q)
             answer, new_messages = ask(agent, deps, q, history=history or None, model=model)
             history.extend(new_messages)
             if i == len(turns) - 1:
