@@ -60,7 +60,9 @@ def run(
     debug: bool = False,
 ) -> RunResult:
     if debug:
-        logging.basicConfig(level=logging.DEBUG, format="%(message)s")
+        # WARNING as the default keeps httpx/httpcore/asyncio's own (very verbose) debug logging
+        # quiet; only our "evals" logger is turned up, so --debug shows just our per-case lines.
+        logging.basicConfig(level=logging.WARNING, format="%(message)s")
         logging.getLogger("evals").setLevel(logging.DEBUG)
     pack = load_pack(pack_name)
     connector = get_connector("duckdb", pack)
