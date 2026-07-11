@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -179,11 +178,7 @@ def gate(sc: Scorecard, baseline: Scorecard | None) -> tuple[bool, list[str]]:
 
 
 def prompt_hash(pack: Any) -> str:
-    import yaml
-
-    tables = yaml.safe_dump(pack.raw.get("tables", {}), sort_keys=True)
-    blob = pack.system_prompt + "\n" + pack.glossary + "\n" + tables
-    return hashlib.sha256(blob.encode()).hexdigest()[:12]
+    return pack.prompt_hash
 
 
 def load_baseline(path: Path) -> Scorecard | None:

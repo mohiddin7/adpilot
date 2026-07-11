@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 import yaml
@@ -30,6 +32,12 @@ class Pack:
     @property
     def max_result_rows(self) -> int:
         return int(self.raw.get("max_result_rows", 100))
+
+    @cached_property
+    def prompt_hash(self) -> str:
+        """12-hex sha256 over system prompt + glossary + the tables block: changes when the agent's context changes."""
+        tables = yaml.safe_dump(self.raw.get("tables", {}), sort_keys=True)
+        return hashlib.sha256((self.system_prompt + "\n" + self.glossary + "\n" + tables).encode()).hexdigest()[:12]
 
     def table_ref(self, logical: str, connector: str) -> str:
         template = self.tables[logical][connector]
