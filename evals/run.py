@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -55,7 +57,11 @@ def run(
     no_judge: bool = False,
     pack_name: str = "ads",
     readme: Path = REPO_ROOT / "README.md",
+    debug: bool = False,
 ) -> RunResult:
+    if debug:
+        logging.basicConfig(level=logging.DEBUG, format="%(message)s")
+        logging.getLogger("evals").setLevel(logging.DEBUG)
     pack = load_pack(pack_name)
     connector = get_connector("duckdb", pack)
     load_fixtures(connector, pack)
@@ -96,14 +102,19 @@ def run(
             models["judge"] = cfg.primary if judge_model else None
 
     judge_mod.CALLS["n"] = 0
+    # A live progress bar and our own debug logging fight for the same terminal lines, so debug
+    # mode carries its own visibility (log line per case) and turns the bar off.
+    show_progress = sys.stdout.isatty() and not debug
     evaluators = [Factual(connector, pack), Refuses(), SafeSql(pack), Trajectory(), CalibratedJudge(judge_model, connector, pack)]
     task = make_task(agent, deps_factory, model_for)
-    report = to_dataset(cases, evaluators).evaluate_sync(task, max_concurrency=1, progress=False)
+    report = to_dataset(cases, evaluators).evaluate_sync(task, max_concurrency=1, progress=show_progress)
 
     repeat_report = None
     sample = [c for c in cases if c.consistency]
     if tier == "model" and repeat > 1 and sample:
-        repeat_report = to_dataset(sample, [Factual(connector, pack)]).evaluate_sync(task, max_concurrency=1, progress=False, repeat=repeat)
+        repeat_report = to_dataset(sample, [Factual(connector, pack)]).evaluate_sync(
+            task, max_concurrency=1, progress=show_progress, repeat=repeat
+        )
 
     traces = {c.name: c.output for c in report.cases if c.output is not None}
     invariants = evaluate_invariants(traces, connector, pack)
