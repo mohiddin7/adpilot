@@ -347,6 +347,64 @@ def host_attributes() -> dict[str, Any]:
     return {"host": socket.gethostname()}
 
 
+def build_record(
+    *,
+    trace_id: str,
+    ts: datetime,
+    latency_s: float,
+    question: str,
+    answer_md: str,
+    sql: str | None,
+    refused: bool,
+    confidence: float,
+    caveats: Sequence[str],
+    messages: Sequence[ModelMessage],
+    usage: Any | None,
+    model_requested: str | None,
+    context: RunContextInfo | None,
+    pack_name: str,
+    prompt_hash: str | None,
+    extra_attributes: dict[str, Any] | None = None,
+) -> AuditRecord:
+    s = summarize_messages(messages)
+    ctx = context or RunContextInfo()
+    cost = getattr(usage, "cost", None) if usage else None
+    attributes = {**host_attributes(), "provider_response_ids": s.provider_response_ids, **(extra_attributes or {})}
+    return AuditRecord(
+        trace_id=trace_id,
+        otel_trace_id=otel_trace_id(),
+        ts=ts,
+        environment=environment(),
+        source=ctx.source,
+        session_id=ctx.session_id,
+        run_id=ctx.run_id,
+        case_name=ctx.case_name,
+        family=ctx.family,
+        pack=pack_name,
+        git_sha=git_sha(),
+        prompt_hash=prompt_hash,
+        question=question,
+        answer_md=answer_md,
+        sql=sql,
+        refused=refused,
+        confidence=confidence,
+        caveats=list(caveats),
+        error_kind=error_kind_of(caveats),
+        model_requested=model_requested,
+        model_used=s.model_used,
+        fell_back=bool(s.model_used and model_requested and s.model_used != model_requested),
+        requests=int(getattr(usage, "requests", 0) or 0) if usage else 0,
+        tool_calls=s.tool_calls,
+        repairs=s.repairs,
+        tokens_in=int(getattr(usage, "input_tokens", 0) or 0) if usage else 0,
+        tokens_out=int(getattr(usage, "output_tokens", 0) or 0) if usage else 0,
+        cost_usd=float(cost) if cost is not None else 0.0,
+        latency_s=round(latency_s, 3),
+        messages_json=ModelMessagesTypeAdapter.dump_json(list(messages)).decode() if messages else "[]",
+        attributes=attributes,
+    )
+
+
 def build_sink(cfg: AuditConfig) -> AuditSink:
     if cfg.mode == "memory":
         return MemorySink()

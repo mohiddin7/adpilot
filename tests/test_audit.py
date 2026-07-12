@@ -122,3 +122,31 @@ def test_pack_prompt_hash(pack):
     from evals.scorecard import prompt_hash
 
     assert len(pack.prompt_hash) == 12 and prompt_hash(pack) == pack.prompt_hash
+
+
+def test_build_record_from_usage_and_messages():
+    from pydantic_ai.usage import RunUsage
+
+    from adpilot.core.audit import build_record
+
+    msgs = [ModelRequest(parts=[UserPromptPart("q")]), ModelResponse(parts=[TextPart("a")], model_name="secondary")]
+    rec = build_record(
+        trace_id="t", ts=datetime.now(UTC), latency_s=1.234, question="q", answer_md="a", sql=None, refused=False, confidence=0.9,
+        caveats=["ModelRateLimited: x"], messages=msgs, usage=RunUsage(input_tokens=12, output_tokens=3, requests=1),
+        model_requested="primary", context=RunContextInfo(source="eval", run_id="r", case_name="c", family="factual"),
+        pack_name="ads", prompt_hash="abc",
+    )
+    assert rec.model_used == "secondary" and rec.fell_back is True and rec.tokens_in == 12 and rec.tokens_out == 3
+    assert rec.cost_usd == 0.0 and rec.requests == 1 and rec.error_kind == "ModelRateLimited" and rec.latency_s == 1.234
+    assert rec.source == "eval" and rec.run_id == "r" and rec.case_name == "c" and rec.family == "factual"
+    assert "host" in rec.attributes and rec.otel_trace_id is None and '"kind":"response"' in rec.messages_json
+
+
+def test_build_record_without_model_result():
+    from adpilot.core.audit import build_record
+
+    rec = build_record(
+        trace_id="t", ts=datetime.now(UTC), latency_s=0.0, question="q", answer_md="blocked", sql=None, refused=True, confidence=0.0,
+        caveats=["SqlPolicy"], messages=[], usage=None, model_requested="primary", context=RunContextInfo(), pack_name="ads", prompt_hash="abc",
+    )
+    assert rec.model_used is None and rec.fell_back is False and rec.tokens_in == 0 and rec.messages_json == "[]" and rec.error_kind == "SqlPolicy"

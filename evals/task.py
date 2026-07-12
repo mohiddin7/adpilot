@@ -12,7 +12,8 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
 
-from adpilot.core.agent import REFUSAL_TEXT, AnalystAnswer, ask
+from adpilot.core.agent import AnalystAnswer, ask, refused
+from adpilot.core.audit import RunContextInfo, error_kind_of, summarize_messages
 from adpilot.core.tools import AgentDeps
 from adpilot.packs.loader import Pack
 
@@ -29,6 +30,7 @@ class EvalInputs(BaseModel):
 
 class Trace(BaseModel):
     answer: AnalystAnswer
+    trace_id: str | None = None
     tool_calls: list[str] = []
     sql_attempted: list[str] = []
     sql_executed: list[str] = []
@@ -68,49 +70,34 @@ def load_fixtures(connector: Any, pack: Pack) -> None:
         connector.execute_script(path.read_text())
 
 
-_ERROR_KINDS = ("OutOfScope", "SqlPolicy", "BudgetExceeded", "ModelRateLimited", "ModelUnavailable", "DataSourceUnavailable")
-
-
-def _summarize(messages: list[ModelMessage], trace: Trace) -> None:
-    for m in messages:
-        if m.kind == "response":
-            trace.model_calls += 1
-            for p in m.parts:
-                if p.part_kind == "tool-call" and not p.tool_name.startswith("final_result"):
-                    trace.tool_calls.append(p.tool_name)
-                    if p.tool_name == "run_sql":
-                        args = p.args_as_dict() if hasattr(p, "args_as_dict") else p.args
-                        trace.sql_attempted.append(str((args or {}).get("sql", "")))
-        else:
-            for p in m.parts:
-                if p.part_kind == "tool-return" and getattr(p.content, "__class__", type(None)).__name__ == "SqlError":
-                    trace.repairs += 1
-
-
 def make_task(
     agent: Agent[AgentDeps, Any],
     deps_factory: Callable[[], AgentDeps],
     model_for: Callable[[EvalInputs], Model | None] | None = None,
+    *,
+    run_id: str | None = None,
+    family_of: dict[str, str] | None = None,
 ) -> Callable[[EvalInputs], Trace]:
     def task(inputs: EvalInputs) -> Trace:
         deps = deps_factory()
+        deps.run_context = RunContextInfo(source="eval", run_id=run_id, case_name=inputs.name, family=(family_of or {}).get(inputs.name))
         model = model_for(inputs) if model_for else None
         history: list[ModelMessage] = []
         turns = inputs.turns or [inputs.question or ""]
         start = time.perf_counter()
         trace = Trace(answer=AnalystAnswer(answer_md=""))
         for i, q in enumerate(turns):
-            answer, new_messages = ask(agent, deps, q, history=history or None, model=model)
+            answer, new_messages, trace_id = ask(agent, deps, q, history=history or None, model=model)
             history.extend(new_messages)
             if i == len(turns) - 1:
                 trace.answer = answer
-                _summarize(list(new_messages), trace)
+                trace.trace_id = trace_id
+                s = summarize_messages(new_messages)
+                trace.model_calls, trace.tool_calls, trace.sql_attempted, trace.repairs = s.model_calls, s.tool_calls, s.sql_attempted, s.repairs
         trace.duration_s = round(time.perf_counter() - start, 3)
         trace.sql_executed = list(deps.connector.executed) if isinstance(deps.connector, RecordingSource) else []
-        caveats = trace.answer.caveats
-        blocked_by_guard = caveats == ["SqlPolicy"] and trace.answer.confidence == 0.0  # sanitize_question rejected it
-        trace.refused = "OutOfScope" in caveats or trace.answer.answer_md == REFUSAL_TEXT or blocked_by_guard
-        trace.error_kind = next((c.split(":")[0] for c in trace.answer.caveats if c.split(":")[0] in _ERROR_KINDS), None)
+        trace.refused = refused(trace.answer)
+        trace.error_kind = error_kind_of(trace.answer.caveats)
         return trace
 
     return task

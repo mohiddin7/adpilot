@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 
 from adpilot.connectors.base import DataSource
+from adpilot.core.audit import AuditSink, RunContextInfo
 from adpilot.core.chart import ChartSpec, validate_spec
 from adpilot.core.errors import AdPilotError, ErrorKind
 from adpilot.core.guardrails import Budget, validate_sql
@@ -21,8 +22,10 @@ class AgentDeps:
     connector: DataSource
     pack: Pack
     schema_text: str
+    audit: AuditSink
     budget: Budget = field(default_factory=Budget)
     last_result: pd.DataFrame | None = None
+    run_context: RunContextInfo | None = None
 
 
 class SqlResult(BaseModel):

@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from adpilot.connectors import get_connector
 from adpilot.core import schema
 from adpilot.core.agent import AnalystAnswer, ask, build_agent
+from adpilot.core.audit import MemorySink
 from adpilot.core.memory import SessionStore
 from adpilot.core.models import build_model
 from adpilot.core.tools import AgentDeps
@@ -25,7 +26,7 @@ def _deps(args) -> AgentDeps:
     pack = load_pack(args.pack)
     name = args.connector or os.environ.get("ADPILOT_CONNECTOR") or pack.raw["connector"]
     connector = get_connector(name, pack)
-    return AgentDeps(connector=connector, pack=pack, schema_text=schema.summary(connector, pack))
+    return AgentDeps(connector=connector, pack=pack, schema_text=schema.summary(connector, pack), audit=MemorySink())
 
 
 def _print(answer: AnalystAnswer, out) -> None:
@@ -77,7 +78,7 @@ def cmd_chat(args, out) -> int:
 
     def one(question: str) -> None:
         history = store.load(args.session) if store else None
-        answer, new_messages = ask(agent, deps, question, history=history)
+        answer, new_messages, _ = ask(agent, deps, question, history=history)
         if store and new_messages:
             store.save(args.session, new_messages)
         _print(answer, out)

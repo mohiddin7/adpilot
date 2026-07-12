@@ -14,6 +14,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, T
 from adpilot.connectors import get_connector
 from adpilot.core import schema
 from adpilot.core.agent import build_agent
+from adpilot.core.audit import MemorySink
 from adpilot.core.models import DEFAULT_FALLBACK, DEFAULT_PRIMARY, build_model
 from adpilot.core.tools import AgentDeps
 from adpilot.packs.loader import REPO_ROOT, load_pack
@@ -84,7 +85,7 @@ def run(
     schema_text = schema.summary(connector, pack)
 
     def deps_factory() -> AgentDeps:
-        return AgentDeps(connector=RecordingSource(connector), pack=pack, schema_text=schema_text)
+        return AgentDeps(connector=RecordingSource(connector), pack=pack, schema_text=schema_text, audit=MemorySink())
 
     judge_model = None
     models = {"agent_primary": None, "agent_fallback": None, "judge": None}
