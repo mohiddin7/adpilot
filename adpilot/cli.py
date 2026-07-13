@@ -65,6 +65,13 @@ def cmd_eval(args, out) -> int:
     print(render_markdown(res.scorecard, res.baseline), file=out)
     for r in res.reasons:
         print(f"GATE: {r}", file=out)
+    if res.audit is not None and not res.audit.ok:
+        if res.run_id:
+            print(f"run_id: {res.run_id}", file=out)
+        print(f"audit: {res.audit.pending} row(s) not persisted — " + "; ".join(res.audit.errors), file=out)
+        return 2
+    if res.run_id:
+        print(f"run_id: {res.run_id}", file=out)
     return 0 if res.ok else 1
 
 

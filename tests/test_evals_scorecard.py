@@ -136,3 +136,11 @@ def test_markdown_lists_flips_and_no_free_text():
     sc = build(baseline=base)
     md = render_markdown(sc, base)
     assert "Regressed" in md and "reason" not in md.lower()
+
+
+def test_scorecard_carries_run_id_and_cost_and_renders_them():
+    sc = build_scorecard(results(), [], [], None, tier="model", prompt_hash="h", models={}, calls_used=3, baseline=None, run_id="run_x", tokens_in=100, tokens_out=20, cost_usd=0.0123)
+    assert sc.run_id == "run_x" and sc.tokens_in == 100 and sc.cost_usd == 0.0123
+    md = render_markdown(sc, None)
+    assert "run `run_x`" in md and "100 in / 20 out" in md and "$0.0123" in md
+    assert build_scorecard(results(), [], [], None, tier="model", prompt_hash="h", models={}, calls_used=0, baseline=None).run_id is None
