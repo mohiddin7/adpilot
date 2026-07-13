@@ -1,8 +1,10 @@
-"""adpilot CLI: `adpilot chat [-q QUESTION]` and `adpilot schema`."""
+"""adpilot CLI: `adpilot chat [-q QUESTION]`, `adpilot schema`, `adpilot eval` and `adpilot audit`."""
 
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import os
 import sys
 from pathlib import Path
@@ -13,20 +15,53 @@ from dotenv import load_dotenv
 from adpilot.connectors import get_connector
 from adpilot.core import schema
 from adpilot.core.agent import AnalystAnswer, ask, build_agent
-from adpilot.core.audit import MemorySink
-from adpilot.core.memory import SessionStore
+from adpilot.core.audit import (
+    AuditSink,
+    AuditUnavailable,
+    MemorySink,
+    RunContextInfo,
+    audit_config,
+    build_sink,
+)
 from adpilot.core.models import build_model
 from adpilot.core.tools import AgentDeps
 from adpilot.packs.loader import load_pack
 
-SESSIONS_DB = Path(".adpilot") / "sessions.db"
 
-
-def _deps(args) -> AgentDeps:
+def _deps(args, audit: AuditSink) -> AgentDeps:
     pack = load_pack(args.pack)
     name = args.connector or os.environ.get("ADPILOT_CONNECTOR") or pack.raw["connector"]
     connector = get_connector(name, pack)
-    return AgentDeps(connector=connector, pack=pack, schema_text=schema.summary(connector, pack), audit=MemorySink())
+    return AgentDeps(connector=connector, pack=pack, schema_text=schema.summary(connector, pack), audit=audit)
+
+
+def _sink(out) -> AuditSink | None:
+    """Strict preflight: refuse to run unrecorded. Memory mode is allowed only when asked for, and says so."""
+    cfg = audit_config()
+    sink = build_sink(cfg)
+    if cfg.mode == "memory":
+        print("audit: memory — this session is NOT recorded (ADPILOT_AUDIT=memory)", file=out)
+        return sink
+    try:
+        sink.preflight()
+    except AuditUnavailable as exc:
+        print(f"audit unavailable ({exc.kind}): {exc.hint}", file=out)
+        return None
+    print(f"audit: bigquery {cfg.project}.{cfg.dataset}", file=out)
+    return sink
+
+
+def configure_tracing() -> None:
+    """Live traces are opt-in: a Logfire token turns on pydantic-ai's OTel instrumentation for agents and evals."""
+    if not os.environ.get("LOGFIRE_TOKEN"):
+        return
+    try:
+        import logfire
+    except ImportError:
+        print("LOGFIRE_TOKEN is set but logfire is not installed: pip install 'adpilot[logfire]'", file=sys.stderr)
+        return
+    logfire.configure()
+    logfire.instrument_pydantic_ai()
 
 
 def _print(answer: AnalystAnswer, out) -> None:
@@ -43,7 +78,7 @@ def _print(answer: AnalystAnswer, out) -> None:
 
 
 def cmd_schema(args, out) -> int:
-    print(_deps(args).schema_text, file=out)
+    print(_deps(args, MemorySink()).schema_text, file=out)
     return 0
 
 
@@ -76,36 +111,81 @@ def cmd_eval(args, out) -> int:
 
 
 def cmd_chat(args, out) -> int:
-    deps = _deps(args)
+    sink = _sink(out)
+    if sink is None:
+        return 2
+    deps = _deps(args, sink)
+    deps.run_context = RunContextInfo(source="chat", session_id=args.session)
     model = build_model()
     agent = build_agent(model)
     if model is None:
         print("No OPENROUTER_API_KEY set — answering from pre-defined queries only.\n", file=out)
-    store = SessionStore(SESSIONS_DB) if args.session else None
+    history = sink.load_session(args.session) if args.session else []
+    unflushed = 0
 
     def one(question: str) -> None:
-        history = store.load(args.session) if store else None
-        answer, new_messages, _ = ask(agent, deps, question, history=history)
-        if store and new_messages:
-            store.save(args.session, new_messages)
+        nonlocal unflushed
+        answer, new_messages, _ = ask(agent, deps, question, history=history or None)
+        history.extend(new_messages)
         _print(answer, out)
+        rep = sink.flush()
+        unflushed = rep.pending
+        if not rep.ok:
+            print(f"\n⚠ audit: {rep.pending} row(s) not persisted (will retry with the next turn): {'; '.join(rep.errors)}", file=out)
 
     if args.question:
         one(args.question)
-        return 0
+        return 1 if unflushed else 0
     print(f"AdPilot · {deps.connector.dialect} · pack={deps.pack.name}. Ctrl-D to quit.", file=out)
     while True:
         try:
             q = input("\n> ").strip()
         except (EOFError, KeyboardInterrupt):
             print(file=out)
+            rep = sink.flush()
+            if not rep.ok:
+                print(f"audit: {rep.pending} row(s) not persisted", file=out)
+                return 1
             return 0
         if q:
             one(q)
 
 
+def cmd_audit(args, out) -> int:
+    if args.audit_cmd == "preflight":
+        return 0 if _sink(out) is not None else 2
+    cfg = audit_config()
+    sink = build_sink(cfg)
+    if cfg.mode == "memory" and args.audit_cmd != "export":
+        # export's stdout is machine-parseable (JSONL/CSV); a banner line would corrupt it.
+        print("audit: memory — nothing is stored in this mode", file=out)
+    if args.audit_cmd == "runs":
+        rows = sink.list_runs(args.limit)
+        if not rows:
+            print("no runs", file=out)
+            return 0
+        print(f"{'run_id':<32} {'ts':<26} {'tier':<13} {'overall':>7} {'gate':<5} {'calls':>5} {'cost_usd':>9}", file=out)
+        for r in rows:
+            print(f"{r['run_id']:<32} {str(r['ts'])[:26]:<26} {r.get('tier') or '':<13} {float(r.get('overall') or 0):>7.1f} {'PASS' if r.get('gate_ok') else 'FAIL':<5} {int(r.get('calls_used') or 0):>5} {float(r.get('cost_usd') or 0):>9.4f}", file=out)
+        return 0
+    rows = list(sink.export_run(args.run))
+    if not rows:
+        print(f"no rows for run {args.run}", file=out)
+        return 1
+    if args.csv:
+        writer = csv.DictWriter(out, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({k: (json.dumps(v, default=str) if isinstance(v, list | dict) else v) for k, v in r.items()})
+        return 0
+    for r in rows:
+        print(json.dumps(r, default=str), file=out)
+    return 0
+
+
 def main(argv: list[str] | None = None, out=None) -> int:
     load_dotenv()
+    configure_tracing()
     out = out or sys.stdout
     p = argparse.ArgumentParser(prog="adpilot", description="Agentic analytics over your data.")
     p.add_argument("--pack", default="ads", help="pack name or path (default: ads)")
@@ -125,8 +205,16 @@ def main(argv: list[str] | None = None, out=None) -> int:
     ev.add_argument("--baseline-update", action="store_true", help="write baseline.json from this run")
     ev.add_argument("--no-judge", action="store_true")
     ev.add_argument("--debug", action="store_true", help="log each case as it runs; disables the progress bar")
+    au = sub.add_parser("audit", help="inspect the audit trail")
+    aus = au.add_subparsers(dest="audit_cmd", required=True)
+    aus.add_parser("preflight", help="verify credentials, dataset and tables (creates/alters as needed)")
+    runs = aus.add_parser("runs", help="recent eval runs")
+    runs.add_argument("--limit", type=int, default=20)
+    ex = aus.add_parser("export", help="one run's calls with their scores, as JSONL (or --csv)")
+    ex.add_argument("--run", required=True)
+    ex.add_argument("--csv", action="store_true")
     args = p.parse_args(argv)
-    return {"chat": cmd_chat, "schema": cmd_schema, "eval": cmd_eval}[args.cmd](args, out)
+    return {"chat": cmd_chat, "schema": cmd_schema, "eval": cmd_eval, "audit": cmd_audit}[args.cmd](args, out)
 
 
 if __name__ == "__main__":
