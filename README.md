@@ -74,13 +74,19 @@ ruff check . && pytest -q
 adpilot eval                       # deterministic tier, no API key needed
 adpilot eval --check-cases         # verify golden values against the sample data
 adpilot eval --tier model          # real models; writes evals/reports/ and the badge
+adpilot audit runs                 # recent eval runs from the BigQuery audit trail
 ```
 
-See [docs/evals.md](docs/evals.md) for how scoring works and what the nightly PR means.
+See [docs/evals.md](docs/evals.md) for how scoring works and what the nightly PR means. Every agent call is recorded in BigQuery (tokens, cost, latency, model used); see [docs/observability.md](docs/observability.md).
 
 ## Configuration
 
 All names and keys come from `.env` (local) or `secrets.toml` (Streamlit Cloud). See `.env.example`. Models are OpenRouter free-tier by default (`LLM_TARGET_MODEL`, `LLM_FALLBACK_MODEL`); the connector is picked by `--connector`, `ADPILOT_CONNECTOR`, or the pack default.
+
+- `GCP_SERVICE_ACCOUNT_JSON` / `GOOGLE_APPLICATION_CREDENTIALS` — BigQuery credentials for the audit trail (service-account JSON, or a key file path / ADC).
+- `BQ_AUDIT_DATASET` — audit dataset name (default `adpilot_audit`).
+- `LOGFIRE_TOKEN` — optional; turns on live OpenTelemetry traces for agent and eval calls.
+- `ADPILOT_AUDIT` — set to `memory` to run unrecorded (chat/eval otherwise refuse to start without BigQuery credentials).
 
 ## Architecture
 

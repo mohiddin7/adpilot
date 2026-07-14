@@ -22,18 +22,45 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -e .[dev]
+      - name: Audit preflight
+        env:
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          BQ_PROJECT_ID: ${{ secrets.BQ_PROJECT_ID }}
+        run: adpilot audit preflight
       - name: Run model-tier evals
         id: evals
         env:
           LLM_BEARER_TOKEN: ${{ secrets.LLM_BEARER_TOKEN }}
           LLM_JUDGE_BEARER_TOKEN: ${{ secrets.LLM_JUDGE_BEARER_TOKEN }}
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          BQ_PROJECT_ID: ${{ secrets.BQ_PROJECT_ID }}
         run: |
           set +e
           adpilot eval --tier model --out evals/reports
           echo "code=$?" >> "$GITHUB_OUTPUT"
+          echo "run_id=$(python -c "import json; print(json.load(open('evals/reports/latest.json')).get('run_id') or '')")" >> "$GITHUB_OUTPUT"
+          git diff --quiet -- evals/reports/latest.json evals/reports/latest.md README.md && echo "fresh=false" >> "$GITHUB_OUTPUT" || echo "fresh=true" >> "$GITHUB_OUTPUT"
+      - name: Export per-sample dump
+        if: steps.evals.outputs.run_id != ''
+        env:
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          BQ_PROJECT_ID: ${{ secrets.BQ_PROJECT_ID }}
+        run: adpilot audit export --run "${{ steps.evals.outputs.run_id }}" > samples.jsonl
+      - uses: actions/upload-artifact@v4
+        if: steps.evals.outputs.run_id != ''
+        with:
+          name: samples-${{ steps.evals.outputs.run_id }}
+          path: samples.jsonl
+          retention-days: 90
       - name: Render PR body
         run: |
-          python -m evals.pr_body evals/reports > /tmp/pr_body.md
+          if [ "${{ steps.evals.outputs.fresh }}" = "true" ]; then
+            python -m evals.pr_body evals/reports > /tmp/pr_body.md
+            echo "" >> /tmp/pr_body.md
+            echo "Per-sample dump: artifact \`samples-${{ steps.evals.outputs.run_id }}\` on this workflow run (90 days); permanent record: BigQuery \`adpilot_audit\` run \`${{ steps.evals.outputs.run_id }}\`." >> /tmp/pr_body.md
+          else
+            echo "adpilot eval --tier model exited ${{ steps.evals.outputs.code }} without writing a fresh report — nothing changed under evals/reports/, so there is no new scorecard to show. Check the job log for the failure." > /tmp/pr_body.md
+          fi
           cat /tmp/pr_body.md >> "$GITHUB_STEP_SUMMARY"
       - name: Decide label
         id: label
