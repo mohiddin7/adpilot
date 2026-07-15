@@ -176,6 +176,52 @@ def test_flush_gives_up_after_three_transient_failures_and_keeps_batch():
     assert sink.flush().ok and sink.pending_calls() == []
 
 
+def test_flush_stops_at_first_failed_table_and_leaves_the_rest_buffered():
+    """agent_calls fails (exhausts retries); scores/eval_runs would themselves load fine, but must not be
+    attempted — writing them while their agent_calls rows are stuck would orphan every join in
+    docs/observability.md. The whole batch must stay buffered together for the next flush to retry."""
+    sleeps = []
+    client = FakeClient(fail_loads=[gex.ServerError("500"), gex.ServerError("500"), gex.ServerError("500")])
+    sink = BigQuerySink(CFG, client=client, sleep=sleeps.append)
+    sink.record(_rec(1, source="eval", run_id="r"))
+    sink.add_scores([ScoreRow(trace_id="t1", run_id="r", name="factual", value=1.0, passed=True, ts=datetime.now(UTC))])
+    sink.add_run(RunRow(run_id="r", ts=datetime.now(UTC), environment="local", tier="model", pack="ads"))
+
+    rep = sink.flush()
+
+    assert not rep.ok
+    assert rep.written == {}
+    assert rep.failed == {"agent_calls": 1, "scores": 1, "eval_runs": 1}
+    assert client.loads == []  # scores/eval_runs were never even attempted
+    assert len(sink.pending_calls()) == 1
+    assert len(sink._buffers["scores"]) == 1 and len(sink._buffers["eval_runs"]) == 1
+
+    # once agent_calls can load, a retry flushes everything together in order
+    client.fail_loads = []
+    rep2 = sink.flush()
+    assert rep2.ok and rep2.written == {"agent_calls": 1, "scores": 1, "eval_runs": 1}
+    assert [t for t, _ in client.loads] == ["agent_calls", "scores", "eval_runs"]
+
+
+def test_flush_writes_earlier_tables_and_stops_before_a_later_failure():
+    """agent_calls succeeds; scores fails outright (non-transient) — eval_runs must not be attempted
+    even though it would itself succeed, since it summarizes calls that scores hasn't been recorded for."""
+    client = FakeClient(fail_loads=[None, gex.Forbidden("nope")])
+    sink = BigQuerySink(CFG, client=client)
+    sink.record(_rec(1))
+    sink.add_scores([ScoreRow(trace_id="t1", run_id="r", name="factual", value=1.0, passed=True, ts=datetime.now(UTC))])
+    sink.add_run(RunRow(run_id="r", ts=datetime.now(UTC), environment="local", tier="model", pack="ads"))
+
+    rep = sink.flush()
+
+    assert not rep.ok
+    assert rep.written == {"agent_calls": 1}
+    assert rep.failed == {"scores": 1, "eval_runs": 1}
+    assert [t for t, _ in client.loads] == ["agent_calls"]  # eval_runs never attempted
+    assert sink.pending_calls() == []  # agent_calls did commit and clear
+    assert len(sink._buffers["scores"]) == 1 and len(sink._buffers["eval_runs"]) == 1
+
+
 def test_flush_does_not_retry_permission_errors():
     sleeps = []
     client = FakeClient(fail_loads=[gex.Forbidden("nope")])

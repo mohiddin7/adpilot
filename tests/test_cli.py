@@ -38,6 +38,22 @@ def test_eval_subcommand(tmp_path):
     assert main(["eval", "--check-cases"], out=io.StringIO()) == 0
 
 
+def test_eval_prints_memory_audit_notice_before_running(tmp_path):
+    """Deterministic-tier eval always uses a MemorySink (evals/run.py never touches ADPILOT_AUDIT for it),
+    so it must always say so up front — the same guarantee chat/audit already give for memory mode."""
+    out = io.StringIO()
+    assert main(["eval", "--tier", "deterministic", "--out", str(tmp_path), "--family", "scope"], out=out) == 0
+    text = out.getvalue()
+    assert text.startswith("audit: memory")
+    assert "Overall" in text
+
+
+def test_eval_check_cases_prints_no_audit_notice():
+    out = io.StringIO()
+    assert main(["eval", "--check-cases"], out=out) == 0
+    assert "audit:" not in out.getvalue()
+
+
 def test_eval_summary_uses_the_baseline_it_gated_against(tmp_path):
     assert main(["eval", "--tier", "deterministic", "--out", str(tmp_path), "--baseline-update"], out=io.StringIO()) == 0
     out = io.StringIO()
@@ -90,6 +106,24 @@ def test_chat_warns_when_turn_not_persisted(no_api_key, memory_audit, monkeypatc
     out = io.StringIO()
     assert main(["--connector", "duckdb", "chat", "-q", "spend by platform"], out=out) == 1
     assert "TikTok" in out.getvalue() and "audit: 1 row(s) not persisted" in out.getvalue()
+
+
+def test_chat_flushes_the_turn_even_when_printing_the_answer_raises(no_api_key, memory_audit, monkeypatch):
+    """_print builds a DataFrame from model-supplied answer.data and can raise; the record ask() already
+    buffered for this turn must still reach the sink instead of dying with the crash."""
+    import adpilot.cli as cli
+    from adpilot.core.audit import MemorySink
+
+    sink = MemorySink()
+    monkeypatch.setattr(cli, "build_sink", lambda cfg: sink)
+
+    def boom(answer, out):
+        raise ValueError("bad answer.data")
+
+    monkeypatch.setattr(cli, "_print", boom)
+    with pytest.raises(ValueError, match="bad answer.data"):
+        main(["--connector", "duckdb", "chat", "-q", "What was spend by platform?"], out=io.StringIO())
+    assert len(sink.calls) == 1 and sink.flushed["agent_calls"] == 1
 
 
 def test_audit_subcommands_against_memory_sink(memory_audit, monkeypatch):

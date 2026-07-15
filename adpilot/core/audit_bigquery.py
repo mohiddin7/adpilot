@@ -91,6 +91,9 @@ class BigQuerySink:
         self._client = client
         self._sleep = sleep
         self._lock = threading.Lock()
+        # ponytail: unbounded — every record (each with a full messages_json) sits here until the one
+        # end-of-run flush. Fine at today's ~120 calls/run; if the case set grows an order of magnitude,
+        # switch to chunked flushes (e.g. flush agent_calls every N records) instead of one giant batch.
         self._buffers: dict[str, list[dict]] = {"agent_calls": [], "scores": [], "eval_runs": []}
         self._pending_records: list[AuditRecord] = []
 
@@ -213,8 +216,13 @@ class BigQuerySink:
     # ----- flush -----
 
     def flush(self) -> FlushReport:
+        """`agent_calls -> scores -> eval_runs` is a dependency order, not just an iteration order: scores
+        key off agent_calls.trace_id and eval_runs summarizes a run's calls. So the first table that fails
+        stops the whole flush — every later table (even ones that would themselves load fine) stays
+        buffered too, rather than letting scores/eval_runs land in BigQuery with no matching call row."""
         report = FlushReport()
-        for name in ("agent_calls", "scores", "eval_runs"):
+        order = ("agent_calls", "scores", "eval_runs")
+        for i, name in enumerate(order):
             with self._lock:
                 rows = list(self._buffers[name])
             if not rows:
@@ -226,9 +234,15 @@ class BigQuerySink:
                     if name == "agent_calls":
                         del self._pending_records[: len(rows)]
                 report.written[name] = len(rows)
-            else:
-                report.failed[name] = len(rows)
-                report.errors.append(f"{name}: {err}")
+                continue
+            report.failed[name] = len(rows)
+            report.errors.append(f"{name}: {err}")
+            for later in order[i + 1 :]:
+                with self._lock:
+                    later_rows = self._buffers[later]
+                if later_rows:
+                    report.failed[later] = len(later_rows)
+            break
         return report
 
     def _load_with_retry(self, name: str, rows: list[dict]) -> str | None:

@@ -199,3 +199,29 @@ def test_unflushed_rows_fail_the_run_but_reports_are_written(monkeypatch, tmp_pa
     res = run(tier="deterministic", families={"scope"}, limit=2, out_dir=tmp_path, readme=tmp_path / "R.md", audit=sink)
     assert not res.ok and res.audit.pending == 2 and (tmp_path / "latest.json").exists() and res.scorecard is not None
     assert sink.reports_existed_at_flush is True  # flush must run after write_reports, not before
+
+
+def test_scores_from_report_warns_when_a_raised_case_has_no_trace_id(caplog):
+    """A case whose task raised has output is None, so it has no agent_calls row to key scores on —
+    dropping it is correct, but it must not vanish with zero trace. Fake report/case: scores_from_report
+    only touches .cases[].{output,name,assertions,scores,evaluator_failures} via getattr/duck typing."""
+    from types import SimpleNamespace
+
+    from evals.run import scores_from_report
+
+    raised_case = SimpleNamespace(name="rt_drop_table", output=None, assertions={}, scores={}, evaluator_failures=[])
+    ok_case = SimpleNamespace(
+        name="sc_weather",
+        output=SimpleNamespace(trace_id="t1"),
+        assertions={"factual": SimpleNamespace(value=True, reason=None)},
+        scores={},
+        evaluator_failures=[],
+    )
+    report = SimpleNamespace(cases=[raised_case, ok_case])
+
+    with caplog.at_level("WARNING", logger="evals.run"):
+        rows = scores_from_report(report, "run_1", None)
+
+    assert [r.trace_id for r in rows] == ["t1"]  # the raised case contributed nothing
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("rt_drop_table" in m for m in warnings)

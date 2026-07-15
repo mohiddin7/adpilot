@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import os
 import sys
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -80,6 +81,10 @@ def scores_from_report(report: Any, run_id: str, judge_name: str | None) -> list
     for c in report.cases:
         tid = getattr(c.output, "trace_id", None)
         if not tid:
+            # output is None: the task raised for this case, so there's no agent_calls row to key
+            # scores on. Dropping is correct (see the same `output is None` filter a few lines up
+            # in `run()`), but it must not vanish silently.
+            log.warning("scores dropped for case %r: no trace_id (task likely raised)", c.name)
             continue
         for name, res in {**c.assertions, **c.scores}.items():
             val = res.value
@@ -154,8 +159,6 @@ def run(
             return RunResult(None, False, problems=[f"audit unavailable ({exc.kind}): {exc.hint}"], run_id=run_id)
         agent = build_agent(model)
         model_for = None
-        import os
-
         models.update(agent_primary=os.environ.get("LLM_TARGET_MODEL", DEFAULT_PRIMARY), agent_fallback=os.environ.get("LLM_FALLBACK_MODEL", DEFAULT_FALLBACK))
         if not no_judge:
             cfg = judge_config()

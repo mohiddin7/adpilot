@@ -41,13 +41,14 @@ jobs:
           echo "run_id=$(python -c "import json; print(json.load(open('evals/reports/latest.json')).get('run_id') or '')")" >> "$GITHUB_OUTPUT"
           git diff --quiet -- evals/reports/latest.json evals/reports/latest.md README.md && echo "fresh=false" >> "$GITHUB_OUTPUT" || echo "fresh=true" >> "$GITHUB_OUTPUT"
       - name: Export per-sample dump
-        if: steps.evals.outputs.run_id != ''
+        if: steps.evals.outputs.run_id != '' && steps.evals.outputs.fresh == 'true'
+        continue-on-error: true
         env:
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
           BQ_PROJECT_ID: ${{ secrets.BQ_PROJECT_ID }}
         run: adpilot audit export --run "${{ steps.evals.outputs.run_id }}" > samples.jsonl
       - uses: actions/upload-artifact@v4
-        if: steps.evals.outputs.run_id != ''
+        if: steps.evals.outputs.run_id != '' && steps.evals.outputs.fresh == 'true'
         with:
           name: samples-${{ steps.evals.outputs.run_id }}
           path: samples.jsonl

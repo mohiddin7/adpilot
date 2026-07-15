@@ -35,19 +35,27 @@ def _deps(args, audit: AuditSink) -> AgentDeps:
     return AgentDeps(connector=connector, pack=pack, schema_text=schema.summary(connector, pack), audit=audit)
 
 
+def _announce_audit(mode: str, project: str, dataset: str, out) -> None:
+    """One-line audit-target notice. `mode == "memory"` is always announced — nothing else says so."""
+    if mode == "memory":
+        print("audit: memory — this session is NOT recorded (ADPILOT_AUDIT=memory)", file=out)
+    else:
+        print(f"audit: bigquery {project}.{dataset}", file=out)
+
+
 def _sink(out) -> AuditSink | None:
     """Strict preflight: refuse to run unrecorded. Memory mode is allowed only when asked for, and says so."""
     cfg = audit_config()
     sink = build_sink(cfg)
     if cfg.mode == "memory":
-        print("audit: memory — this session is NOT recorded (ADPILOT_AUDIT=memory)", file=out)
+        _announce_audit(cfg.mode, cfg.project, cfg.dataset, out)
         return sink
     try:
         sink.preflight()
     except AuditUnavailable as exc:
         print(f"audit unavailable ({exc.kind}): {exc.hint}", file=out)
         return None
-    print(f"audit: bigquery {cfg.project}.{cfg.dataset}", file=out)
+    _announce_audit(cfg.mode, cfg.project, cfg.dataset, out)
     return sink
 
 
@@ -84,6 +92,13 @@ def cmd_schema(args, out) -> int:
 
 def cmd_eval(args, out) -> int:
     from evals.run import run
+
+    if not args.check_cases:
+        # The deterministic tier never leaves memory regardless of ADPILOT_AUDIT (evals/run.py always
+        # gives it a MemorySink); the model tier honours the real config, same as chat/audit.
+        cfg = audit_config()
+        mode = "memory" if args.tier == "deterministic" else cfg.mode
+        _announce_audit(mode, cfg.project, cfg.dataset, out)
 
     res = run(
         tier=args.tier, families=set(args.family) if args.family else None, repeat=args.repeat, limit=args.limit,
@@ -127,11 +142,15 @@ def cmd_chat(args, out) -> int:
         nonlocal unflushed
         answer, new_messages, _ = ask(agent, deps, question, history=history or None)
         history.extend(new_messages)
-        _print(answer, out)
-        rep = sink.flush()
-        unflushed = rep.pending
-        if not rep.ok:
-            print(f"\n⚠ audit: {rep.pending} row(s) not persisted (will retry with the next turn): {'; '.join(rep.errors)}", file=out)
+        try:
+            _print(answer, out)
+        finally:
+            # ask() already buffered this turn's record; flush it even if printing the answer raised
+            # (e.g. a malformed answer.data DataFrame), so the record is never lost with the REPL.
+            rep = sink.flush()
+            unflushed = rep.pending
+            if not rep.ok:
+                print(f"\n⚠ audit: {rep.pending} row(s) not persisted (will retry with the next turn): {'; '.join(rep.errors)}", file=out)
 
     if args.question:
         one(args.question)
