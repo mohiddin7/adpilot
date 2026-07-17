@@ -70,6 +70,6 @@ def model_for(case: EvalCase, pack: Any, dialect: str = "duckdb") -> Model:
         return FallbackModel(FunctionModel(_rate_limited, model_name="primary"), _scripted(case, pack, dialect))
     if case.family in ("redteam", "scope") and case.expected.refuse:
         return _refusal()
-    if case.family in ACCURACY_FAMILIES or case.family in ("narrative", "scope"):
-        return _scripted(case, pack, dialect)
+    if case.family in ACCURACY_FAMILIES or case.family in ("narrative", "scope", "redteam"):
+        return _scripted(case, pack, dialect)  # a redteam case that should be answered, not refused
     raise ValueError(f"no script for {case.name}")
