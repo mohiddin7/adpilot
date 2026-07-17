@@ -19,7 +19,18 @@ dataset and tables and adds missing columns itself; it never renames or drops on
 
 ## Setup (once)
 
-1. Give the service account `roles/bigquery.dataEditor` and `roles/bigquery.jobUser` on the project.
+1. Give the service account `roles/bigquery.jobUser` on the project (it needs to create query and load jobs),
+   and write access to the audit dataset. Least privilege — create the dataset yourself and grant the service
+   account `WRITER` on that dataset only, so it gains no access to your other data:
+
+   ```bash
+   bq --location=US mk --dataset <project>:adpilot_audit
+   # then add {"role": "WRITER", "userByEmail": "<sa>@<project>.iam.gserviceaccount.com"}
+   # to the dataset's access[] via: bq show --format=prettyjson … > ds.json && bq update --source ds.json …
+   ```
+
+   Simpler but broader: `roles/bigquery.dataEditor` on the whole project lets `preflight` create the dataset
+   itself, at the cost of write access to every dataset in the project.
 2. Locally: `GOOGLE_APPLICATION_CREDENTIALS=<key path>` (or `GCP_SERVICE_ACCOUNT_JSON=<json>`) and `BQ_PROJECT_ID`
    in `.env`. Optional: `BQ_AUDIT_DATASET` (default `adpilot_audit`), `BQ_LOCATION` (default: same as the staging dataset, or `US` if there is none).
 3. GitHub Actions: secrets `GCP_SERVICE_ACCOUNT_JSON` and `BQ_PROJECT_ID` (the nightly workflow reads both).
