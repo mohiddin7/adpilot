@@ -1,6 +1,6 @@
 # AdPilot
 
-![ci](https://github.com/mohiddin7/adpilot/actions/workflows/ci.yml/badge.svg) ![evals](https://img.shields.io/badge/evals-0%25-lightgrey)
+![ci](https://github.com/mohiddin7/adpilot/actions/workflows/ci.yml/badge.svg) ![evals](https://img.shields.io/badge/evals-77%25-yellow)
 
 **An agentic analytics platform for marketing data.** Unifies multi-channel ad performance in a BigQuery lakehouse, enriches it with anomaly detection, forecasting and budget optimization, and puts an AI analyst on top that answers questions in plain English — with guardrails, self-healing SQL and an evaluation harness.
 
@@ -84,6 +84,7 @@ See [docs/evals.md](docs/evals.md) for how scoring works and what the nightly PR
 All names and keys come from `.env` (local) or `secrets.toml` (Streamlit Cloud). See `.env.example`. Models are OpenRouter free-tier by default (`LLM_TARGET_MODEL`, `LLM_FALLBACK_MODEL`); the connector is picked by `--connector`, `ADPILOT_CONNECTOR`, or the pack default.
 
 - `GCP_SERVICE_ACCOUNT_JSON` / `GOOGLE_APPLICATION_CREDENTIALS` — BigQuery credentials for the audit trail (service-account JSON, or a key file path / ADC).
+- `BQ_PROJECT_ID` — GCP project holding the audit dataset (required; no default).
 - `BQ_AUDIT_DATASET` — audit dataset name (default `adpilot_audit`).
 - `LOGFIRE_TOKEN` — optional; turns on live OpenTelemetry traces for agent and eval calls.
 - `ADPILOT_AUDIT` — set to `memory` to run unrecorded (chat/eval otherwise refuse to start without BigQuery credentials).
