@@ -8,6 +8,8 @@ ErrorKind = Literal[
     "SqlSyntax",
     "SqlSchema",
     "SqlPolicy",
+    "InputPolicy",
+    "OutputPolicy",
     "DataSourceUnavailable",
     "ModelRateLimited",
     "ModelUnavailable",

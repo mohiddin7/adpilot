@@ -1,7 +1,7 @@
 """Free, deterministic defenses that run before anything reaches the model or the database.
 
 validate_sql      — defense-in-depth on model-written SQL (never trusts the model)
-sanitize_question — trust boundary for user text (length, control chars, prompt injection)
+sanitize_question — layer 0: trust boundary for user text (length, unicode, prompt injection, SQL shapes)
 is_in_scope       — cheap blocklist for obviously off-topic questions
 Budget            — per-request SQL execution cap
 RateLimiter       — process-level requests-per-minute bucket for the model API
@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -83,22 +84,43 @@ def validate_sql(sql: str, allowed_tables: set[str], max_rows: int) -> str:
 
 _INJECTION = re.compile(
     r"(ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules)|"
+    r"disregard\s+(all\s+)?(your\s+)?(previous|prior|above)\s+(instructions|prompts|rules)|"
     r"forget\s+(everything|all|the\s+rules)|you\s+are\s+now\s+(a\s+)?(different|new)|"
     r"\bsystem\s*:|\[\[\s*system|<\s*system|act\s+as\s+(a\s+)?(developer|admin|root|sudo)|"
     r"jailbreak|dan\s+mode|developer\s+mode)",
     re.IGNORECASE,
 )
+# SQL write statements written into a natural-language question, bare or smuggled behind ; -- /*
+_SQL_WRITE_SHAPE = re.compile(
+    r"\b(?:(?:drop|truncate|alter)\s+(?:table|view|database|schema)|delete\s+from|insert\s+into|"
+    r"update\s+\w+\s+set|update\s+(?:the\s+)?\w+\s+(?:column|rows?|table)\b.*\bto\b|(?:grant|revoke)\s+\w+\s+on)\b",
+    re.IGNORECASE,
+)
+# A SCREAMING_SNAKE credential name never appears in a legitimate marketing question.
+_SECRET_NAME = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:KEY|TOKEN|SECRET|PASSWORD)\b")
+# One token mixing Latin with Cyrillic/Greek letters is a homoglyph attack, never English. Fail closed.
+_MIXED_SCRIPT = re.compile(r"[A-Za-z]\S*[\u0370-\u03ff\u0400-\u04ff]|[\u0370-\u03ff\u0400-\u04ff]\S*[A-Za-z]")
+_INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]")
+# ponytail: bare "; select ..." stacking is left to validate_sql — it collides with English ("...; select the best")
 
 
 def sanitize_question(text: str) -> str:
+    """Layer 0: the trust boundary for user text. Raises AdPilotError(kind="InputPolicy") on any refusal."""
     text = (text or "").strip()
     if not text:
-        raise AdPilotError("SqlPolicy", "Empty question.")
+        raise AdPilotError("InputPolicy", "Empty question.")
     if len(text) > MAX_QUESTION_LENGTH:
-        raise AdPilotError("SqlPolicy", f"Question is too long ({len(text)} chars; max {MAX_QUESTION_LENGTH}).")
+        raise AdPilotError("InputPolicy", f"Question is too long ({len(text)} chars; max {MAX_QUESTION_LENGTH}).")
+    text = _INVISIBLE.sub("", unicodedata.normalize("NFKC", text))
     text = "".join(c for c in text if c in "\n\t" or c >= " ").strip()
+    if _MIXED_SCRIPT.search(text):
+        raise AdPilotError("InputPolicy", "The question mixes scripts inside a word. Please rephrase in plain language.")
     if _INJECTION.search(text):
-        raise AdPilotError("SqlPolicy", "The question contains instruction-override patterns. Please rephrase in plain language.")
+        raise AdPilotError("InputPolicy", "The question contains instruction-override patterns. Please rephrase in plain language.")
+    if _SUSPICIOUS.search(text) or _SQL_WRITE_SHAPE.search(text):
+        raise AdPilotError("InputPolicy", "SQL statements, metadata and file-reading functions are not accepted in questions.")
+    if _SECRET_NAME.search(text):
+        raise AdPilotError("InputPolicy", "Questions about credentials or environment variables are not accepted.")
     return text
 
 

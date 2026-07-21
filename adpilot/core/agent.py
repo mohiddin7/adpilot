@@ -67,7 +67,7 @@ REFUSAL_TEXT = (
 
 def refused(answer: AnalystAnswer) -> bool:
     """True for a model Refusal, an out-of-scope block, or a guard rejection (sanitize_question)."""
-    blocked_by_guard = answer.caveats == ["SqlPolicy"] and answer.confidence == 0.0
+    blocked_by_guard = answer.caveats == ["InputPolicy"] and answer.confidence == 0.0
     return "OutOfScope" in answer.caveats or answer.answer_md == REFUSAL_TEXT or blocked_by_guard
 
 
