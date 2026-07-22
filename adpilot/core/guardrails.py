@@ -3,6 +3,7 @@
 validate_sql      — defense-in-depth on model-written SQL (never trusts the model)
 sanitize_question — layer 0: trust boundary for user text (length, unicode, prompt injection, SQL shapes)
 is_in_scope       — cheap blocklist for obviously off-topic questions
+redact_output     — layer 5: masks PII / secret shapes in answer text before display
 Budget            — per-request SQL execution cap
 RateLimiter       — process-level requests-per-minute bucket for the model API
 """
@@ -122,6 +123,28 @@ def sanitize_question(text: str) -> str:
     if _SECRET_NAME.search(text):
         raise AdPilotError("InputPolicy", "Questions about credentials or environment variables are not accepted.")
     return text
+
+
+# Layer 5: PII / secret shapes in answer text. Shapes that dates, currency and row counts cannot produce.
+_REDACT = {
+    "email": re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"),
+    "phone": re.compile(r"\+\d{7,15}\b|\(\d{3}\)\s?\d{3}[-.\s]\d{4}|\b\d{3}[-.]\d{3}[-.]\d{4}\b"),
+    "secret": re.compile(
+        r"\bsk-(?:or-v1-)?[A-Za-z0-9_-]{16,}|\bAIza[0-9A-Za-z_-]{30,}|\bBearer\s+[A-Za-z0-9._-]{16,}|"
+        r"\b[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)\s*=\s*\S+"
+    ),
+}
+# ponytail: answer_md only; scan data rows too once a pack declares PII columns
+
+
+def redact_output(text: str) -> tuple[str, list[str]]:
+    """Mask PII/secret-shaped spans in answer text. Returns (text, sorted kinds that hit)."""
+    hits = []
+    for kind, pattern in _REDACT.items():
+        text, n = pattern.subn(f"[redacted:{kind}]", text)
+        if n:
+            hits.append(kind)
+    return text, hits
 
 
 _OFF_TOPIC = re.compile(

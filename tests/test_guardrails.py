@@ -5,6 +5,7 @@ from adpilot.core.guardrails import (
     Budget,
     RateLimiter,
     is_in_scope,
+    redact_output,
     sanitize_question,
     validate_sql,
 )
@@ -160,3 +161,18 @@ def test_rate_limiter(monkeypatch):
     assert slept == []
     rl.acquire()
     assert slept and slept[0] == pytest.approx(60.0)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected", "kinds"),
+    [
+        ("Top converter: jane.doe@example.com (42 conversions).", "Top converter: [redacted:email] (42 conversions).", ["email"]),
+        ("Call +14155551234 or (415) 555-1234 or 415-555-1234.", "Call [redacted:phone] or [redacted:phone] or [redacted:phone].", ["phone"]),
+        ("Key is sk-or-v1-0123456789abcdef0123456789abcdef; also OPENROUTER_API_KEY=abc123", "Key is [redacted:secret]; also [redacted:secret]", ["secret"]),
+        ("Token AIzaSyA-0123456789abcdefghijklmnopqrstuv and Bearer eyJhbGciOiJIUzI1NiJ9.x", "Token [redacted:secret] and [redacted:secret]", ["secret"]),
+        ("Spend was $130,244.90 on 2026-09-18 across 1,234,567 impressions (CPA 12.5).", "Spend was $130,244.90 on 2026-09-18 across 1,234,567 impressions (CPA 12.5).", []),
+        ("", "", []),
+    ],
+)
+def test_redact_output(text, expected, kinds):
+    assert redact_output(text) == (expected, kinds)
