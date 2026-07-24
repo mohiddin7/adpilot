@@ -77,7 +77,7 @@ adpilot eval --tier model          # real models; writes evals/reports/ and the 
 adpilot audit runs                 # recent eval runs from the BigQuery audit trail
 ```
 
-See [docs/evals.md](docs/evals.md) for how scoring works and what the nightly PR means. Every agent call is recorded in BigQuery (tokens, cost, latency, model used); see [docs/observability.md](docs/observability.md).
+See [docs/evals.md](docs/evals.md) for how scoring works and what the nightly PR means, and [docs/security.md](docs/security.md) for the guardrail layers and what each one can and cannot catch. Every agent call is recorded in BigQuery (tokens, cost, latency, model used); see [docs/observability.md](docs/observability.md).
 
 ## Configuration
 
@@ -94,10 +94,10 @@ All names and keys come from `.env` (local) or `secrets.toml` (Streamlit Cloud).
 ```
                  packs/ads/  (allowlist · glossary · prompt · fallback queries · duckdb_setup.sql)
                         │
- question ─► guardrails ─► Agent (Pydantic AI) ─► tools ─► SQL validator ─► connector ─► DuckDB | BigQuery
-             scope/inject     │  primary → fallback → rule-based      ▲                      │
-                              └────── SqlError{kind, hint, columns} ◄─┘  (self-heal loop)    ▼
-                                                                                     AnalystAnswer
+ question ─► input gate ─► Agent (Pydantic AI) ─► tools ─► SQL validator ─► connector ─► DuckDB | BigQuery
+             scope/inject/    │  primary → fallback → rule-based      ▲                      │
+             SQL shapes       └────── SqlError{kind, hint, columns} ◄─┘  (self-heal loop)    ▼
+                                                                                     AnalystAnswer ─► output rail
                                                                        {answer_md, sql, data, chart, confidence, caveats}
 
  data/raw/*.csv ─► 01 ingest ─► Bronze ─► 02 transform ─► Gold mart ─► 03 anomalies · 04 optimizer · 05 forecast · 07 QA
