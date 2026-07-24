@@ -22,6 +22,7 @@ class Expected(BaseModel):
     column: str | None = None
     tolerance: float = 0.01
     refuse: bool | None = None
+    guard: bool = False  # layer 0 (sanitize_question) must refuse this before any model call
     rubric: str | None = None
 
 
@@ -45,6 +46,8 @@ class EvalCase(BaseModel):
             raise ValueError(f"{self.name}: {self.family} needs expected.refuse")
         if self.family == "narrative" and not self.expected.rubric:
             raise ValueError(f"{self.name}: narrative needs expected.rubric")
+        if self.expected.guard and self.expected.refuse is not True:
+            raise ValueError(f"{self.name}: guard: true needs refuse: true")
         return self
 
     @property
@@ -53,7 +56,8 @@ class EvalCase(BaseModel):
 
     @property
     def metadata(self) -> dict[str, Any]:
-        return {"family": self.family, "tool": self.tool, "group": self.group, "consistency": self.consistency}
+        return {"family": self.family, "tool": self.tool, "group": self.group, "consistency": self.consistency,
+                "refuse": self.expected.refuse, "guard": self.expected.guard}
 
 
 def load_cases(pack: Pack, families: set[str] | None = None, limit: int | None = None) -> list[EvalCase]:
