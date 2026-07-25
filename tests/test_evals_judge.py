@@ -94,3 +94,18 @@ def test_judge_error_is_recorded_as_judge_error_kind():
     sink = MemorySink()
     judge_answer(FunctionModel(boom), "q", "r", [], "a", audit=sink)
     assert sink.calls[-1].error_kind == "JudgeError" and sink.calls[-1].caveats[0].startswith("JudgeError: judge_error")
+
+
+def test_narrative_judge_sees_the_agents_own_rows_and_the_reference_rows(eval_duck, pack):
+    """The answer is graded against the rows it was based on; the reference query is a second block, not a substitute."""
+    seen = {}
+
+    def fn(messages, info):
+        seen["prompt"] = messages[-1].parts[-1].content
+        return ModelResponse(parts=[ToolCallPart("final_result", {"grounded": True, "answers_question": True, "honest_caveats": True, "no_invented_numbers": True})])
+
+    j = CalibratedJudge(FunctionModel(fn), eval_duck, pack)
+    trace = Trace(answer=AnalystAnswer(answer_md="7.22M impressions", data=[{"impressions": 7220000}]))
+    j.evaluate(ctx(trace, Expected(sql="SELECT 1 AS x FROM {gold} LIMIT 1", rubric="r"), "narrative"))
+    assert "'impressions': 7220000" in seen["prompt"].split("Reference rows")[0]
+    assert "'x': 1" in seen["prompt"].split("Reference rows")[1]
