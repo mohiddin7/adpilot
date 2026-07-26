@@ -151,12 +151,12 @@ _OFF_TOPIC = re.compile(
     r"\b(recipe|cook|bake|ingredient|meal|breakfast|lunch|dinner|"
     r"weather|temperature|rain|snow|sunny|"
     r"write.+(code|script|program|function|class|python|javascript|java|rust)|how.do.i.code|"
-    r"poem|haiku|sonnet|limerick|story|joke|song|lyrics|essay|"
+    r"(write|compose|make.up|tell.me)\W+(me\W+)?(a|an|another)\W+(\w+\W+){0,2}(poem|haiku|sonnet|limerick|story|joke|song|lyrics|essay)|"
     r"horoscope|astrology|dating|relationship.advice|medical.advice|symptom|diagnos|"
     r"translate.+(to|from).+(spanish|french|german|chinese|japanese)|"
     r"solve.+(equation|integral|derivative|matrix)|"
     r"capital.of|population.of|who.invented|who.discovered|history.of.(?!.*marketing)|"
-    r"play.+(game|chess|sudoku)|tell.+(joke|story))\b",
+    r"play.+(game|chess|sudoku))\b",
     re.IGNORECASE,
 )
 

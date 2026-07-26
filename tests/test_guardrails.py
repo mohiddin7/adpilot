@@ -139,6 +139,10 @@ def test_scope():
     assert is_in_scope("What is this dashboard about?")
     assert not is_in_scope("Give me a recipe for lasagna")
     assert not is_in_scope("Write a poem about TikTok")
+    assert not is_in_scope("Tell me a joke") and not is_in_scope("write me a short story about ads")
+    # analytics phrasing that merely contains a creative-writing noun stays in scope (nr_ctr_story was refused before any model call)
+    assert is_in_scope("Tell me the story of our click-through rates.")
+    assert is_in_scope("What's the story behind the CPA spike, and which songs campaign drove it?")
 
 
 def test_budget():
