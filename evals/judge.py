@@ -85,6 +85,11 @@ class JudgeVerdict(BaseModel):
     def score(self) -> float:
         return sum([self.grounded, self.answers_question, self.honest_caveats, self.no_invented_numbers]) / 4
 
+    @property
+    def passed(self) -> bool:
+        """An answer to the wrong question (or a refusal) never passes, however grounded it is."""
+        return self.answers_question and self.score >= JUDGE_PASS_MIN
+
 
 _JUDGE_INSTRUCTIONS = """You grade an analytics assistant's answer against the query result it was based on.
 Return a verdict with four booleans:
@@ -92,7 +97,9 @@ Return a verdict with four booleans:
 - answers_question: it addresses the user's question directly.
 - honest_caveats: it does not overstate certainty; assumptions or limits are stated when relevant.
 - no_invented_numbers: every number in the answer appears in the data or reference rows (rounding and $K/$M formatting are fine).
-Also apply the case-specific rubric. Be strict: a wrong figure or a wrong winner fails grounded and no_invented_numbers."""
+Also apply the case-specific rubric. Be strict: a wrong figure or a wrong winner fails grounded and no_invented_numbers.
+When there are no data rows and the question asks for a definition or a general explanation, illustrative example numbers are fine
+and the answer counts as grounded if the explanation is correct; only claims about this account's actual performance need data rows."""
 
 
 def judge_answer(
@@ -154,7 +161,7 @@ class CalibratedJudge(Evaluator[Any, Trace, dict]):
                 self.model, question, exp.rubric or "", trace.answer.data or [], trace.answer.answer_md,
                 reference_rows=ref, audit=self.audit, context=RunContextInfo(source="judge", run_id=self.run_id, case_name=ctx.name, family=family), pack_name=self.pack.name,
             )
-            out: dict = {"judge": v.score, "judge_pass": v.score >= JUDGE_PASS_MIN}
+            out: dict = {"judge": v.score, "judge_pass": v.passed}
             if v.reason.startswith("judge_error"):
                 out["judge_error"] = True
             return out
@@ -198,7 +205,7 @@ def run_calibration(model: Model, pack: Any, audit: AuditSink | None = None, run
             model, e["question"], "Answer must be correct, grounded and honest.", e["data"], e["answer"],
             audit=audit, context=RunContextInfo(source="judge", run_id=run_id, case_name=e["name"], family="calibration"), pack_name=pack.name,
         )
-        if (v.score >= JUDGE_PASS_MIN) != (e["verdict"] == "pass"):
+        if v.passed != (e["verdict"] == "pass"):
             mismatches.append(e["name"])
     n = len(entries)
     return CalibrationResult(n=n, agreement=(n - len(mismatches)) / n if n else 0.0, mismatches=mismatches)

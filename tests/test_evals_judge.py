@@ -72,7 +72,17 @@ def test_calibrated_judge_narrative_and_rescue(eval_duck, pack):
 def test_calibration_agreement(pack):
     always_pass = verdict_model()
     res = run_calibration(always_pass, pack)
-    assert res.n == 10 and res.agreement == 0.5 and len(res.mismatches) == 5  # 5 fail-labelled entries mismatched
+    assert res.n == 52 and len(res.mismatches) == 27 and res.agreement == 25 / 52  # every fail-labelled entry mismatched
+    assert {e for e in res.mismatches if not e.startswith("cal_fail_")} == set()
+
+
+def test_off_question_answer_cannot_pass_on_the_other_three_booleans(eval_duck, pack):
+    v = JudgeVerdict(grounded=True, answers_question=False, honest_caveats=True, no_invented_numbers=True)
+    assert v.score == 0.75 and not v.passed
+    j = CalibratedJudge(verdict_model(answers_question=False), eval_duck, pack)
+    out = j.evaluate(ctx(Trace(answer=AnalystAnswer(answer_md="x")), Expected(rubric="r"), "narrative"))
+    assert out == {"judge": 0.75, "judge_pass": False}
+    assert CalibratedJudge(verdict_model(), eval_duck, pack).evaluate(ctx(Trace(answer=AnalystAnswer(answer_md="x")), Expected(rubric="r"), "narrative"))["judge_pass"]
 
 
 def test_judge_answer_records_a_judge_call(pack):

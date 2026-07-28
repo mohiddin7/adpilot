@@ -37,7 +37,7 @@ from evals import deterministic
 from evals.cases import check_cases, load_cases, to_dataset
 from evals.evaluators import Factual, Refuses, SafeSql, Trajectory
 from evals.invariants import evaluate_invariants
-from evals.judge import JUDGE_PASS_MIN, CalibratedJudge, build_judge_model, judge_config, run_calibration
+from evals.judge import CalibratedJudge, build_judge_model, judge_config, run_calibration
 from evals.scorecard import (
     Scorecard,
     build_scorecard,
@@ -92,7 +92,7 @@ def scores_from_report(report: Any, run_id: str, judge_name: str | None) -> list
             if isinstance(val, bool):
                 value, passed = float(val), val
             elif isinstance(val, int | float):
-                value, passed = float(val), (val >= JUDGE_PASS_MIN if name == "judge" else None)
+                value, passed = float(val), (bool(c.assertions["judge_pass"].value) if name == "judge" and "judge_pass" in c.assertions else None)
             else:
                 value, passed = None, None
             rows.append(ScoreRow(trace_id=tid, run_id=run_id, name=name, value=value, passed=passed, source="judge" if is_judge else "code",
