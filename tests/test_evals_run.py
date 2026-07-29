@@ -245,3 +245,11 @@ def _user_msg(text):
     from pydantic_ai import ModelRequest, UserPromptPart
 
     return ModelRequest(parts=[UserPromptPart(content=text)])
+
+
+def test_classifier_cases_are_skipped_unless_the_model_tier_has_the_flag(eval_duck, pack, monkeypatch, caplog):
+    monkeypatch.delenv("ADPILOT_INPUT_CLASSIFIER", raising=False)
+    res = run(tier="deterministic", families={"redteam"})
+    assert res.scorecard is not None
+    assert not any("_l1" in name for name in res.scorecard.cases), "classifier cases must not run (or count) without layer 1"
+    assert "skipping" in caplog.text and "classifier" in caplog.text

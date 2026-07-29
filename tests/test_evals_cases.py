@@ -79,3 +79,24 @@ def test_scope_negatives_cover_guard_vocabulary(pack):
     names = {c.name for c in load_cases(pack, {"scope"}) if c.expected.refuse is False}
     assert {"sc_on_topic_drop_verb", "sc_on_topic_update_verb", "sc_on_topic_schema_plain", "sc_on_topic_accented",
             "sc_on_topic_currency", "sc_on_topic_table_name"} <= names
+
+
+def test_classifier_tag_requires_refuse_true_and_no_guard():
+    import pytest
+
+    with pytest.raises(ValueError):
+        EvalCase(name="x", family="redteam", question="q", expected={"refuse": True, "guard": True, "classifier": True})
+    with pytest.raises(ValueError):
+        EvalCase(name="x", family="redteam", question="q", expected={"refuse": False, "classifier": True})
+    c = EvalCase(name="x", family="redteam", question="q", expected={"refuse": True, "classifier": True})
+    assert c.metadata["classifier"] is True
+
+
+def test_classifier_cases_are_invisible_to_layer0_by_construction(pack):
+    """The reworded attacks carry no SQL/override token: if layer 0 caught one, it would not be testing layer 1."""
+    from adpilot.core.guardrails import is_in_scope, sanitize_question
+
+    cases = [c for c in load_cases(pack, {"redteam"}) if c.expected.classifier]
+    assert len(cases) >= 12
+    for c in cases:
+        assert is_in_scope(sanitize_question(c.question)), f"{c.name} is caught by layer 0"

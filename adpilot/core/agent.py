@@ -17,7 +17,7 @@ from pydantic_ai.models import Model
 from adpilot.core.audit import build_record, new_trace_id, primary_model_name
 from adpilot.core.chart import ChartSpec, heuristic_chart
 from adpilot.core.errors import AdPilotError, ErrorKind
-from adpilot.core.guardrails import Budget, is_in_scope, redact_output, sanitize_question
+from adpilot.core.guardrails import Budget, classify_question, is_in_scope, redact_output, sanitize_question
 from adpilot.core.tools import AgentDeps, SqlResult, execute, records, register_tools
 
 log = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ REFUSAL_TEXT = (
 
 def refused(answer: AnalystAnswer) -> bool:
     """True for a model Refusal, an out-of-scope block, or a guard rejection (sanitize_question)."""
-    blocked_by_guard = answer.caveats == ["InputPolicy"] and answer.confidence == 0.0
+    blocked_by_guard = answer.caveats[:1] == ["InputPolicy"] and answer.confidence == 0.0
     return "OutOfScope" in answer.caveats or answer.answer_md == REFUSAL_TEXT or blocked_by_guard
 
 
@@ -85,11 +85,13 @@ def ask(
     started, t0 = datetime.now(UTC), time.perf_counter()
     asked = question
     model_requested = primary_model_name(model) or primary_model_name(agent.model)
+    guard_caveats: list[str] = []  # e.g. GuardDegraded when layer 1 was unreachable and the answer ran on layer 0 alone
 
     def done(answer: AnalystAnswer, messages: list[ModelMessage], usage=None) -> tuple[AnalystAnswer, list[ModelMessage], str]:
         answer.answer_md, leaked = redact_output(answer.answer_md)
         if leaked:
             answer.caveats.append("OutputPolicy")
+        answer.caveats.extend(c for c in guard_caveats if c not in answer.caveats)
         deps.audit.record(build_record(
             trace_id=trace_id, ts=started, latency_s=time.perf_counter() - t0, question=asked, answer_md=answer.answer_md,
             sql=answer.sql, refused=refused(answer), confidence=answer.confidence, caveats=answer.caveats, messages=messages,
@@ -99,11 +101,12 @@ def ask(
         return answer, messages, trace_id
 
     try:
-        question = sanitize_question(question)
+        question = sanitize_question(question)  # layer 0
+        if not is_in_scope(question):
+            return done(AnalystAnswer(answer_md=REFUSAL_TEXT, confidence=1.0, caveats=["OutOfScope"]), [])
+        guard_caveats = classify_question(question)  # layer 1 (off unless ADPILOT_INPUT_CLASSIFIER is set)
     except AdPilotError as exc:
-        return done(AnalystAnswer(answer_md=exc.message, confidence=0.0, caveats=[exc.kind]), [])
-    if not is_in_scope(question):
-        return done(AnalystAnswer(answer_md=REFUSAL_TEXT, confidence=1.0, caveats=["OutOfScope"]), [])
+        return done(AnalystAnswer(answer_md=exc.message, confidence=0.0, caveats=[exc.kind] + ([exc.layer] if exc.layer else [])), [])
 
     deps.budget = Budget()
     if model is None and agent.model is None:

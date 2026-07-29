@@ -19,10 +19,12 @@ ErrorKind = Literal[
 
 
 class AdPilotError(Exception):
-    """Typed, user-safe error. `hint` is advice the model can act on."""
+    """Typed, user-safe error. `hint` is advice the model can act on; `layer` names the guard that raised it
+    (e.g. "classifier:jev") so trip rates per layer are queryable from the caveats in the audit trail."""
 
-    def __init__(self, kind: ErrorKind, message: str, hint: str = "") -> None:
+    def __init__(self, kind: ErrorKind, message: str, hint: str = "", layer: str = "") -> None:
         super().__init__(message)
         self.kind = kind
         self.message = message
         self.hint = hint
+        self.layer = layer

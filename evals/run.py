@@ -127,6 +127,11 @@ def run(
     connector = get_connector("duckdb", pack)
     load_fixtures(connector, pack)
     cases = load_cases(pack, families, limit)
+    if tier != "model" or not os.environ.get("ADPILOT_INPUT_CLASSIFIER"):
+        skipped = [c.name for c in cases if c.expected.classifier]
+        if skipped:  # skipped, never counted as passed: a run without layer 1 cannot prove layer 1
+            log.warning("skipping %d classifier cases (model tier with ADPILOT_INPUT_CLASSIFIER only): %s", len(skipped), ", ".join(skipped))
+            cases = [c for c in cases if not c.expected.classifier]
     problems = check_cases(connector, pack, cases)
     if check_only:
         return RunResult(None, not problems, problems=problems)
