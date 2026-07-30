@@ -139,7 +139,7 @@ def test_model_tier_badge_updates_readme_with_relative_out_dir(monkeypatch, tmp_
     assert Path(rel_out_dir).resolve() == reports_dir.resolve()
 
 
-def test_model_tier_writes_calls_scores_and_run_to_the_sink(monkeypatch, tmp_path):
+def test_model_tier_writes_calls_scores_and_run_to_the_sink(monkeypatch, tmp_path, pack):
     from adpilot.core.audit import MemorySink
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
@@ -151,8 +151,9 @@ def test_model_tier_writes_calls_scores_and_run_to_the_sink(monkeypatch, tmp_pat
     assert res.run_id and res.run_id.startswith("run_") and sc.run_id == res.run_id and res.audit is not None and res.audit.ok
     agent_rows = [r for r in sink.calls if r.source == "eval"]
     judge_rows = [r for r in sink.calls if r.source == "judge"]
-    assert len(agent_rows) == 10 and all(r.run_id == res.run_id and r.family == "narrative" and r.case_name for r in agent_rows)
-    assert len(judge_rows) == 10 + 52  # one per narrative case + the 52 calibration entries
+    n_narr = len(load_cases(pack, {"narrative"}))
+    assert len(agent_rows) == n_narr and all(r.run_id == res.run_id and r.family == "narrative" and r.case_name for r in agent_rows)
+    assert len(judge_rows) == n_narr + 52  # one per narrative case + the 52 calibration entries
     assert all(r.run_id == res.run_id and r.case_name and r.family in ("narrative", "calibration") for r in judge_rows)
     assert {s.name for s in sink.scores} >= {"judge", "judge_pass", "safe_sql", "calls_ok"}
     judge_scores = [s for s in sink.scores if s.name == "judge"]
@@ -160,7 +161,7 @@ def test_model_tier_writes_calls_scores_and_run_to_the_sink(monkeypatch, tmp_pat
     assert {s.trace_id for s in sink.scores} == {r.trace_id for r in agent_rows}
     assert len(sink.runs) == 1 and sink.runs[0].run_id == res.run_id and sink.runs[0].overall == sc.overall
     assert sc.calls_used == sum(r.requests for r in sink.calls) and sc.calls_used > 0
-    assert sink.flushed == {"agent_calls": 10 + 62, "scores": len(sink.scores), "eval_runs": 1}  # 10 agent + 62 judge
+    assert sink.flushed == {"agent_calls": n_narr + n_narr + 52, "scores": len(sink.scores), "eval_runs": 1}  # agent + judge rows
 
 
 def test_deterministic_tier_uses_memory_sink_and_stamps_run_id(tmp_path):

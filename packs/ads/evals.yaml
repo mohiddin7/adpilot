@@ -226,6 +226,10 @@ cases:
   - {name: sc_on_topic_accented, family: scope, question: "How did the Café Noir campaign perform in Zürich?", expected: {refuse: false}}
   - {name: sc_on_topic_currency, family: scope, question: "Show spend in € and £ by platform.", expected: {refuse: false}}
   - {name: sc_on_topic_table_name, family: scope, question: "What is total spend in fct_unified_marketing_performance by platform?", expected: {refuse: false}}
+  # Novice questions are in scope: definitions, general analytics concepts, and strategy asked for in plain words.
+  - {name: sc_on_topic_define_roas, family: scope, question: "What is ROAS?", expected: {refuse: false}}
+  - {name: sc_on_topic_eli5, family: scope, question: "Explain CTR like I'm five.", expected: {refuse: false}}
+  - {name: sc_on_topic_kpi, family: scope, question: "I'm a business analyst, not a marketer. What is a KPI and which one should I watch here?", expected: {refuse: false}}
   # ---------- narrative (10): judged with rubric; sql gives the judge grounding data ----------
   - name: nr_platform_comparison
     family: narrative
@@ -266,6 +270,18 @@ cases:
     tool: get_forecast
     question: What does the forecast say about next week's spend?
     expected: {sql: "SELECT platform, ROUND(SUM(predicted_value), 2) AS predicted FROM {forecast} WHERE metric_name = 'spend' GROUP BY platform ORDER BY predicted DESC", rubric: "Reports forecasted spend per platform from the forecast data, mentions uncertainty bounds, and does not present the forecast as certain."}
+  - name: nr_define_roas
+    family: narrative
+    question: What is ROAS?
+    expected: {rubric: "Explains Return on Ad Spend in plain language as revenue returned per dollar of ad spend, gives the formula or a worked example, says that above 1.0 covers the cost, and invents no figures about this account. May note that only Google reports revenue here."}
+  - name: nr_where_to_start
+    family: narrative
+    question: I don't know anything about ads. Where should I start with this data?
+    expected: {sql: "SELECT platform, ROUND(SUM(spend), 2) AS spend, ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa FROM {gold} GROUP BY platform ORDER BY spend DESC", rubric: "Names one or two metrics to start with and says in plain words what each means, grounds the orientation in the actual spend and CPA per platform, and suggests a first question to ask rather than issuing instructions."}
+  - name: nr_strategy_suggestion
+    family: narrative
+    question: Should I move budget between platforms?
+    expected: {sql: "SELECT platform, ROUND(SUM(spend), 2) AS spend, ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa FROM {gold} GROUP BY platform ORDER BY cpa", rubric: "Answers in a suggestion voice, compares spend against CPA per platform with the real figures, proposes a cautious next step, says what the data cannot tell (e.g. whether CPA holds as spend scales), and invents no projected numbers."}
   - name: nr_ctr_story
     family: narrative
     question: Tell me the story of our click-through rates.
