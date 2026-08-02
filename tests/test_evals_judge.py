@@ -135,3 +135,18 @@ def test_narrative_judge_sees_rows_from_every_query_the_agent_ran(eval_duck, pac
                   rows_seen=[{"quality_score": 7.74}, {"spend": 37686.2}])
     j.evaluate(ctx(trace, Expected(rubric="r"), "narrative"))
     assert "'quality_score': 7.74" in seen["prompt"] and "'spend': 37686.2" in seen["prompt"]
+
+
+def test_judge_is_given_the_pack_glossary_as_domain_facts(eval_duck, pack):
+    """'Above 1.0 is profitable' and 'ROAS is Google-only' come from the glossary the agent must state; the judge
+    was failing them as unsupported because it never saw it. Calibration gets the same glossary."""
+    seen = []
+
+    def fn(messages, info):
+        seen.append(messages[-1].parts[-1].content)
+        return ModelResponse(parts=[ToolCallPart("final_result", {"grounded": True, "answers_question": True, "honest_caveats": True, "no_invented_numbers": True})])
+
+    CalibratedJudge(FunctionModel(fn), eval_duck, pack).evaluate(ctx(Trace(answer=AnalystAnswer(answer_md="x")), Expected(rubric="r"), "narrative"))
+    run_calibration(FunctionModel(fn), pack)
+    assert all("Return on Ad Spend (ROAS)" in p and "Google only" in p for p in seen[:2])
+    assert "glossary" not in judge_answer(FunctionModel(fn), "q", "r", [], "a").reason and "Google only" not in seen[-1]  # opt-in
