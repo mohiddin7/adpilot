@@ -109,6 +109,7 @@ def ask(
         return done(AnalystAnswer(answer_md=exc.message, confidence=0.0, caveats=[exc.kind] + ([exc.layer] if exc.layer else [])), [])
 
     deps.budget = Budget()
+    deps.results.clear()
     if model is None and agent.model is None:
         return done(_rule_based(deps, question, "ModelUnavailable", "No model API key configured"), [])
 
@@ -157,6 +158,7 @@ def _rule_based(deps: AgentDeps, question: str, kind: ErrorKind, detail: str) ->
     """No model: answer from the pack's canned queries when the question matches one."""
     caveat = f"{kind}: answered without the language model ({detail[:160]})."
     deps.budget = Budget()
+    deps.results.clear()
     for fq in deps.pack.raw.get("fallback_queries", []):
         if all(re.search(k, question, re.IGNORECASE) for k in fq["keywords"]):
             res = execute(deps, deps.pack.render(fq["sql"], deps.connector.dialect))

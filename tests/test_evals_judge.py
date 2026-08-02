@@ -119,3 +119,19 @@ def test_narrative_judge_sees_the_agents_own_rows_and_the_reference_rows(eval_du
     j.evaluate(ctx(trace, Expected(sql="SELECT 1 AS x FROM {gold} LIMIT 1", rubric="r"), "narrative"))
     assert "'impressions': 7220000" in seen["prompt"].split("Reference rows")[0]
     assert "'x': 1" in seen["prompt"].split("Reference rows")[1]
+
+
+def test_narrative_judge_sees_rows_from_every_query_the_agent_ran(eval_duck, pack):
+    """The agent may run up to three queries and narrate from all of them; only the last one is `answer.data`.
+    Numbers from an earlier query were being graded as invented."""
+    seen = {}
+
+    def fn(messages, info):
+        seen["prompt"] = messages[-1].parts[-1].content
+        return ModelResponse(parts=[ToolCallPart("final_result", {"grounded": True, "answers_question": True, "honest_caveats": True, "no_invented_numbers": True})])
+
+    j = CalibratedJudge(FunctionModel(fn), eval_duck, pack)
+    trace = Trace(answer=AnalystAnswer(answer_md="7.74 quality, $37.7K spend", data=[{"spend": 37686.2}]),
+                  rows_seen=[{"quality_score": 7.74}, {"spend": 37686.2}])
+    j.evaluate(ctx(trace, Expected(rubric="r"), "narrative"))
+    assert "'quality_score': 7.74" in seen["prompt"] and "'spend': 37686.2" in seen["prompt"]

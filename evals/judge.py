@@ -158,7 +158,7 @@ class CalibratedJudge(Evaluator[Any, Trace, dict]):
             # Grade against the rows the agent actually queried; the reference query only shows what a correct answer needs.
             ref = reference_rows(self.connector, self.pack, exp) if exp.sql else []
             v = judge_answer(
-                self.model, question, exp.rubric or "", trace.answer.data or [], trace.answer.answer_md,
+                self.model, question, exp.rubric or "", trace.rows_seen or trace.answer.data or [], trace.answer.answer_md,
                 reference_rows=ref, audit=self.audit, context=RunContextInfo(source="judge", run_id=self.run_id, case_name=ctx.name, family=family), pack_name=self.pack.name,
             )
             out: dict = {"judge": v.score, "judge_pass": v.passed}

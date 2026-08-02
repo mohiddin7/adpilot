@@ -34,6 +34,7 @@ class Trace(BaseModel):
     tool_calls: list[str] = []
     sql_attempted: list[str] = []
     sql_executed: list[str] = []
+    rows_seen: list[dict] = []  # rows from every query the agent ran on the final turn (answer.data is only the last one)
     repairs: int = 0
     model_calls: int = 0
     refused: bool = False
@@ -96,6 +97,7 @@ def make_task(
                 trace.model_calls, trace.tool_calls, trace.sql_attempted, trace.repairs = s.model_calls, s.tool_calls, s.sql_attempted, s.repairs
         trace.duration_s = round(time.perf_counter() - start, 3)
         trace.sql_executed = list(deps.connector.executed) if isinstance(deps.connector, RecordingSource) else []
+        trace.rows_seen = [row for r in deps.results for row in r.rows[:30]]
         trace.refused = refused(trace.answer)
         trace.error_kind = error_kind_of(trace.answer.caveats)
         return trace

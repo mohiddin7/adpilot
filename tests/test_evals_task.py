@@ -80,3 +80,25 @@ def test_recording_source_captures_executed_sql(duck):
     rec = RecordingSource(duck)
     rec.query(f"SELECT 1 AS x FROM {GOLD} LIMIT 1")
     assert rec.executed == [f"SELECT 1 AS x FROM {GOLD} LIMIT 1"] and rec.dialect == "duckdb"
+
+
+def test_trace_collects_rows_from_every_executed_query(eval_deps_factory, pack):
+    """Two run_sql calls → rows_seen holds both result sets, in order; answer.data holds only the last."""
+    from adpilot.core.agent import build_agent
+    from evals.task import EvalInputs, make_task
+
+    q1 = pack.render("SELECT platform, ROUND(SUM(spend), 2) AS spend FROM {gold} GROUP BY platform ORDER BY platform", "duckdb")
+    q2 = pack.render("SELECT ROUND(SUM(conversions), 0) AS conversions FROM {gold}", "duckdb")
+
+    def fn(messages, info):
+        calls = sum(1 for m in messages for p in m.parts if p.__class__.__name__ == "ToolReturnPart")
+        if calls == 0:
+            return ModelResponse(parts=[ToolCallPart("run_sql", {"sql": q1})])
+        if calls == 1:
+            return ModelResponse(parts=[ToolCallPart("run_sql", {"sql": q2})])
+        return ModelResponse(parts=[ToolCallPart("final_result_AnalystAnswer", {"answer_md": "done", "sql": q2})])
+
+    task = make_task(build_agent(), eval_deps_factory, model_for=lambda inputs: FunctionModel(fn))
+    trace = task(EvalInputs(name="t", question="q"))
+    assert trace.rows_seen and "platform" in trace.rows_seen[0] and "conversions" in trace.rows_seen[-1]
+    assert trace.answer.data and "conversions" in trace.answer.data[0] and "platform" not in trace.answer.data[0]
