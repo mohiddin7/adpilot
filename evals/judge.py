@@ -116,7 +116,7 @@ def judge_answer(
     pack_name: str = "ads",
 ) -> JudgeVerdict:
     agent: Agent[None, JudgeVerdict] = Agent(model, output_type=JudgeVerdict, instructions=_JUDGE_INSTRUCTIONS, retries=1, name="adpilot-judge")
-    prompt = f"Question: {question}\n\nRubric: {rubric}\n\nData rows the answer was based on (max 30): {data_rows[:30]}\n\n"
+    prompt = f"Question: {question}\n\nRubric: {rubric}\n\nData rows the answer was based on: {data_rows}\n\n"
     if reference_rows:
         prompt += f"Reference rows, what a correct query returns (max 30): {reference_rows[:30]}\n\n"
     if glossary:

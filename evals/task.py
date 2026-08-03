@@ -97,7 +97,7 @@ def make_task(
                 trace.model_calls, trace.tool_calls, trace.sql_attempted, trace.repairs = s.model_calls, s.tool_calls, s.sql_attempted, s.repairs
         trace.duration_s = round(time.perf_counter() - start, 3)
         trace.sql_executed = list(deps.connector.executed) if isinstance(deps.connector, RecordingSource) else []
-        trace.rows_seen = [row for r in deps.results for row in r.rows[:30]]
+        trace.rows_seen = [row for r in deps.results for row in r.rows]  # exactly what the tool returned to the model
         trace.refused = refused(trace.answer)
         trace.error_kind = error_kind_of(trace.answer.caveats)
         return trace

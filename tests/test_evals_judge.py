@@ -150,3 +150,14 @@ def test_judge_is_given_the_pack_glossary_as_domain_facts(eval_duck, pack):
     run_calibration(FunctionModel(fn), pack)
     assert all("Return on Ad Spend (ROAS)" in p and "Google only" in p for p in seen[:2])
     assert "glossary" not in judge_answer(FunctionModel(fn), "q", "r", [], "a").reason and "Google only" not in seen[-1]  # opt-in
+
+
+def test_judge_sees_every_row_the_agent_saw_not_a_30_row_head():
+    seen = {}
+
+    def fn(messages, info):
+        seen["prompt"] = messages[-1].parts[-1].content
+        return ModelResponse(parts=[ToolCallPart("final_result", {"grounded": True, "answers_question": True, "honest_caveats": True, "no_invented_numbers": True})])
+
+    judge_answer(FunctionModel(fn), "q", "r", [{"day": i} for i in range(95)], "a")
+    assert "'day': 94" in seen["prompt"]
