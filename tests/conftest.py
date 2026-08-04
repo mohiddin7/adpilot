@@ -11,6 +11,12 @@ from adpilot.packs.loader import load_pack
 
 os.environ["PYDANTIC_AI_NO_BANNER"] = "1"
 models.ALLOW_MODEL_REQUESTS = False
+# Layer 1 calls the classifier over plain HTTP, which ALLOW_MODEL_REQUESTS does not cover. `adpilot.cli.main`
+# calls load_dotenv(), so a CLI test pulls the developer's .env into the session env for every test after it.
+# Empty strings survive load_dotenv (it never overrides an existing var) and read as "unset", so the suite
+# cannot reach the classifier whatever .env or the shell says. Tests opt in by monkeypatching `_jev_choice`.
+os.environ["ADPILOT_INPUT_CLASSIFIER"] = ""
+os.environ["JEV_API_KEY"] = ""
 
 
 @pytest.fixture(scope="session")

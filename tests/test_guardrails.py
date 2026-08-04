@@ -183,6 +183,8 @@ def test_redact_output(text, expected, kinds):
 
 
 # ---- layer 1: semantic classifier (Jev Choice), faked — no test touches the network ----
+import io  # noqa: E402
+
 import pytest as _pytest  # noqa: E402
 
 from adpilot.core import guardrails as _g  # noqa: E402
@@ -191,6 +193,17 @@ from adpilot.core.guardrails import classify_question  # noqa: E402
 
 def _jev(p_safe, p_inj, p_oos):
     return lambda *a, **k: {"safe": p_safe, "injection": p_inj, "out_of_scope": p_oos}
+
+
+def test_suite_is_hermetic_against_the_developers_environment():
+    """conftest blanks the flag: neither the shell nor the .env that `adpilot.cli.main` loads mid-session
+    (via load_dotenv, which cannot override an existing var) may let a test reach the classifier."""
+    import os
+
+    from adpilot.cli import main  # the CLI entry point that calls load_dotenv()
+
+    main(["--connector", "duckdb", "schema"], out=io.StringIO())
+    assert not os.environ.get("ADPILOT_INPUT_CLASSIFIER") and not os.environ.get("JEV_API_KEY")
 
 
 def test_classifier_off_by_default_makes_no_call(monkeypatch):
