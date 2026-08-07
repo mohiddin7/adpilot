@@ -23,8 +23,10 @@ from evals.cases import ACCURACY_FAMILIES, Expected, reference_rows
 from evals.evaluators import Factual
 from evals.task import Trace
 
-DEFAULT_JUDGE_PRIMARY = "google/gemma-4-26b-a4b-it:free"
-DEFAULT_JUDGE_FALLBACK = "inclusionai/ling-3.0-flash-vl:free"
+# Agreement with the human-labelled calibration set, measured 2026-09-21: nex 10/10, dots 10/10,
+# gemma 5/10 (429 on every call). Neither default is the agent's model: a judge must not grade itself.
+DEFAULT_JUDGE_PRIMARY = "nex-agi/nex-n2.5-pro:free"
+DEFAULT_JUDGE_FALLBACK = "dots-studio/dots-3-note-preview:free"
 DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1"
 JUDGE_RELIABLE_MIN = 0.8
 JUDGE_PASS_MIN = 0.75

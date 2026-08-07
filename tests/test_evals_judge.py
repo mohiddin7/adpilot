@@ -27,7 +27,8 @@ def verdict_model(**flags):
 def test_config_defaults_and_fallbacks():
     cfg = judge_config({})
     assert cfg.api_key is None and cfg.endpoint == "https://openrouter.ai/api/v1"
-    assert cfg.primary == "google/gemma-4-26b-a4b-it:free" and cfg.fallback == "inclusionai/ling-3.0-flash-vl:free"
+    # 2026-09-21 calibration head-to-head: nex 10/10, dots 10/10, gemma 5/10 (429s on a shared quota).
+    assert cfg.primary == "nex-agi/nex-n2.5-pro:free" and cfg.fallback == "dots-studio/dots-3-note-preview:free"
     # the judge borrows the agent's key, but never the agent's model — a judge must not grade itself
     cfg = judge_config({"AGENT_LLM_BEARER_TOKEN": "agent-key", "AGENT_LLM_TARGET_MODEL": "agent-model"})
     assert cfg.api_key == "agent-key" and cfg.primary != "agent-model"
@@ -42,14 +43,14 @@ def test_legacy_judge_names_are_ignored_with_a_warning(caplog):
 
     with caplog.at_level(logging.WARNING):
         cfg = judge_config({"LLM_JUDGE_BEARER_TOKEN": "old", "LLM_JUDGE_TARGET_MODEL": "old-model"})
-    assert cfg.api_key is None and cfg.primary == "google/gemma-4-26b-a4b-it:free"
+    assert cfg.api_key is None and cfg.primary == "nex-agi/nex-n2.5-pro:free"
     assert "JUDGE_LLM_BEARER_TOKEN" in caplog.text
 
 
 def test_build_model_none_without_key():
     assert build_judge_model(judge_config({})) is None
     m = build_judge_model(judge_config({"JUDGE_LLM_BEARER_TOKEN": "k"}))
-    assert m is not None and "gemma" in m.model_name
+    assert m is not None and "nex" in m.model_name
 
 
 def test_judge_answer_scores():

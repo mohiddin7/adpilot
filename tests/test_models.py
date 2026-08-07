@@ -16,6 +16,12 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(k, raising=False)
 
 
+def test_defaults_are_the_measured_chain():
+    # 2026-09-21 A/B: gemma-4 free 429s on a shared quota, so it is no longer the fallback.
+    assert m.DEFAULT_PRIMARY == "inclusionai/ling-3.0-flash-vl:free"
+    assert m.DEFAULT_FALLBACK == "poolside/laguna-xs-2.1:free"
+
+
 def test_api_key_reads_the_agent_name(monkeypatch):
     assert m.api_key_from_env() is None
     monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "k")

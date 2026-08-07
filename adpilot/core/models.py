@@ -14,8 +14,10 @@ from adpilot.core.guardrails import MODEL_RATE_LIMITER
 
 log = logging.getLogger(__name__)
 
+# Measured on the calibration set and a full model-tier A/B, 2026-09-21. gemma-4's free tier shares a
+# Google AI Studio quota that was exhausted for a whole run, so it is no longer in either chain.
 DEFAULT_PRIMARY = "inclusionai/ling-3.0-flash-vl:free"
-DEFAULT_FALLBACK = "google/gemma-4-26b-a4b-it:free"
+DEFAULT_FALLBACK = "poolside/laguna-xs-2.1:free"
 
 
 def renamed_env(name: str, *legacy: str, env: Mapping[str, str] | None = None, default: str | None = None) -> str | None:
