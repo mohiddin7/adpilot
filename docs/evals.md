@@ -46,8 +46,8 @@ total, the worst-CPA campaign appears in the CPA ranking, and so on.
 wrong units, invented caveats, correct-but-off-question answers, forecasts stated as fact, nulls read as
 zero, ties broken, plus definitional and strategy answers where illustrative numbers are fine but claims about
 this account are not. Each run scores them and reports the judge's agreement; below 80% the judge is marked
-unreliable and its scores are excluded from the overall score and the gate. The judge uses its own model chain (`LLM_JUDGE_*` variables) so the agent's
-primary model never grades itself.
+unreliable and its scores are excluded from the overall score and the gate. The judge uses its own model chain (`JUDGE_LLM_*` variables, defaulting to a different
+vendor from the agent's) so the agent's model never grades itself.
 
 ## Scorecard and gate
 

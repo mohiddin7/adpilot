@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+from collections.abc import Mapping
 
 from pydantic_ai.models import Model
 from pydantic_ai.models.fallback import FallbackModel
@@ -10,8 +12,26 @@ from pydantic_ai.models.wrapper import WrapperModel
 
 from adpilot.core.guardrails import MODEL_RATE_LIMITER
 
+log = logging.getLogger(__name__)
+
 DEFAULT_PRIMARY = "inclusionai/ling-3.0-flash-vl:free"
 DEFAULT_FALLBACK = "google/gemma-4-26b-a4b-it:free"
+
+
+def renamed_env(name: str, *legacy: str, env: Mapping[str, str] | None = None, default: str | None = None) -> str | None:
+    """Read `name`. Legacy spellings are ignored, never aliased — but say so, loudly enough to find.
+
+    A silently ignored key reads as "no key configured" three layers away; a stale duplicate beside a
+    live one is how local, CI and the dashboard drifted apart in the first place.
+    """
+    env = os.environ if env is None else env
+    stale = [o for o in legacy if env.get(o)]
+    if stale:
+        if name in env:
+            log.warning("%s is set and ignored (renamed to %s, which is also set) — delete the old name", ", ".join(stale), name)
+        else:
+            log.warning("%s is set but ignored: this variable was renamed to %s", ", ".join(stale), name)
+    return env[name] if name in env else default
 
 
 class RateLimited(WrapperModel):
@@ -23,7 +43,16 @@ class RateLimited(WrapperModel):
 
 
 def api_key_from_env() -> str | None:
-    return os.environ.get("OPENROUTER_API_KEY") or os.environ.get("LLM_BEARER_TOKEN") or None
+    return renamed_env("AGENT_LLM_BEARER_TOKEN", "OPENROUTER_API_KEY", "LLM_BEARER_TOKEN") or None
+
+
+def agent_primary_from_env() -> str:
+    return renamed_env("AGENT_LLM_TARGET_MODEL", "LLM_TARGET_MODEL", default=DEFAULT_PRIMARY) or DEFAULT_PRIMARY
+
+
+def agent_fallback_from_env() -> str | None:
+    """An explicit empty value means "no fallback"; an unset variable means the default chain."""
+    return renamed_env("AGENT_LLM_FALLBACK_MODEL", "LLM_FALLBACK_MODEL", default=DEFAULT_FALLBACK)
 
 
 def build_model(
@@ -39,8 +68,8 @@ def build_model(
     from pydantic_ai.providers.openrouter import OpenRouterProvider
 
     provider = OpenRouterProvider(api_key=api_key)
-    primary = primary or os.environ.get("LLM_TARGET_MODEL", DEFAULT_PRIMARY)
-    fallback = fallback if fallback is not None else os.environ.get("LLM_FALLBACK_MODEL", DEFAULT_FALLBACK)
+    primary = primary or agent_primary_from_env()
+    fallback = fallback if fallback is not None else agent_fallback_from_env()
     chain = [RateLimited(OpenRouterModel(primary, provider=provider))]
     if fallback:
         chain.append(RateLimited(OpenRouterModel(fallback, provider=provider)))
