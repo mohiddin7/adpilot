@@ -47,7 +47,9 @@ wrong units, invented caveats, correct-but-off-question answers, forecasts state
 zero, ties broken, plus definitional and strategy answers where illustrative numbers are fine but claims about
 this account are not. Each run scores them and reports the judge's agreement; below 80% the judge is marked
 unreliable and its scores are excluded from the overall score and the gate. The judge uses its own model chain (`JUDGE_LLM_*` variables, defaulting to a different
-vendor from the agent's) so the agent's model never grades itself.
+vendor from the agent's) so the agent's model never grades itself. The scorecard names the judge that *answered*,
+not the one that was requested: a rate-limited primary falls back silently, and on 2026-09-21 that turned out to mean
+the agent's own model grading its own narrative answers.
 
 ## Scorecard and gate
 

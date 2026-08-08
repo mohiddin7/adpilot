@@ -214,6 +214,12 @@ def write_reports(sc: Scorecard, out_dir: Path, baseline: Scorecard | None = Non
     (out_dir / "latest.md").write_text(render_markdown(sc, baseline))
 
 
+def _judge_used(sc: Scorecard) -> str:
+    """Name the judge that answered when it is not the one that was asked for (silent fallback)."""
+    used = sc.models.get("judge_used")
+    return f" (answered: {used})" if used and used != sc.models.get("judge") else ""
+
+
 def _fmt(x: float | None, suffix: str = "%") -> str:
     return "n/a" if x is None else f"{x:.1f}{suffix}"
 
@@ -234,7 +240,7 @@ def render_markdown(sc: Scorecard, baseline: Scorecard | None) -> str:
         f"- Safe SQL rate: {_fmt(sc.safe_sql_rate)}; trajectory: " + ", ".join(f"{k} {v:.1f}%" for k, v in sc.trajectory.items()),
         f"- Guard false-positive rate: {_fmt(sc.guard_fp_rate)} (budget 0%)",
         f"- Judge: agreement with calibration set {_fmt(_pct(sc.judge_agreement))} → {'reliable' if sc.judge_reliable else 'UNRELIABLE (quality excluded)'}; rescued {sc.judge_rescued} factual cases",
-        f"- Models: agent {sc.models.get('agent_primary')} → {sc.models.get('agent_fallback')}; judge {sc.models.get('judge')}",
+        f"- Models: agent {sc.models.get('agent_primary')} → {sc.models.get('agent_fallback')}; judge {sc.models.get('judge')}{_judge_used(sc)}",
         f"- Cost: {sc.tokens_in} in / {sc.tokens_out} out tokens, ${sc.cost_usd:.4f}", "",
     ]
     lines += ["## Flipped cases", "", f"- Regressed: {', '.join(sc.flips['regressed']) or 'none'}", f"- Fixed: {', '.join(sc.flips['fixed']) or 'none'}", ""]

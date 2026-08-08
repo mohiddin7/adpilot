@@ -254,3 +254,25 @@ def test_classifier_cases_are_skipped_unless_the_model_tier_has_the_flag(eval_du
     assert res.scorecard is not None
     assert not any("_l1" in name for name in res.scorecard.cases), "classifier cases must not run (or count) without layer 1"
     assert "skipping" in caplog.text and "classifier" in caplog.text
+
+
+def test_grader_records_the_judge_that_actually_ran(monkeypatch, tmp_path):
+    """The A/B on 2026-09-21 compared two runs whose scorecards named different judges, but the
+    'current' run's judge served 0 of 30 calls and silently fell back to the agent's own model:
+    `scores.grader` and `models["judge"]` both recorded the *requested* judge, so the self-grading
+    was invisible. Both must name the model that answered."""
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "test-key")
+    monkeypatch.setenv("JUDGE_LLM_TARGET_MODEL", "vendor/requested-judge")
+    monkeypatch.setattr(run_module, "build_model", lambda: _scripted_agent_model())
+    monkeypatch.setattr(run_module, "build_judge_model", lambda cfg: _scripted_judge_model())
+    from adpilot.core.audit import MemorySink
+
+    sink = MemorySink()
+    res = run(tier="model", families={"narrative"}, repeat=1, out_dir=tmp_path, readme=tmp_path / "README.md", audit=sink)
+
+    used = {r.model_used for r in sink.calls if r.source == "judge" and r.model_used}
+    assert used and "vendor/requested-judge" not in used
+    graders = {s.grader for s in sink.scores if s.source == "judge"}
+    assert graders == used, f"grader should name the model that answered, got {graders}"
+    assert res.scorecard.models["judge_used"] == ", ".join(sorted(used))
+    assert res.scorecard.models["judge"] == "vendor/requested-judge"

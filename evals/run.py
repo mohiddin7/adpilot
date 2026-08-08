@@ -224,9 +224,14 @@ def run(
         judge_reliable = bool(calibration and calibration.reliable)
         results = collect(report, judge_reliable)
         repeats = collect(repeat_report, judge_reliable) if repeat_report else []
-        sink.add_scores(scores_from_report(report, run_id, models["judge"]) + scores_from_report(repeat_report, run_id, models["judge"]))
-
         recs = [r for r in sink.pending_calls() if r.run_id == run_id]
+        # Which judge *answered*, not which one was asked for: a rate-limited primary falls back
+        # silently, and a scorecard naming the model that never ran hides the agent grading itself.
+        judge_used = sorted({r.model_used for r in recs if r.source == "judge" and r.model_used})
+        models["judge_used"] = ", ".join(judge_used) or None
+        grader = models["judge_used"] or models["judge"]
+        sink.add_scores(scores_from_report(report, run_id, grader) + scores_from_report(repeat_report, run_id, grader))
+
         calls = sum(r.requests for r in recs)
         tokens_in, tokens_out, cost = sum(r.tokens_in for r in recs), sum(r.tokens_out for r in recs), round(sum(r.cost_usd for r in recs), 6)
 
