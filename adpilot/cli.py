@@ -5,71 +5,27 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import sys
 from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
 
-from adpilot.connectors import get_connector
-from adpilot.core import schema
 from adpilot.core.agent import AnalystAnswer, ask, build_agent
 from adpilot.core.audit import (
     AuditSink,
-    AuditUnavailable,
     MemorySink,
     RunContextInfo,
     audit_config,
     build_sink,
 )
 from adpilot.core.models import build_model
+from adpilot.core.runtime import announce_audit, build_deps, configure_tracing, open_sink
 from adpilot.core.tools import AgentDeps
-from adpilot.packs.loader import load_pack
 
 
 def _deps(args, audit: AuditSink) -> AgentDeps:
-    pack = load_pack(args.pack)
-    name = args.connector or os.environ.get("ADPILOT_CONNECTOR") or pack.raw["connector"]
-    connector = get_connector(name, pack)
-    return AgentDeps(connector=connector, pack=pack, schema_text=schema.summary(connector, pack), audit=audit)
-
-
-def _announce_audit(mode: str, project: str, dataset: str, out) -> None:
-    """One-line audit-target notice. `mode == "memory"` is always announced — nothing else says so."""
-    if mode == "memory":
-        print("audit: memory — this session is NOT recorded (ADPILOT_AUDIT=memory)", file=out)
-    else:
-        print(f"audit: bigquery {project}.{dataset}", file=out)
-
-
-def _sink(out) -> AuditSink | None:
-    """Strict preflight: refuse to run unrecorded. Memory mode is allowed only when asked for, and says so."""
-    cfg = audit_config()
-    sink = build_sink(cfg)
-    if cfg.mode == "memory":
-        _announce_audit(cfg.mode, cfg.project, cfg.dataset, out)
-        return sink
-    try:
-        sink.preflight()
-    except AuditUnavailable as exc:
-        print(f"audit unavailable ({exc.kind}): {exc.hint}", file=out)
-        return None
-    _announce_audit(cfg.mode, cfg.project, cfg.dataset, out)
-    return sink
-
-
-def configure_tracing() -> None:
-    """Live traces are opt-in: a Logfire token turns on pydantic-ai's OTel instrumentation for agents and evals."""
-    if not os.environ.get("LOGFIRE_TOKEN"):
-        return
-    try:
-        import logfire
-    except ImportError:
-        print("LOGFIRE_TOKEN is set but logfire is not installed: pip install 'adpilot[logfire]'", file=sys.stderr)
-        return
-    logfire.configure()
-    logfire.instrument_pydantic_ai()
+    return build_deps(args.pack, args.connector, audit)
 
 
 def _print(answer: AnalystAnswer, out) -> None:
@@ -98,7 +54,7 @@ def cmd_eval(args, out) -> int:
         # gives it a MemorySink); the model tier honours the real config, same as chat/audit.
         cfg = audit_config()
         mode = "memory" if args.tier == "deterministic" else cfg.mode
-        _announce_audit(mode, cfg.project, cfg.dataset, out)
+        announce_audit(mode, cfg.project, cfg.dataset, out)
 
     res = run(
         tier=args.tier, families=set(args.family) if args.family else None, repeat=args.repeat, limit=args.limit,
@@ -126,7 +82,7 @@ def cmd_eval(args, out) -> int:
 
 
 def cmd_chat(args, out) -> int:
-    sink = _sink(out)
+    sink = open_sink(out)
     if sink is None:
         return 2
     deps = _deps(args, sink)
@@ -172,7 +128,7 @@ def cmd_chat(args, out) -> int:
 
 def cmd_audit(args, out) -> int:
     if args.audit_cmd == "preflight":
-        return 0 if _sink(out) is not None else 2
+        return 0 if open_sink(out) is not None else 2
     cfg = audit_config()
     sink = build_sink(cfg)
     if cfg.mode == "memory" and args.audit_cmd != "export":
