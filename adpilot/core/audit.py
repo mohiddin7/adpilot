@@ -27,6 +27,7 @@ SCHEMA_VERSION = 1
 DEFAULT_PROJECT = "adpilot-lakehouse"
 DEFAULT_DATASET = "adpilot_audit"
 ERROR_KINDS = ("OutOfScope", "SqlPolicy", "InputPolicy", "OutputPolicy", "BudgetExceeded", "ModelRateLimited", "ModelUnavailable", "DataSourceUnavailable", "JudgeError")
+SESSION_SOURCES = ("chat", "api", "mcp")
 
 
 # ---------- message walk (the one implementation; evals.task.Trace is filled from it) ----------
@@ -87,7 +88,7 @@ def error_kind_of(caveats: Sequence[str]) -> str | None:
 
 
 class RunContextInfo(BaseModel):
-    source: str = "chat"  # chat | eval | judge
+    source: str = "chat"  # chat | api | mcp | brief | eval | judge
     session_id: str | None = None
     run_id: str | None = None
     case_name: str | None = None
@@ -265,7 +266,7 @@ class MemorySink:
         return FlushReport(written=written)
 
     def load_session(self, session_id: str, turns: int = 3) -> list[ModelMessage]:
-        recs = [r for r in self.calls if r.session_id == session_id and r.source == "chat"]
+        recs = [r for r in self.calls if r.session_id == session_id and r.source in SESSION_SOURCES]
         recs.sort(key=lambda r: r.ts)
         history: list[ModelMessage] = []
         for r in recs[-turns:]:

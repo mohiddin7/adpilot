@@ -276,7 +276,7 @@ class BigQuerySink:
     def load_session(self, session_id: str, turns: int = 3) -> list[ModelMessage]:
         from google.cloud import bigquery
 
-        sql = f"SELECT messages_json FROM `{self._table_ref('agent_calls')}` WHERE session_id = @sid AND source = 'chat' ORDER BY ts DESC LIMIT @n"
+        sql = f"SELECT messages_json FROM `{self._table_ref('agent_calls')}` WHERE session_id = @sid AND source IN ('chat','api','mcp') ORDER BY ts DESC LIMIT @n"
         cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("sid", "STRING", session_id), bigquery.ScalarQueryParameter("n", "INT64", turns)])
         rows = list(self.client.query(sql, job_config=cfg).result())
         history: list[ModelMessage] = []

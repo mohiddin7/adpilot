@@ -229,3 +229,22 @@ def test_flush_does_not_retry_permission_errors():
     sink.record(_rec())
     rep = sink.flush()
     assert not rep.ok and sleeps == [] and rep.failed == {"agent_calls": 1}
+
+
+def test_load_session_query_covers_chat_api_and_mcp():
+    """The stored query must not silently drop a surface: a session is continuable wherever it started."""
+    client = FakeClient()
+    captured = {}
+
+    class Rows(FakeJob):
+        def result(self, timeout=None):
+            return []
+
+    def query(sql, job_config=None):
+        captured["sql"] = sql
+        return Rows()
+
+    client.query = query
+    assert BigQuerySink(CFG, client=client).load_session("s1") == []
+    assert "source IN ('chat','api','mcp')" in captured["sql"]
+    assert "source = 'chat'" not in captured["sql"]
