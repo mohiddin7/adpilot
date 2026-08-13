@@ -243,3 +243,17 @@ def test_classifier_degrades_to_layer0_when_backend_fails(monkeypatch, boom, cap
 
     monkeypatch.setattr(_g, "_jev_choice", fail)
     assert classify_question("spend by platform") == ["GuardDegraded"] and "input classifier degraded" in caplog.text
+
+
+def test_try_acquire_sheds_instead_of_blocking():
+    """The blocking acquire() is right for a CLI; a web request must be refused, not parked."""
+    rl = RateLimiter(per_minute=2)
+    assert rl.try_acquire() == 0.0
+    assert rl.try_acquire() == 0.0
+    wait = rl.try_acquire()
+    assert 0 < wait <= 60
+
+
+def test_try_acquire_sheds_everything_when_configured_to_zero():
+    """per_minute=0 means shed, not crash: the empty deque has no [0] to read a wait from."""
+    assert RateLimiter(per_minute=0).try_acquire() == 60.0

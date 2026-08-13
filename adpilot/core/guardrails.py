@@ -254,6 +254,21 @@ class RateLimiter:
                 now = time.monotonic()
             self._stamps.append(now)
 
+    def try_acquire(self) -> float:
+        """Non-blocking: 0.0 when a slot was taken, else the seconds until one frees.
+
+        One method rather than a try/peek pair so the Retry-After hint cannot race the check that produced it.
+        """
+        with self._lock:
+            now = time.monotonic()
+            while self._stamps and now - self._stamps[0] >= 60:
+                self._stamps.popleft()
+            if len(self._stamps) >= self.per_minute:
+                # `if self._stamps` matters: per_minute=0 means "always shed", and an empty deque has no [0].
+                return (60 - (now - self._stamps[0])) if self._stamps else 60.0
+            self._stamps.append(now)
+            return 0.0
+
 
 # ponytail: one process-wide limiter; per-key buckets if the API ever serves several accounts
 MODEL_RATE_LIMITER = RateLimiter(per_minute=20)

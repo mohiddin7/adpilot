@@ -161,3 +161,16 @@ def test_a_failing_flush_does_not_fail_the_request(api, monkeypatch, caplog):
     r = client.post("/ask", json={"question": "spend by platform"}, headers={"X-API-Key": KEY})
     assert r.status_code == 200
     assert "not persisted" in caplog.text
+
+
+def test_ask_sheds_load_with_429_and_retry_after(api):
+    client, sink = api
+    from adpilot.core.guardrails import RateLimiter
+
+    client.app.state.limiter = RateLimiter(per_minute=1)
+    first = client.post("/ask", json={"question": "spend by platform"}, headers={"X-API-Key": KEY})
+    second = client.post("/ask", json={"question": "spend by platform"}, headers={"X-API-Key": KEY})
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert int(second.headers["Retry-After"]) >= 1
+    assert len(sink.calls) == 1  # a shed request never reached ask(), so it is not an agent call

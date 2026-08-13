@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 import os
 import secrets
 import sys
@@ -20,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from adpilot.core.agent import ask, build_agent
 from adpilot.core.audit import AuditSink, RunContextInfo
-from adpilot.core.guardrails import Budget
+from adpilot.core.guardrails import Budget, RateLimiter
 from adpilot.core.models import build_model
 from adpilot.core.runtime import AnswerBody, answer_body, build_deps, configure_tracing, open_sink
 from adpilot.core.tools import AgentDeps
@@ -78,6 +79,7 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
     app = FastAPI(title="AdPilot API")
     app.state.sink = sink
     app.state.agent = build_agent(build_model())
+    app.state.limiter = RateLimiter(per_minute=int(os.environ.get("ADPILOT_API_RPM", "20")))
     # schema.summary() queries the data source, so the connector and schema text are built once and shared;
     # per-request deps are a copy with fresh per-turn state.
     app.state.deps_template = build_deps(pack, connector, sink)
@@ -97,6 +99,12 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
 
     @app.post("/ask", response_model=AnswerBody, dependencies=[Depends(require_key)])
     def post_ask(req: AskRequest, background: BackgroundTasks) -> AnswerBody:
+        wait = app.state.limiter.try_acquire()
+        if wait:
+            raise HTTPException(
+                status_code=429, detail="rate limit exceeded",
+                headers={"Retry-After": str(max(1, math.ceil(wait)))},
+            )
         deps = request_deps(app)
         deps.run_context = RunContextInfo(source="api", session_id=req.session_id)
         history = sink.load_session(req.session_id) if req.session_id else None
