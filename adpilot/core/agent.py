@@ -77,10 +77,12 @@ def ask(
     question: str,
     history: Sequence[ModelMessage] | None = None,
     model: Model | str | None = None,
+    event_stream_handler=None,
 ) -> tuple[AnalystAnswer, list[ModelMessage], str]:
     """Guard → run → map failures. Never raises for model/data problems; returns (answer, new_messages, trace_id).
 
-    Every exit path buffers one AuditRecord in deps.audit (no I/O here — the caller flushes)."""
+    Every exit path buffers one AuditRecord in deps.audit (no I/O here — the caller flushes).
+    event_stream_handler is forwarded to run_sync so a streaming surface needs no second run path; the rule-based fallback emits no events because it makes no model call."""
     trace_id = new_trace_id()
     started, t0 = datetime.now(UTC), time.perf_counter()
     asked = question
@@ -120,6 +122,7 @@ def ask(
             message_history=list(history) if history else None,
             model=model,
             usage_limits=UsageLimits(request_limit=MAX_MODEL_CALLS),
+            event_stream_handler=event_stream_handler,
         )
     except Exception as exc:  # noqa: BLE001 — every failure mode maps to a typed fallback
         kind, detail = _classify(exc)

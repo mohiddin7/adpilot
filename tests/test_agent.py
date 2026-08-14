@@ -1,10 +1,12 @@
 """Deterministic agent tests: FunctionModel scripts the model, DuckDB is the data source."""
 
+import json
+
 import pytest
 from pydantic_ai import ModelResponse, ToolCallPart, capture_run_messages
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.fallback import FallbackModel
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from adpilot.core.agent import AnalystAnswer, ask, build_agent
@@ -23,7 +25,11 @@ def final(answer_md="done", sql=None, **kw):
 
 
 def scripted(*sqls):
-    """Model that runs each SQL in turn (one per request), then answers."""
+    """Model that runs each SQL in turn (one per request), then answers.
+
+    `stream_function` mirrors `fn` as deltas: pydantic-ai takes its streaming path whenever ask() is given an
+    event_stream_handler, and a FunctionModel without one asserts rather than streams.
+    """
     calls = list(sqls)
 
     def fn(messages, info):
@@ -32,7 +38,15 @@ def scripted(*sqls):
         last = tool_returns(messages)[0].content
         return final("ok", sql=getattr(last, "sql", None))
 
-    return FunctionModel(fn)
+    async def stream_fn(messages, info):
+        if calls:
+            yield {0: DeltaToolCall(name="run_sql", json_args=json.dumps({"sql": calls.pop(0)}))}
+        else:
+            last = tool_returns(messages)[0].content
+            yield {0: DeltaToolCall(name="final_result_AnalystAnswer",
+                                    json_args=json.dumps({"answer_md": "ok", "sql": getattr(last, "sql", None)}))}
+
+    return FunctionModel(fn, stream_function=stream_fn)
 
 
 @pytest.fixture
@@ -251,3 +265,31 @@ def test_classifier_outage_degrades_with_a_caveat_and_the_answer_still_flows(age
     monkeypatch.setattr(guardrails, "_jev_choice", down)
     answer, _, _ = ask(agent, deps, "What was total spend per platform?", model=scripted(GOOD_SQL))
     assert answer.sql and "GuardDegraded" in answer.caveats and deps.audit.calls[-1].error_kind is None
+
+
+def test_ask_forwards_an_event_stream_handler(agent, deps):
+    """One code path: the API streams progress from the same run() the CLI uses, not a second one."""
+    from pydantic_ai.messages import FunctionToolCallEvent
+
+    seen = []
+
+    async def handler(ctx, stream):
+        async for ev in stream:
+            if isinstance(ev, FunctionToolCallEvent):
+                seen.append(ev.part.tool_name)
+
+    answer, _, _ = ask(
+        agent, deps, "What was total spend per platform?",
+        model=scripted(GOOD_SQL), event_stream_handler=handler,
+    )
+    assert answer.sql.startswith("SELECT platform")
+    assert "run_sql" in seen
+    # Without this, the test passes even when streaming fails outright: ask() maps a model-layer error to the
+    # rule-based fallback, which still returns a populated AnalystAnswer. The empty caveats prove the real
+    # streamed run happened.
+    assert answer.caveats == []
+
+
+def test_ask_without_a_handler_is_unchanged(agent, deps):
+    answer, _, _ = ask(agent, deps, "What was total spend per platform?", model=scripted(GOOD_SQL))
+    assert answer.data[0] == {"platform": "TikTok", "spend": 74266.7}
