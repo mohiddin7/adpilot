@@ -1,5 +1,7 @@
 """HTTP surface tests: TestClient + MemorySink + DuckDB. No model calls, no network, no credentials."""
 
+import time
+
 import pytest
 
 from adpilot.core.audit import MemorySink
@@ -174,3 +176,90 @@ def test_ask_sheds_load_with_429_and_retry_after(api):
     assert second.status_code == 429
     assert int(second.headers["Retry-After"]) >= 1
     assert len(sink.calls) == 1  # a shed request never reached ask(), so it is not an agent call
+
+
+def sse_events(response):
+    """[(event_name, json_payload)] from an SSE body, ignoring keepalive comments."""
+    import json
+
+    out, name = [], None
+    for line in response.text.splitlines():
+        if line.startswith("event: "):
+            name = line[7:]
+        elif line.startswith("data: ") and name:
+            out.append((name, json.loads(line[6:])))
+            name = None
+    return out
+
+
+def test_stream_emits_status_then_the_answer_then_done(api):
+    client, sink = api
+    with client.stream(
+        "GET", "/ask/stream", params={"question": "What was spend by platform?"}, headers={"X-API-Key": KEY}
+    ) as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        r.read()
+    events = sse_events(r)
+    names = [n for n, _ in events]
+    assert names[0] == "status" and names[-1] == "done" and "answer" in names
+    answer = dict(events)["answer"]
+    assert answer["trace_id"] and "pre-defined query" in answer["answer_md"]
+    assert len(sink.calls) == 1 and sink.calls[0].source == "api"
+    assert sink.flushed["agent_calls"] == 1
+
+
+def test_stream_requires_the_key(api):
+    client, _ = api
+    r = client.get("/ask/stream", params={"question": "spend by platform"})
+    assert r.status_code == 401
+
+
+def test_stream_answer_matches_the_post_body(api):
+    client, _ = api
+    posted = client.post("/ask", json={"question": "spend by platform"}, headers={"X-API-Key": KEY}).json()
+    with client.stream(
+        "GET", "/ask/stream", params={"question": "spend by platform"}, headers={"X-API-Key": KEY}
+    ) as r:
+        r.read()
+    streamed = dict(sse_events(r))["answer"]
+    assert {k: v for k, v in streamed.items() if k != "trace_id"} == {
+        k: v for k, v in posted.items() if k != "trace_id"
+    }
+
+
+def test_stream_sheds_load_with_429(api):
+    client, _ = api
+    from adpilot.core.guardrails import RateLimiter
+
+    client.app.state.limiter = RateLimiter(per_minute=0)
+    r = client.get("/ask/stream", params={"question": "spend"}, headers={"X-API-Key": KEY})
+    assert r.status_code == 429
+
+
+def test_status_event_maps_a_sql_tool_call(api):
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
+
+    from adpilot.api.app import status_event
+
+    ev = FunctionToolCallEvent(part=ToolCallPart("run_sql", {"sql": "SELECT 1"}))
+    assert status_event(ev) == {"phase": "sql", "tool": "run_sql", "detail": "SELECT 1"}
+    ev2 = FunctionToolCallEvent(part=ToolCallPart("get_anomalies", {"limit": 5}))
+    assert status_event(ev2) == {"phase": "tool", "tool": "get_anomalies", "detail": None}
+
+
+def test_a_client_disconnect_still_records_the_run(api):
+    """The worker runs in an OS thread, so dropping the connection cannot lose the audit row."""
+    client, sink = api
+    with client.stream(
+        "GET", "/ask/stream", params={"question": "What was spend by platform?"}, headers={"X-API-Key": KEY}
+    ) as r:
+        assert r.status_code == 200
+        assert next(r.iter_lines()) == "event: status"  # then drop the connection mid-stream
+
+    for _ in range(100):  # the worker finishes on its own thread; give it a moment
+        if sink.calls:
+            break
+        time.sleep(0.05)
+    assert len(sink.calls) == 1 and sink.calls[0].source == "api"
+    assert sink.flushed["agent_calls"] == 1

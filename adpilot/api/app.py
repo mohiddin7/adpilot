@@ -7,16 +7,19 @@ recorded, exactly as the CLI shows it.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
+import json
 import logging
 import math
 import os
+import queue
 import secrets
 import sys
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from adpilot.core.agent import ask, build_agent
@@ -57,6 +60,28 @@ def flush_audit(sink: AuditSink) -> None:
             "audit: %d row(s) not persisted, retrying on the next request: %s",
             rep.pending, "; ".join(rep.errors),
         )
+
+
+def status_event(ev) -> dict | None:
+    """pydantic-ai stream event → one SSE `status` payload, or None for events a client does not need."""
+    from pydantic_ai.messages import FinalResultEvent, FunctionToolCallEvent, FunctionToolResultEvent
+
+    if isinstance(ev, FunctionToolCallEvent):
+        name = ev.part.tool_name
+        detail = None
+        if name == "run_sql":
+            args = ev.part.args_as_dict() if hasattr(ev.part, "args_as_dict") else (ev.part.args or {})
+            detail = str((args or {}).get("sql", ""))[:400] or None
+        return {"phase": "sql" if name == "run_sql" else "tool", "tool": name, "detail": detail}
+    if isinstance(ev, FunctionToolResultEvent):
+        content = getattr(ev, "content", None) or getattr(ev.part, "content", None)
+        if type(content).__name__ == "SqlError":
+            # The model is about to repair its own query — the one progress event users actually want to see.
+            return {"phase": "repair", "tool": "run_sql", "detail": getattr(content, "kind", None)}
+        return None
+    if isinstance(ev, FinalResultEvent):
+        return {"phase": "answering", "tool": None, "detail": None}
+    return None
 
 
 def _api_key() -> str:
@@ -113,5 +138,67 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         # out of the caller's latency. A failure leaves the rows buffered for the next request.
         background.add_task(flush_audit, sink)
         return answer_body(answer, trace_id)
+
+    @app.get("/ask/stream", dependencies=[Depends(require_key)])
+    async def ask_stream(
+        question: str = Query(min_length=1, max_length=4000),
+        session_id: str | None = Query(default=None, max_length=64, pattern=r"^[A-Za-z0-9._-]+$"),
+    ) -> StreamingResponse:
+        wait = app.state.limiter.try_acquire()
+        if wait:
+            raise HTTPException(
+                status_code=429, detail="rate limit exceeded",
+                headers={"Retry-After": str(max(1, math.ceil(wait)))},
+            )
+        events: queue.Queue = queue.Queue()
+        deps = request_deps(app)
+        deps.run_context = RunContextInfo(source="api", session_id=session_id)
+        history = sink.load_session(session_id) if session_id else None
+
+        async def handler(ctx, stream) -> None:
+            async for ev in stream:
+                payload = status_event(ev)
+                if payload:
+                    events.put(("status", payload))
+
+        def run() -> None:
+            try:
+                answer, _messages, trace_id = ask(
+                    app.state.agent, deps, question, history=history, event_stream_handler=handler
+                )
+                events.put(("answer", answer_body(answer, trace_id).model_dump(mode="json")))
+            except Exception as exc:  # ask() maps its own failures; anything reaching here is transport or threading
+                log.exception("stream run failed")
+                events.put(("error", {"kind": exc.__class__.__name__, "message": str(exc)[:200]}))
+            finally:
+                events.put(("done", {}))
+                flush_audit(sink)
+
+        async def body():
+            # Emitted before the run starts, so a client shows progress immediately and the first event is
+            # deterministic even on the rule-based path, which makes no model call and so emits no events.
+            yield "event: status\ndata: " + json.dumps({"phase": "thinking", "tool": None, "detail": None}) + "\n\n"
+            task = asyncio.create_task(asyncio.to_thread(run))
+            while True:
+                try:
+                    name, payload = await asyncio.to_thread(events.get, True, 15)
+                except queue.Empty:
+                    yield ": keepalive\n\n"  # stops proxies buffering a slow run
+                    continue
+                yield f"event: {name}\ndata: {json.dumps(payload)}\n\n"
+                if name == "done":
+                    break
+            # Normal path: wait for the worker so the response ends only once the run is done. On a client
+            # disconnect this line is never reached — cancellation unwinds the generator at the events.get
+            # await above — and it does not need to be: run() executes in an OS thread (asyncio.to_thread), and
+            # cancelling an await cannot stop a running thread, so ask()'s buffered record still reaches
+            # flush_audit() in run()'s finally. Pinned by test_a_client_disconnect_still_records_the_run.
+            await task
+
+        return StreamingResponse(
+            body(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     return app

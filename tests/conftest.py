@@ -17,6 +17,7 @@ models.ALLOW_MODEL_REQUESTS = False
 # cannot reach the classifier whatever .env or the shell says. Tests opt in by monkeypatching `_jev_choice`.
 os.environ["ADPILOT_INPUT_CLASSIFIER"] = ""
 os.environ["JEV_API_KEY"] = ""
+os.environ["LOGFIRE_TOKEN"] = ""  # create_app() calls configure_tracing(); the suite must not ship traces
 
 
 @pytest.fixture(scope="session")
