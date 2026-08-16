@@ -293,3 +293,23 @@ def test_ask_forwards_an_event_stream_handler(agent, deps):
 def test_ask_without_a_handler_is_unchanged(agent, deps):
     answer, _, _ = ask(agent, deps, "What was total spend per platform?", model=scripted(GOOD_SQL))
     assert answer.data[0] == {"platform": "TikTok", "spend": 74266.7}
+
+
+def test_the_streaming_path_is_rate_limited_too(agent, deps, monkeypatch):
+    """WrapperModel.request_stream delegates through, so /ask/stream would otherwise bypass the 20 rpm bucket."""
+    from adpilot.core import guardrails
+    from adpilot.core.models import RateLimited
+
+    hits = []
+    monkeypatch.setattr(guardrails.MODEL_RATE_LIMITER, "acquire", lambda: hits.append(1))
+
+    async def handler(ctx, stream):
+        async for _ in stream:
+            pass
+
+    answer, _, _ = ask(
+        agent, deps, "What was total spend per platform?",
+        model=RateLimited(scripted(GOOD_SQL)), event_stream_handler=handler,
+    )
+    assert answer.caveats == []          # a real streamed run, not the rule-based fallback
+    assert len(hits) == 2                # one acquisition per model request

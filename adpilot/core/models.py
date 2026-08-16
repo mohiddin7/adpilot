@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping
+from contextlib import asynccontextmanager
 
 from pydantic_ai.models import Model
 from pydantic_ai.models.fallback import FallbackModel
@@ -37,11 +38,22 @@ def renamed_env(name: str, *legacy: str, env: Mapping[str, str] | None = None, d
 
 
 class RateLimited(WrapperModel):
-    """Blocks until the 20 rpm bucket has room. Free-tier 429s are cheaper to avoid than to retry."""
+    """Blocks until the 20 rpm bucket has room, on both the request and the streaming path.
+
+    Free-tier 429s are cheaper to avoid than to retry.
+    """
 
     async def request(self, messages, model_settings, model_request_parameters):
         MODEL_RATE_LIMITER.acquire()  # ponytail: blocking sleep inside async; fine for CLI + single-worker API
         return await super().request(messages, model_settings, model_request_parameters)
+
+    @asynccontextmanager
+    async def request_stream(self, messages, model_settings, model_request_parameters, run_context=None):
+        # WrapperModel.request_stream delegates straight through, so without this override the streaming path
+        # (ask() with an event_stream_handler, i.e. GET /ask/stream) would bypass the bucket entirely.
+        MODEL_RATE_LIMITER.acquire()
+        async with super().request_stream(messages, model_settings, model_request_parameters, run_context) as stream:
+            yield stream
 
 
 def api_key_from_env() -> str | None:
