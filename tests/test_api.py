@@ -263,3 +263,12 @@ def test_a_client_disconnect_still_records_the_run(api):
         time.sleep(0.05)
     assert len(sink.calls) == 1 and sink.calls[0].source == "api"
     assert sink.flushed["agent_calls"] == 1
+
+
+def test_the_container_never_ships_secrets_or_a_virtualenv():
+    """A .dockerignore mistake bakes service-account JSON into a pushed image; assert the excludes exist."""
+    from pathlib import Path
+
+    ignored = Path(".dockerignore").read_text().split()
+    for entry in ("secrets/", ".venv/", ".env", ".git/"):
+        assert entry in ignored, f"{entry} must be excluded from the build context"

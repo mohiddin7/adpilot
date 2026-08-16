@@ -1,0 +1,13 @@
+.git/
+.venv/
+.env
+.env.*
+secrets/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.egg-info/
+.adpilot/
+evals/reports/
+docs/superpowers/
+streamlit_app/.streamlit/secrets.toml

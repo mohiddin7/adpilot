@@ -12,7 +12,7 @@
 - **Packs** (`packs/ads/`): everything domain-specific — table allowlist, column descriptions, glossary, system prompt, canned fallback queries and a DuckDB bootstrap. Swap the directory to point the same agent at different data.
 - **Connectors**: BigQuery (bytes-billed cap) and DuckDB over the raw CSVs, so the agent and tests run with zero credentials.
 - **Pipeline** (`pipelines/`): validate → Bronze MERGE → Gold MERGE (30-column contract) → anomaly flags (MAD z-score) → budget optimizer (LP) → 14-day forecast (Holt-Winters) → QA reconciliation. Idempotent, audited, cost-capped.
-- **Dashboard** (`streamlit_app/`): performance overview, per-channel deep dives, AI insight cards and chat. Being replaced by a pack-driven dashboard in Phase 3.
+- **Dashboard** (`streamlit_app/`): performance overview, per-channel deep dives, AI insight cards and chat. Being replaced by a pack-driven dashboard in Phase 4.
 
 ## Roadmap
 
@@ -21,9 +21,9 @@
 | 0 | Repo hygiene, env-driven config, CI ✅ |
 | 1 | Data-agnostic agent core (Pydantic AI), typed tools, guardrails, `adpilot chat` CLI ✅ |
 | 2 | Eval harness: golden cases, red-team, self-heal rate, LLM judge, scorecard ✅ |
-| 3 | FastAPI streaming API + generic dashboard driven by pack config |
-| 4 | Proactive briefing agent + human-in-the-loop budget approvals |
-| 5 | MCP server, tracing, Docker |
+| 3 | Three surfaces over the same agent: FastAPI service ✅ · proactive briefing agent · MCP server |
+| 4 | Pack-driven dashboard + human-in-the-loop budget approvals |
+| 5 | Production rollout: Docker ✅, tracing ✅, deployed Cloud Run service |
 
 ## Quick start
 
@@ -43,6 +43,30 @@ adpilot --connector duckdb schema                   # what the agent can query
 ```
 
 Without an API key the CLI still answers common questions from the pack's pre-defined queries and says so.
+
+## API
+
+```bash
+export ADPILOT_API_KEY=$(python -c "import secrets;print(secrets.token_hex(16))")
+uvicorn --factory adpilot.api.app:create_app --workers 1
+```
+
+```bash
+curl -sX POST localhost:8000/ask \
+  -H "X-API-Key: $ADPILOT_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"question":"Which campaign has the worst cost per acquisition?"}'
+```
+
+Or in a container:
+
+```bash
+docker build -t adpilot . && docker run --rm -p 8080:8080 \
+  -e ADPILOT_API_KEY=$ADPILOT_API_KEY -e ADPILOT_AUDIT=memory -e ADPILOT_CONNECTOR=duckdb adpilot
+```
+
+See [docs/api.md](docs/api.md) for auth, `/ask/stream` (SSE) and the two request-size tiers, and
+[docs/deploy.md](docs/deploy.md) for Cloud Run.
 
 Pipeline (needs a GCP project with BigQuery and `gcloud auth application-default login`):
 
@@ -95,6 +119,8 @@ The agent and the eval judge have separate chains, so the agent's model never gr
 - `BQ_AUDIT_DATASET` — audit dataset name (default `adpilot_audit`).
 - `LOGFIRE_TOKEN` — optional; turns on live OpenTelemetry traces for agent and eval calls.
 - `ADPILOT_AUDIT` — set to `memory` to run unrecorded (chat/eval otherwise refuse to start without BigQuery credentials).
+- `ADPILOT_API_KEY` — required to serve the HTTP API; ≥24 characters, or `create_app` refuses to start.
+- `ADPILOT_API_RPM` — API rate limit, requests/minute (default 20). See [docs/api.md](docs/api.md).
 
 ## Architecture
 
