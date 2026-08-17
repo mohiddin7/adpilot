@@ -149,10 +149,43 @@ def test_a_bad_session_id_is_rejected(api):
     assert r.status_code == 422
 
 
-def test_a_session_id_is_recorded_so_the_next_turn_has_history(api):
+def history_spy(monkeypatch, sink, session_history):
+    """Records (session ids load_session was asked for, history objects that reached ask())."""
+    import adpilot.api.app as app_mod
+
+    real, asked, passed = app_mod.ask, [], []
+    monkeypatch.setattr(sink, "load_session", lambda session_id, *a, **k: asked.append(session_id) or session_history)
+
+    def spy(agent, deps, question, history=None, **kw):
+        passed.append(history)
+        return real(agent, deps, question, history=history, **kw)
+
+    monkeypatch.setattr(app_mod, "ask", spy)
+    return asked, passed
+
+
+def test_a_session_id_is_recorded_and_its_history_reaches_ask(api, monkeypatch):
+    """Three claims, because the row-carries-the-session-id one alone passes with the whole history wiring
+    deleted: the id is recorded, load_session was asked for that id, and what it returned reached ask()."""
     client, sink = api
+    session_history = []  # identity, not equality: `history=None` must not be able to satisfy this
+    asked, passed = history_spy(monkeypatch, sink, session_history)
     client.post("/ask", json={"question": "spend by platform", "session_id": "s1"}, headers={"X-API-Key": KEY})
     assert sink.calls[0].session_id == "s1" and sink.calls[0].source == "api"
+    assert asked == ["s1"] and len(passed) == 1 and passed[0] is session_history
+
+
+def test_the_stream_route_loads_the_session_as_history_too(api, monkeypatch):
+    client, sink = api
+    session_history = []
+    asked, passed = history_spy(monkeypatch, sink, session_history)
+    with client.stream(
+        "GET", "/ask/stream", params={"question": "spend by platform", "session_id": "s2"},
+        headers={"X-API-Key": KEY},
+    ) as r:
+        r.read()
+    assert sink.calls[0].session_id == "s2"
+    assert asked == ["s2"] and len(passed) == 1 and passed[0] is session_history
 
 
 def test_a_failing_flush_does_not_fail_the_request(api, monkeypatch, caplog):
@@ -272,3 +305,156 @@ def test_the_container_never_ships_secrets_or_a_virtualenv():
     ignored = Path(".dockerignore").read_text().split()
     for entry in ("secrets/", ".venv/", ".env", ".git/"):
         assert entry in ignored, f"{entry} must be excluded from the build context"
+
+
+def test_a_non_ascii_key_is_a_401_not_a_500(api):
+    """Starlette decodes header bytes as latin-1 and compare_digest raises TypeError on non-ASCII str, so this
+    used to be a 500 traceback any unauthenticated caller could trigger at will."""
+    client, sink = api
+    raw = ("k" * 31 + "é").encode("latin-1")  # bytes: the byte > 0x7F is what a real client puts on the wire
+    r = client.get("/schema", headers={"X-API-Key": raw})
+    assert r.status_code == 401
+    assert sink.calls == []
+
+
+@pytest.mark.parametrize("path", ["/schema", "/ask", "/ask/stream", "/openapi.json", "/docs", "/redoc"])
+def test_healthz_is_the_only_path_that_answers_without_a_key(api, path):
+    """/openapi.json, /docs and /redoc are FastAPI's own routes: they took no dependency and enumerated every
+    route and request schema to an unauthenticated caller."""
+    client, _ = api
+    r = client.request("POST" if path == "/ask" else "GET", path, json={"question": "spend by platform"})
+    assert r.status_code in (401, 404), f"{path} answered {r.status_code} with no key"
+
+
+def test_request_deps_are_a_fresh_copy_per_request(api):
+    """The request_deps docstring promises two concurrent requests cannot see each other's rows."""
+    from adpilot.api.app import request_deps
+
+    client, _ = api
+    a, b = request_deps(client.app), request_deps(client.app)
+    assert a is not b and a.results is not b.results and a.budget is not b.budget
+
+
+def test_the_stream_emits_an_error_event_then_done_when_the_worker_raises(api, monkeypatch):
+    client, _ = api
+    import adpilot.api.app as app_mod
+
+    def boom(*a, **k):
+        raise RuntimeError("worker exploded")
+
+    monkeypatch.setattr(app_mod, "ask", boom)
+    with client.stream(
+        "GET", "/ask/stream", params={"question": "spend by platform"}, headers={"X-API-Key": KEY}
+    ) as r:
+        assert r.status_code == 200
+        r.read()
+    events = sse_events(r)
+    names = [n for n, _ in events]
+    assert names == ["status", "error", "done"]
+    assert dict(events)["error"] == {"kind": "RuntimeError", "message": "worker exploded"}
+
+
+def test_a_flush_that_raises_does_not_fail_the_request(api, monkeypatch, caplog):
+    """On the SSE path flush_audit runs in run()'s finally, outside the try that maps run failures — an
+    exception there resurfaced at `await task` after the client already had `done`."""
+    client, sink = api
+
+    def boom():
+        raise RuntimeError("bigquery is on fire")
+
+    monkeypatch.setattr(sink, "flush", boom)
+    r = client.post("/ask", json={"question": "spend by platform"}, headers={"X-API-Key": KEY})
+    assert r.status_code == 200
+    assert "flush raised" in caplog.text
+
+    with client.stream(
+        "GET", "/ask/stream", params={"question": "spend by platform"}, headers={"X-API-Key": KEY}
+    ) as s:
+        s.read()
+    assert [n for n, _ in sse_events(s)][-1] == "done"
+
+
+def test_shutdown_flushes_what_a_background_task_may_never_have_run(api, monkeypatch):
+    """Cloud Run throttles CPU after the response and scales to zero, so the lifespan shutdown is the only
+    guaranteed flush for the rows of the last request an instance serves."""
+    from fastapi.testclient import TestClient
+
+    client, sink = api
+    flushes = []
+    monkeypatch.setattr(sink, "flush", lambda: flushes.append(1) or __import__("adpilot.core.audit", fromlist=["FlushReport"]).FlushReport())
+    with TestClient(client.app):
+        assert flushes == []  # no request made: nothing has flushed yet
+    assert flushes == [1]  # the shutdown hook did
+
+
+def test_no_model_configured_is_logged_loudly(monkeypatch, caplog):
+    """The CLI prints this; the API used to serve pre-defined-query answers with nothing in the logs saying so."""
+    import logging
+
+    import adpilot.core.runtime as runtime
+    from adpilot.api.app import create_app
+
+    monkeypatch.setenv("ADPILOT_API_KEY", KEY)
+    monkeypatch.setenv("ADPILOT_AUDIT", "memory")
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "")
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: MemorySink())
+    with caplog.at_level(logging.WARNING):
+        create_app(connector="duckdb")
+    assert "pre-defined queries only" in caplog.text
+
+
+def test_a_real_streamed_run_reports_sql_then_repair_then_answering(api):
+    """The only test that drives a real streamed model run through the HTTP surface: every other SSE test runs
+    with no model, so the event mapping could emit nothing and they would still pass."""
+    from adpilot.core.agent import build_agent
+    from tests.test_agent import GOLD, GOOD_SQL, scripted
+
+    client, sink = api
+    bad = f"SELECT platfrm, SUM(spend) AS spend FROM {GOLD} GROUP BY platfrm"
+    client.app.state.agent = build_agent(scripted(bad, GOOD_SQL))
+    with client.stream(
+        "GET", "/ask/stream", params={"question": "What was total spend per platform?"},
+        headers={"X-API-Key": KEY},
+    ) as r:
+        assert r.status_code == 200
+        r.read()
+    events = sse_events(r)
+    phases = [p["phase"] for n, p in events if n == "status"]
+    assert phases == ["thinking", "sql", "repair", "sql", "answering"]
+    assert [p["detail"] for n, p in events if n == "status" and p["phase"] == "repair"] == ["SqlSchema"]
+    answer = dict(events)["answer"]
+    # caveats == [] proves a real streamed run: a streaming failure maps to the rule-based fallback, which
+    # still returns a populated answer but always carries a ModelUnavailable caveat.
+    assert answer["caveats"] == [] and answer["answer_md"] == "ok"
+    assert len(sink.calls) == 1 and sink.calls[0].source == "api"
+
+
+def test_the_stream_does_its_blocking_work_off_the_loop_in_anyio_threads(api, monkeypatch):
+    """load_session is a synchronous BigQuery query: awaited inline it stalls every other request and every
+    other stream's keepalive on the single worker. It must also use anyio's 40-slot pool — the one /ask runs
+    in — not the loop's default executor, which is min(32, cpu + 4): 5 threads on a 1-vCPU instance."""
+    import asyncio
+    import threading
+
+    client, sink = api
+    where = []
+
+    def load(session_id, *a, **k):
+        on_loop = True
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop = False
+        where.append((on_loop, threading.current_thread().name))
+        return []
+
+    monkeypatch.setattr(sink, "load_session", load)
+    with client.stream(
+        "GET", "/ask/stream", params={"question": "spend by platform", "session_id": "s3"},
+        headers={"X-API-Key": KEY},
+    ) as r:
+        r.read()
+    assert len(where) == 1
+    on_loop, thread_name = where[0]
+    assert on_loop is False
+    assert thread_name.startswith("AnyIO"), thread_name

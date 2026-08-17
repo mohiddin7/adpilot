@@ -18,6 +18,8 @@ start instead of on first use.
 
 Every non-`/healthz` route requires `X-API-Key: <key>`, checked with a constant-time comparison. A wrong or
 missing key is a 401 and writes no audit row — only a question that actually reaches `ask()` gets recorded.
+`/openapi.json`, `/docs` and `/redoc` are disabled (`404`) rather than left open: FastAPI serves them without
+a dependency, so an unauthenticated caller could otherwise enumerate every route and request schema.
 
 ## Configuration
 

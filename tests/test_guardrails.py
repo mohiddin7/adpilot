@@ -158,7 +158,12 @@ def test_rate_limiter(monkeypatch):
     now = [1000.0]
     slept: list[float] = []
     monkeypatch.setattr("adpilot.core.guardrails.time.monotonic", lambda: now[0])
-    monkeypatch.setattr("adpilot.core.guardrails.time.sleep", lambda s: slept.append(s))
+
+    def _sleep(s):  # a fake sleep must advance the fake clock: acquire() re-checks the window after waiting
+        slept.append(s)
+        now[0] += s
+
+    monkeypatch.setattr("adpilot.core.guardrails.time.sleep", _sleep)
     rl = RateLimiter(per_minute=2)
     rl.acquire()
     rl.acquire()
@@ -257,3 +262,33 @@ def test_try_acquire_sheds_instead_of_blocking():
 def test_try_acquire_sheds_everything_when_configured_to_zero():
     """per_minute=0 means shed, not crash: the empty deque has no [0] to read a wait from."""
     assert RateLimiter(per_minute=0).try_acquire() == 60.0
+
+
+def test_two_blocking_waiters_share_one_window(monkeypatch):
+    """acquire() used to sleep while holding the lock and append without re-pruning: waits compounded per
+    waiter, and the window transiently held per_minute + 1 stamps."""
+    import threading
+
+    clock = [1000.0]
+    guard = threading.Lock()
+
+    def _sleep(s):
+        with guard:
+            clock[0] += s
+
+    monkeypatch.setattr("adpilot.core.guardrails.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("adpilot.core.guardrails.time.sleep", _sleep)
+    rl = RateLimiter(per_minute=1)
+    held = []
+
+    def worker():
+        rl.acquire()
+        held.append(len(rl._stamps))
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+    assert not any(t.is_alive() for t in threads)  # both eventually acquired
+    assert held == [1, 1]  # the window never holds more than per_minute

@@ -91,6 +91,10 @@ class BigQuerySink:
         self._client = client
         self._sleep = sleep
         self._lock = threading.Lock()
+        # `_lock` guards buffer mutations only — record() holds it, so it must never be held across a load
+        # job. `_flush_lock` serialises whole flushes: two concurrent ones would otherwise snapshot the same
+        # rows (sending them twice) and delete by count (dropping rows that were never sent).
+        self._flush_lock = threading.Lock()
         # ponytail: unbounded — every record (each with a full messages_json) sits here until the one
         # end-of-run flush. Fine at today's ~120 calls/run; if the case set grows an order of magnitude,
         # switch to chunked flushes (e.g. flush agent_calls every N records) instead of one giant batch.
@@ -222,27 +226,28 @@ class BigQuerySink:
         buffered too, rather than letting scores/eval_runs land in BigQuery with no matching call row."""
         report = FlushReport()
         order = ("agent_calls", "scores", "eval_runs")
-        for i, name in enumerate(order):
-            with self._lock:
-                rows = list(self._buffers[name])
-            if not rows:
-                continue
-            err = self._load_with_retry(name, rows)
-            if err is None:
+        with self._flush_lock:  # one flush at a time: snapshot-then-delete-by-count is not reentrant
+            for i, name in enumerate(order):
                 with self._lock:
-                    del self._buffers[name][: len(rows)]
-                    if name == "agent_calls":
-                        del self._pending_records[: len(rows)]
-                report.written[name] = len(rows)
-                continue
-            report.failed[name] = len(rows)
-            report.errors.append(f"{name}: {err}")
-            for later in order[i + 1 :]:
-                with self._lock:
-                    later_rows = self._buffers[later]
-                if later_rows:
-                    report.failed[later] = len(later_rows)
-            break
+                    rows = list(self._buffers[name])
+                if not rows:
+                    continue
+                err = self._load_with_retry(name, rows)
+                if err is None:
+                    with self._lock:
+                        del self._buffers[name][: len(rows)]
+                        if name == "agent_calls":
+                            del self._pending_records[: len(rows)]
+                    report.written[name] = len(rows)
+                    continue
+                report.failed[name] = len(rows)
+                report.errors.append(f"{name}: {err}")
+                for later in order[i + 1 :]:
+                    with self._lock:
+                        later_rows = self._buffers[later]
+                    if later_rows:
+                        report.failed[later] = len(later_rows)
+                break
         return report
 
     def _load_with_retry(self, name: str, rows: list[dict]) -> str | None:

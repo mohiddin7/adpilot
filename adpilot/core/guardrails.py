@@ -244,15 +244,19 @@ class RateLimiter:
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def acquire(self) -> None:
-        with self._lock:
-            now = time.monotonic()
-            while self._stamps and now - self._stamps[0] >= 60:
-                self._stamps.popleft()
-            if len(self._stamps) >= self.per_minute:
-                wait = 60 - (now - self._stamps[0])
-                time.sleep(wait)
+        """Sleeps *outside* the lock and re-checks the window afterwards: holding it across the sleep makes
+        N waiters wait N times over instead of sharing one window, and appending without re-pruning lets the
+        window transiently hold per_minute + 1."""
+        while True:
+            with self._lock:
                 now = time.monotonic()
-            self._stamps.append(now)
+                while self._stamps and now - self._stamps[0] >= 60:
+                    self._stamps.popleft()
+                if len(self._stamps) < self.per_minute:
+                    self._stamps.append(now)
+                    return
+                wait = (60 - (now - self._stamps[0])) if self._stamps else 60.0  # per_minute=0: always wait
+            time.sleep(wait)
 
     def try_acquire(self) -> float:
         """Non-blocking: 0.0 when a slot was taken, else the seconds until one frees.

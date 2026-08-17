@@ -34,11 +34,16 @@ gcloud run deploy adpilot-api \
   --region us-central1 \
   --min-instances 0 --max-instances 2 \
   --concurrency 4 \
+  --no-cpu-throttling \
   --timeout 300 \
   --port 8080 \
   --service-account adpilot-api@${PROJ}.iam.gserviceaccount.com \
   --set-secrets ADPILOT_API_KEY=adpilot-api-key:latest,AGENT_LLM_BEARER_TOKEN=agent-llm-bearer-token:latest
 ```
+
+`--no-cpu-throttling` is not optional: audit rows are flushed in a background task *after* the response, and
+Cloud Run's default throttles CPU the moment a response completes, so without it the last rows of an instance
+can be lost. The shutdown flush covers the rest.
 
 `--workers 1` is already in the image's `CMD`; nothing on the `gcloud run deploy` line needs to repeat it.
 `--region` should match the BigQuery dataset's location (`BQ_LOCATION`, default `US`) to avoid cross-region

@@ -3,11 +3,16 @@
 No guardrail, model-fallback or audit logic lives here — all of it is inside ask(). A rejected key never
 reaches ask(), so a 401 writes no audit row; a refused *question* does reach it, so it returns 200 and is
 recorded, exactly as the CLI shows it.
+
+One documented exception to "ask() owns redaction": the `detail` of a `sql` status event is the SQL the model
+*attempted*, taken from the tool-call event before ask() ever sees a result, so it is the one text a surface
+emits that has not passed redact_output — including a query the validator went on to reject.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
@@ -17,6 +22,7 @@ import queue
 import secrets
 import sys
 
+import anyio.to_thread
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -54,7 +60,11 @@ def request_deps(app: FastAPI) -> AgentDeps:
 
 
 def flush_audit(sink: AuditSink) -> None:
-    rep = sink.flush()
+    try:
+        rep = sink.flush()
+    except Exception:  # never let a flush failure escape: on the SSE path it runs in run()'s finally,
+        log.exception("audit: flush raised, row(s) stay buffered")  # outside the try that maps run errors
+        return
     if not rep.ok:
         log.warning(
             "audit: %d row(s) not persisted, retrying on the next request: %s",
@@ -101,16 +111,27 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
     if sink is None:
         raise RuntimeError("audit store unreachable — refusing to serve (ADPILOT_AUDIT=memory to run unrecorded)")
 
-    app = FastAPI(title="AdPilot API")
-    app.state.sink = sink
-    app.state.agent = build_agent(build_model())
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        # Cloud Run runs with --min-instances 0: a BackgroundTasks flush is not guaranteed to get CPU after
+        # the response, so the last rows would die with the instance. flush_audit logs whatever it cannot persist.
+        flush_audit(sink)
+
+    app = FastAPI(title="AdPilot API", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    model = build_model()
+    if model is None:
+        log.warning("no AGENT_LLM_BEARER_TOKEN — answering from pre-defined queries only, every question")
+    app.state.agent = build_agent(model)
     app.state.limiter = RateLimiter(per_minute=int(os.environ.get("ADPILOT_API_RPM", "20")))
     # schema.summary() queries the data source, so the connector and schema text are built once and shared;
     # per-request deps are a copy with fresh per-turn state.
     app.state.deps_template = build_deps(pack, connector, sink)
 
     def require_key(x_api_key: str | None = Header(default=None)) -> None:
-        if not x_api_key or not secrets.compare_digest(x_api_key, api_key):
+        # isascii() first: Starlette decodes header bytes as latin-1, and compare_digest raises TypeError
+        # (→ 500 traceback for an unauthenticated caller) on a str with any code point above 0x7F.
+        if not x_api_key or not x_api_key.isascii() or not secrets.compare_digest(x_api_key, api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
 
     @app.get("/healthz")
@@ -153,7 +174,10 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         events: queue.Queue = queue.Queue()
         deps = request_deps(app)
         deps.run_context = RunContextInfo(source="api", session_id=session_id)
-        history = sink.load_session(session_id) if session_id else None
+        # A BigQuery query on the event loop stalls every other request and every other stream's keepalive;
+        # anyio's threadpool (40 slots, the one /ask itself runs in) rather than the loop's default executor,
+        # which is min(32, cpu+4) — 5 threads on a 1-vCPU instance against a documented --concurrency 4.
+        history = await anyio.to_thread.run_sync(sink.load_session, session_id) if session_id else None
 
         async def handler(ctx, stream) -> None:
             async for ev in stream:
@@ -178,10 +202,10 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
             # Emitted before the run starts, so a client shows progress immediately and the first event is
             # deterministic even on the rule-based path, which makes no model call and so emits no events.
             yield "event: status\ndata: " + json.dumps({"phase": "thinking", "tool": None, "detail": None}) + "\n\n"
-            task = asyncio.create_task(asyncio.to_thread(run))
+            task = asyncio.create_task(anyio.to_thread.run_sync(run))
             while True:
                 try:
-                    name, payload = await asyncio.to_thread(events.get, True, 15)
+                    name, payload = await anyio.to_thread.run_sync(events.get, True, 15)
                 except queue.Empty:
                     yield ": keepalive\n\n"  # stops proxies buffering a slow run
                     continue
