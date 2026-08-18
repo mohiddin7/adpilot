@@ -214,7 +214,7 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
                     break
             # Normal path: wait for the worker so the response ends only once the run is done. On a client
             # disconnect this line is never reached — cancellation unwinds the generator at the events.get
-            # await above — and it does not need to be: run() executes in an OS thread (asyncio.to_thread), and
+            # await above — and it does not need to be: run() executes in an OS thread (anyio.to_thread.run_sync), and
             # cancelling an await cannot stop a running thread, so ask()'s buffered record still reaches
             # flush_audit() in run()'s finally. Pinned by test_a_client_disconnect_still_records_the_run.
             await task

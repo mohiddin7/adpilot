@@ -86,7 +86,7 @@ one guard chain, one audit record — but the model call itself differs, so a pr
 show it on `/ask/stream` and not on `/ask`. If the two diverge in testing, that is where to look first.
 
 **A client that disconnects mid-stream does not cancel the run.** `ask()` runs in an OS thread
-(`asyncio.to_thread`); cancelling an `await` cannot stop a thread that is already running, so the question
+(`anyio.to_thread.run_sync`); cancelling an `await` cannot stop a thread that is already running, so the question
 completes and its audit row is written regardless. This is intended: a caller cannot dodge being recorded by
 hanging up, and a disconnect still costs whatever model tokens the run used. Pinned by
 `test_a_client_disconnect_still_records_the_run` in `tests/test_api.py`.
