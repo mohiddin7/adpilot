@@ -47,3 +47,15 @@ def test_tier2_docs_match_duckdb_columns(pack, duck, logical):
 
 def test_anomaly_direction_values_documented(pack):
     assert "HIGH_CPA" in pack.tables["anomalies"]["columns"]["anomaly_direction"]
+
+
+def test_briefing_questions_pass_the_input_guards_unchanged(pack):
+    """A briefing question the guards reject or rewrite would be 'unavailable' in every daily brief, silently."""
+    from adpilot.core.guardrails import is_in_scope, sanitize_question
+
+    qs = pack.raw["briefing"]["questions"]
+    assert len(qs) == 4
+    for q in qs:
+        assert sanitize_question(q) == q
+        assert is_in_scope(q)
+        assert "latest 7 days in the data" in q or "forecast" in q or "budget optimizer" in q  # anchored, never "today"

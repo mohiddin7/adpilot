@@ -313,3 +313,12 @@ def test_the_streaming_path_is_rate_limited_too(agent, deps, monkeypatch):
     )
     assert answer.caveats == []          # a real streamed run, not the rule-based fallback
     assert len(hits) == 2                # one acquisition per model request
+
+
+def test_fell_back_marks_the_rule_based_path_only(agent, deps):
+    from adpilot.core.agent import fell_back
+
+    canned, _, _ = ask(agent, deps, "What was spend by platform?")  # no model → rule-based canned query
+    assert canned.confidence == 0.3 and fell_back(canned)
+    real, _, _ = ask(agent, deps, "What was total spend per platform?", model=scripted(GOOD_SQL))
+    assert not fell_back(real)

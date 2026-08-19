@@ -71,6 +71,14 @@ def refused(answer: AnalystAnswer) -> bool:
     return "OutOfScope" in answer.caveats or answer.answer_md == REFUSAL_TEXT or blocked_by_guard
 
 
+FALLBACK_NOTE = "answered without the language model"
+
+
+def fell_back(answer: AnalystAnswer) -> bool:
+    """True when the rule-based path answered instead of the model — a canned query (confidence 0.3) or an apology."""
+    return any(FALLBACK_NOTE in c for c in answer.caveats)
+
+
 def ask(
     agent: Agent[AgentDeps, AnalystAnswer | Refusal],
     deps: AgentDeps,
@@ -159,7 +167,7 @@ def _classify(exc: Exception) -> tuple[ErrorKind, str]:
 
 def _rule_based(deps: AgentDeps, question: str, kind: ErrorKind, detail: str) -> AnalystAnswer:
     """No model: answer from the pack's canned queries when the question matches one."""
-    caveat = f"{kind}: answered without the language model ({detail[:160]})."
+    caveat = f"{kind}: {FALLBACK_NOTE} ({detail[:160]})."
     deps.budget = Budget()
     deps.results.clear()
     for fq in deps.pack.raw.get("fallback_queries", []):

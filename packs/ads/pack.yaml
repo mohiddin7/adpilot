@@ -132,3 +132,13 @@ fallback_queries:
   - keywords: [spend]
     title: Total spend by platform
     sql: SELECT platform, ROUND(SUM(spend), 2) AS spend FROM {gold} GROUP BY platform ORDER BY spend DESC
+
+# The daily brief (adpilot brief). Each question goes through the agent exactly like a chat question; the
+# answers that survive are synthesised into findings and actions. Anchor time to the data, never to today:
+# the bundled data set ends 2024-01-30, so "CURRENT_DATE - 7" would return nothing.
+briefing:
+  questions:
+    - In the latest 7 days in the data, which campaigns had the most severe cost-per-acquisition anomalies?
+    - Comparing the latest 7 days in the data with the 7 days before, how did spend and conversions move by platform?
+    - What does the 14-day forecast say about each platform's cost per acquisition?
+    - What does the budget optimizer recommend reallocating, and what is the projected conversion gain?
