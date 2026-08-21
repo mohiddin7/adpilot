@@ -98,3 +98,75 @@ def test_raw_answers_show_at_most_ten_rows(agent, deps):
     model, _ = brief_model(synth=RuntimeError("no synthesis"), data=[{"n": 7000000 + i} for i in range(50)])
     brief = run_brief(with_questions(deps, questions(deps.pack)[:1]), agent, model)
     assert "7000009" in brief.markdown and "7000010" not in brief.markdown
+
+
+def test_brief_says_so_what_and_now_what(agent, deps):
+    model, prompts = brief_model()
+    brief = run_brief(deps, agent, model)
+    assert brief.summary is not None and brief.caveats == []  # "7 days" in the action comes from the question text
+    md = brief.markdown
+    assert md.startswith("# TikTok carries the most spend")
+    assert "## What changed" in md and "it is the largest line in the budget" in md
+    assert "## What to do" in md and "Review TikTok bids" in md
+    assert f"trace `{brief.answers[0][2]}`" in md
+    assert len(prompts) == 1
+
+
+def test_synthesis_is_audited_with_the_brief(agent, deps):
+    model, _ = brief_model()
+    brief = run_brief(deps, agent, model)
+    rows = [c for c in deps.audit.calls if c.source == "brief"]
+    assert [r.case_name for r in rows] == ["q1", "q2", "q3", "q4", "synthesis"]
+    assert rows[-1].run_id == brief.run_id and rows[-1].error_kind is None
+
+
+def test_unavailable_answers_never_reach_synthesis(agent, deps):
+    model, prompts = brief_model(refuse="14-day forecast", fail="budget optimizer")
+    brief = run_brief(deps, agent, model)
+    assert "14-day forecast" not in prompts[0] and "budget optimizer" not in prompts[0]
+    assert "## Unavailable" in brief.markdown
+
+
+def test_nothing_usable_means_no_synthesis_call(agent, deps):
+    model, prompts = brief_model(refuse="the")  # every pack question contains "the"
+    brief = run_brief(deps, agent, model)
+    assert prompts == [] and brief.summary is None and len(brief.unavailable) == 4
+
+
+def test_no_model_writes_no_synthesis_row(agent, deps):
+    run_brief(deps, agent, None)
+    assert "synthesis" not in [c.case_name for c in deps.audit.calls]
+
+
+def test_failed_synthesis_degrades_to_raw_answers(agent, deps):
+    model, _ = brief_model(synth=ModelHTTPError(503, "primary", body={"error": "down"}))
+    brief = run_brief(deps, agent, model)
+    assert brief.summary is None
+    assert brief.caveats == ["BriefSynthesisFailed: ModelUnavailable"]
+    assert "## Answers" in brief.markdown and "> ⚠ BriefSynthesisFailed" in brief.markdown
+    last = deps.audit.calls[-1]
+    assert last.case_name == "synthesis" and last.error_kind == "ModelUnavailable"
+
+
+def test_citing_an_unavailable_question_is_retried_then_fails(agent, deps):
+    bad = {**SUMMARY, "findings": [{**SUMMARY["findings"][0], "source": 3}]}  # Q3 refuses below
+    model, prompts = brief_model(synth=bad, refuse="14-day forecast")
+    brief = run_brief(deps, agent, model)
+    assert len(prompts) == 2  # one retry, then give up
+    assert brief.summary is None and brief.caveats[0].startswith("BriefSynthesisFailed")
+
+
+def test_a_number_not_in_the_answers_is_flagged(agent, deps):
+    findings = [
+        {"what": "TikTok spent about 74,267", "so_what": "largest line", "source": 1},  # rounded: grounded
+        {"what": "Google spent 99999", "so_what": "invented", "source": 2},
+    ]
+    model, _ = brief_model(synth={**SUMMARY, "findings": findings})
+    brief = run_brief(deps, agent, model)
+    assert brief.caveats == ["BriefUngrounded: 99999"]
+    assert "> ⚠ BriefUngrounded: 99999" in brief.markdown
+
+
+def test_no_actions_says_so(agent, deps):
+    model, _ = brief_model(synth={**SUMMARY, "actions": []})
+    assert "- No action this time." in run_brief(deps, agent, model).markdown
