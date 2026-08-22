@@ -164,3 +164,66 @@ def test_audit_subcommands_against_memory_sink(memory_audit, monkeypatch):
     assert main(["audit", "export", "--run", "run_1", "--csv"], out=out) == 0 and out.getvalue().startswith("trace_id,")
     out = io.StringIO()
     assert main(["audit", "export", "--run", "nope"], out=out) == 1
+
+
+def test_brief_without_model_prints_raw_answers_and_exits_1(no_api_key, memory_audit, monkeypatch, capsys):
+    import adpilot.core.runtime as runtime
+    from adpilot.core.audit import MemorySink
+
+    sink = MemorySink()
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: sink)
+    out = io.StringIO()
+    assert main(["--connector", "duckdb", "brief"], out=out) == 1
+    assert out.getvalue().startswith("# ")  # stdout is markdown only; the audit banner went to stderr
+    assert "## Unavailable" in out.getvalue()
+    assert "audit: memory" in capsys.readouterr().err
+    assert sink.flushed["agent_calls"] == 4
+
+
+def test_brief_with_model_writes_the_file_and_exits_0(no_api_key, memory_audit, monkeypatch, tmp_path):
+    import adpilot.cli as cli
+    from tests.test_brief import brief_model
+
+    model, _ = brief_model()
+    monkeypatch.setattr(cli, "build_model", lambda: model)
+    target = tmp_path / "brief.md"
+    assert main(["--connector", "duckdb", "brief", "--out", str(target)], out=io.StringIO()) == 0
+    assert "## What changed" in target.read_text()
+
+
+def test_brief_refuses_to_run_unrecorded(no_api_key, monkeypatch, tmp_path):
+    import adpilot.core.runtime as runtime
+    from adpilot.core.audit import AuditUnavailable
+
+    class Broken:
+        def preflight(self):
+            raise AuditUnavailable("permissions", "grant roles")
+
+    monkeypatch.delenv("ADPILOT_AUDIT", raising=False)
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: Broken())
+    target = tmp_path / "brief.md"
+    assert main(["--connector", "duckdb", "brief", "--out", str(target)], out=io.StringIO()) == 2
+    assert not target.exists()
+
+
+def test_brief_exits_2_when_the_audit_flush_fails(no_api_key, memory_audit, monkeypatch, tmp_path):
+    import adpilot.core.runtime as runtime
+    from adpilot.core.audit import FlushReport, MemorySink
+
+    class Flaky(MemorySink):
+        def flush(self):
+            super().flush()
+            return FlushReport(failed={"agent_calls": 4}, errors=["agent_calls: 503"])
+
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: Flaky())
+    target = tmp_path / "brief.md"
+    assert main(["--connector", "duckdb", "brief", "--out", str(target)], out=io.StringIO()) == 2
+    assert target.exists()  # the brief is still written; only the record is at risk
+
+
+def test_brief_needs_briefing_questions(no_api_key, memory_audit, monkeypatch, capsys):
+    import adpilot.core.brief as brief
+
+    monkeypatch.setattr(brief, "questions", lambda pack: [])
+    assert main(["--connector", "duckdb", "brief"], out=io.StringIO()) == 2
+    assert "defines no briefing questions" in capsys.readouterr().err
