@@ -1,9 +1,10 @@
 """The daily brief. The one agent answers the pack's briefing questions through ask(); one tool-less call then
 turns the surviving answers into what changed (so what) and what to do (now what).
 
-No second agent: guardrails, fallbacks, redaction and the audit record all come from ask(). The synthesis call
-has no tools, so it cannot fetch a number the answers do not contain — it can only mis-state one, which
-_ungrounded() flags.
+No second agent: guardrails, fallbacks and the audit record come from ask(). The synthesis call has no tools, so
+it cannot fetch a number the answers do not contain — it can only mis-state one, which _ungrounded() flags. The
+brief is published to a public issue, so the rendered markdown goes through the same layer-5 redaction ask()
+applies to every answer.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.models import Model
 
-from adpilot.core.agent import AnalystAnswer, Refusal, _classify, ask, fell_back, refused
+from adpilot.core.agent import FALLBACK_NOTE, AnalystAnswer, Refusal, _classify, ask, fell_back, refused
 from adpilot.core.audit import (
     RunContextInfo,
     build_record,
@@ -27,6 +28,7 @@ from adpilot.core.audit import (
     primary_model_name,
     summarize_messages,
 )
+from adpilot.core.guardrails import redact_output
 from adpilot.core.tools import AgentDeps
 from adpilot.packs.loader import Pack
 
@@ -92,7 +94,10 @@ def run_brief(deps: AgentDeps, agent: Agent[AgentDeps, AnalystAnswer | Refusal],
         summary, caveats, model_used = _synthesize(deps, synth_model, usable, run_id)
     if summary is not None:
         caveats += _ungrounded(summary, _source_text(usable))
-    md = _render(deps.pack, answers, unavailable, summary, caveats, run_id, model_used)
+    md, leaked = redact_output(_render(deps.pack, answers, unavailable, summary, caveats, run_id, model_used))
+    if leaked:
+        caveats.append("OutputPolicy")
+        md, _ = redact_output(_render(deps.pack, answers, unavailable, summary, caveats, run_id, model_used))
     return Brief(run_id, answers, unavailable, summary, caveats, md)
 
 
@@ -126,7 +131,7 @@ def _synthesize(
     deps.audit.record(build_record(
         trace_id=new_trace_id(), ts=started, latency_s=time.perf_counter() - t0,
         question="brief synthesis over " + ", ".join(f"q{i}" for i in usable),
-        answer_md=summary.model_dump_json() if summary else "", sql=None, refused=False,
+        answer_md=redact_output(summary.model_dump_json())[0] if summary else "", sql=None, refused=False,
         confidence=1.0 if summary else 0.0,
         caveats=[f"{kind}: brief synthesis failed ({detail[:160]})"] if kind else [],
         messages=messages, usage=usage, model_requested=primary_model_name(model),
@@ -158,6 +163,12 @@ def _ungrounded(summary: BriefSummary, source_text: str) -> list[str]:
     return [f"BriefUngrounded: {', '.join(missing)}"] if missing else []
 
 
+def _why_unavailable(answer: AnalystAnswer) -> str:
+    if refused(answer):
+        return "refused"
+    return next(c.split(":")[0] for c in answer.caveats if FALLBACK_NOTE in c)
+
+
 def _render(pack: Pack, answers, unavailable, summary: BriefSummary | None, caveats, run_id: str, model_used) -> str:
     out = [f"# {summary.headline if summary else 'Daily brief — raw answers'}", ""]
     out += [f"> ⚠ {c}" for c in caveats]
@@ -172,13 +183,16 @@ def _render(pack: Pack, answers, unavailable, summary: BriefSummary | None, cave
         if summary.watch:
             out += ["", "## Watching", *(f"- {w}" for w in summary.watch)]
     else:
-        out += ["", "## Answers"]
-        for i, (q, a, _) in enumerate(answers, 1):
+        # A fallback's canned table does not answer the question it sits under; it is listed below, with why.
+        shown = [(i, q, a) for i, (q, a, _) in enumerate(answers, 1) if q not in unavailable]
+        if shown:
+            out += ["", "## Answers"]
+        for i, q, a in shown:
             out += ["", f"### Q{i}. {q}", "", a.answer_md]
             if a.data:
                 out += ["", "```text", pd.DataFrame(a.data[:RAW_ROWS]).to_string(index=False), "```"]
     if unavailable:
-        out += ["", "## Unavailable", *(f"- {q}" for q in unavailable)]
+        out += ["", "## Unavailable", *(f"- {q} — {_why_unavailable(a)}" for q, a, _ in answers if q in unavailable)]
     out += ["", "## Questions", *(f"{i}. {q} — trace `{t}`" for i, (q, _, t) in enumerate(answers, 1))]
     out += ["", "---", f"pack `{pack.name}` · prompt `{pack.prompt_hash}` · synthesis model `{model_used or 'none'}` · "
             f"brief run `{run_id}` (`adpilot audit export --run {run_id}`)", ""]

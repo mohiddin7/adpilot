@@ -109,7 +109,7 @@ See [docs/evals.md](docs/evals.md) for how scoring works and what the nightly PR
 adpilot brief --out brief.md
 ```
 
-The agent answers the pack's `briefing.questions` (`packs/ads/pack.yaml`) exactly as it answers a chat question. Then one tool-less model call turns the answers into **what changed**, **so what** and **what to do**, citing the question and trace behind each finding. Answers that refused or fell back to a canned query are listed as *Unavailable*, never presented as findings. Any number in the brief that doesn't appear in the answers is flagged `BriefUngrounded`. Without a model key you get the raw answers.
+The agent answers the pack's `briefing.questions` (`packs/ads/pack.yaml`) exactly as it answers a chat question. Then one tool-less model call turns the answers into **what changed**, **so what** and **what to do**, citing the question and trace behind each finding. Answers that refused or fell back to a canned query are listed as *Unavailable*, never presented as findings. Any number in the brief that doesn't appear in the answers is flagged `BriefUngrounded`. If synthesis fails you get the raw answers instead. Without a model key, every question is listed as *Unavailable* with the reason. The brief is redacted before it's published, just like every chat answer.
 
 `.github/workflows/brief-daily.yml` runs it every day at 12:00 UTC and opens a GitHub issue titled `Daily brief YYYY-MM-DD`. Every question and the synthesis are in the audit trail under one run id: `adpilot audit export --run <id>`.
 

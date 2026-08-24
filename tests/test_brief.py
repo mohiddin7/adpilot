@@ -74,7 +74,7 @@ def test_no_model_lists_every_fallback_as_unavailable(agent, deps):
     brief = run_brief(deps, agent, None)
     assert brief.summary is None
     assert brief.unavailable == questions(deps.pack)
-    assert "## Answers" in brief.markdown and "## Unavailable" in brief.markdown
+    assert "## Answers" not in brief.markdown and "## Unavailable" in brief.markdown  # nothing was answered
 
 
 def test_refusal_and_canned_fallback_are_both_unavailable(agent, deps):
@@ -170,3 +170,22 @@ def test_a_number_not_in_the_answers_is_flagged(agent, deps):
 def test_no_actions_says_so(agent, deps):
     model, _ = brief_model(synth={**SUMMARY, "actions": []})
     assert "- No action this time." in run_brief(deps, agent, model).markdown
+
+
+def test_synthesis_text_is_redacted_before_it_is_published(agent, deps):
+    """The brief goes to a public issue. ask() redacts every answer_md; the synthesis must not be the hole."""
+    leaky = {**SUMMARY, "watch": ["ping me@example.com with OPENROUTER_API_KEY=sk-or-v1-abcdefghijklmnopqrstuv"]}
+    model, _ = brief_model(synth=leaky)
+    brief = run_brief(deps, agent, model)
+    assert "me@example.com" not in brief.markdown and "sk-or-v1-abc" not in brief.markdown
+    assert "[redacted:email]" in brief.markdown and "> ⚠ OutputPolicy" in brief.markdown
+    assert "OutputPolicy" in brief.caveats
+    assert "me@example.com" not in deps.audit.calls[-1].answer_md
+
+
+def test_raw_view_never_shows_a_fallback_answer_as_the_answer(agent, deps):
+    """With no model every question gets a canned all-time table that does not answer it; show why, not the table."""
+    brief = run_brief(deps, agent, None)
+    assert "pre-defined query" not in brief.markdown and "```text" not in brief.markdown
+    for q in questions(deps.pack):
+        assert f"- {q} — ModelUnavailable" in brief.markdown
