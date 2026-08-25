@@ -227,3 +227,27 @@ def test_brief_needs_briefing_questions(no_api_key, memory_audit, monkeypatch, c
     monkeypatch.setattr(brief, "questions", lambda pack: [])
     assert main(["--connector", "duckdb", "brief"], out=io.StringIO()) == 2
     assert "defines no briefing questions" in capsys.readouterr().err
+
+
+def test_brief_flushes_the_audit_even_when_writing_the_file_fails(no_api_key, memory_audit, monkeypatch, tmp_path):
+    """Every question's record is already buffered; a bad --out path must not throw them away."""
+    import adpilot.core.runtime as runtime
+    from adpilot.core.audit import MemorySink
+
+    sink = MemorySink()
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: sink)
+    with pytest.raises(FileNotFoundError):
+        main(["--connector", "duckdb", "brief", "--out", str(tmp_path / "missing" / "brief.md")], out=io.StringIO())
+    assert sink.flushed["agent_calls"] == 4
+
+
+def test_brief_exits_1_when_synthesis_fails(no_api_key, memory_audit, monkeypatch, tmp_path):
+    """Every question answered but no synthesis: the brief posts raw answers and the job must not go green."""
+    import adpilot.cli as cli
+    from tests.test_brief import brief_model
+
+    model, _ = brief_model(synth=RuntimeError("synthesis down"))
+    monkeypatch.setattr(cli, "build_model", lambda: model)
+    target = tmp_path / "brief.md"
+    assert main(["--connector", "duckdb", "brief", "--out", str(target)], out=io.StringIO()) == 1
+    assert "BriefSynthesisFailed" in target.read_text()

@@ -141,14 +141,18 @@ def cmd_brief(args, out) -> int:
     model = build_model()
     if model is None:
         print("No AGENT_LLM_BEARER_TOKEN set — every question falls back and there is no synthesis.", file=err)
-    brief = run_brief(deps, build_agent(model), model)
-    if args.out:
-        Path(args.out).write_text(brief.markdown)
-    else:
-        print(brief.markdown, file=out)
-    rep = sink.flush()
+    try:
+        brief = run_brief(deps, build_agent(model), model)
+        if args.out:
+            Path(args.out).write_text(brief.markdown)
+        else:
+            print(brief.markdown, file=out)
+    finally:
+        # Every question's record is already buffered; flush even if writing the brief raised (as cmd_chat does).
+        rep = sink.flush()
+        if not rep.ok:
+            print(f"audit: {rep.pending} row(s) not persisted — {'; '.join(rep.errors)}", file=err)
     if not rep.ok:
-        print(f"audit: {rep.pending} row(s) not persisted — {'; '.join(rep.errors)}", file=err)
         return 2
     return 1 if brief.unavailable or brief.summary is None else 0
 
