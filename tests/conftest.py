@@ -55,3 +55,15 @@ def eval_deps_factory(pack, eval_duck):
 @pytest.fixture
 def eval_deps(eval_deps_factory):
     return eval_deps_factory()
+
+
+@pytest.fixture
+def no_waits(monkeypatch):
+    """Chains from build_chain() rate-limit and back off for real; tests must not sleep. Returns the backoff sleeps."""
+    from adpilot.core import guardrails
+    from adpilot.core import models as model_chain
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(guardrails.MODEL_RATE_LIMITER, "acquire", lambda: None)
+    monkeypatch.setattr(model_chain, "_sleep", sleeps.append)
+    return sleeps
