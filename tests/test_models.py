@@ -219,3 +219,22 @@ def test_comma_fallback_env_builds_every_model(monkeypatch):
     monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "k")
     monkeypatch.setenv("AGENT_LLM_FALLBACK_MODEL", "a/x, b/y")
     assert [x.model_name for x in m.build_model().models] == [m.DEFAULT_AGENT_CHAIN[0], "a/x", "b/y"]
+
+
+def named(*names):
+    return m.build_chain(list(names), lambda n: FunctionModel(lambda *_: None, model_name=n))
+
+
+def test_after_is_the_rest_of_the_chain():
+    chain = named("a/x:free", "b/y:free", "c/z:free")
+    assert [x.model_name for x in m.after(chain, "a/x").models] == ["b/y:free", "c/z:free"]
+    assert m.after(chain, "b/y-20260901").model_name == "c/z:free"      # providers append versions, drop :free
+    assert m.after(chain, "c/z") is None                                  # the last model failed
+    assert m.after(chain, "d/w") is None and m.after(chain, None) is None # not in the chain: no re-run
+    assert m.after(named("a/x:free"), "a/x") is None                      # single model
+    assert m.after(named("a/x", m.ROUTER), "some/routed-model") is None   # openrouter/free answers as the routed model
+
+
+def test_after_prefers_the_most_specific_name():
+    chain = named("a/x", "a/x-large", "c/z")
+    assert m.after(chain, "a/x-large").model_name == "c/z"   # not a re-run on a/x-large itself

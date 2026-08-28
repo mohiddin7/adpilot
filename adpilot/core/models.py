@@ -234,3 +234,20 @@ class NoNullSchemas(AbstractCapability[Any]):
         return [replace(d, parameters_json_schema=_no_null(d.parameters_json_schema)) for d in tool_defs]
 
     prepare_output_tools = prepare_tools
+
+
+def same_model(configured: str, answered: str | None) -> bool:
+    """Providers answer as the configured name without OpenRouter's `:free`, often with a date or version appended."""
+    return bool(answered) and answered.startswith(configured.removesuffix(":free"))
+
+
+def after(chain: Model | str | None, failed: str | None) -> Model | None:
+    """The chain's models after the one that answered as `failed`; None when it was the last or is not in the chain.
+
+    openrouter/free answers as the model it routed to, which is never earlier in the chain, so it gets None."""
+    models = list(getattr(chain, "models", None) or [])
+    hits = [i for i, x in enumerate(models) if same_model(x.model_name, failed)]
+    if not hits:
+        return None
+    i = max(hits, key=lambda i: len(models[i].model_name))  # "a/x-large" answered: not a/x
+    return _chain(models[i + 1:])
