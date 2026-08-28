@@ -18,6 +18,7 @@ from adpilot.core.audit import build_record, new_trace_id, primary_model_name
 from adpilot.core.chart import ChartSpec, heuristic_chart
 from adpilot.core.errors import AdPilotError, ErrorKind
 from adpilot.core.guardrails import Budget, classify_question, is_in_scope, redact_output, sanitize_question
+from adpilot.core.models import NoNullSchemas
 from adpilot.core.tools import AgentDeps, SqlResult, execute, records, register_tools
 
 log = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ def build_agent(model: Model | str | None = None) -> Agent[AgentDeps, AnalystAns
         output_type=[AnalystAnswer, Refusal],
         retries=2,
         name="adpilot",
+        capabilities=[NoNullSchemas()],
     )
 
     @agent.instructions

@@ -29,6 +29,7 @@ from adpilot.core.audit import (
     summarize_messages,
 )
 from adpilot.core.guardrails import redact_output
+from adpilot.core.models import NoNullSchemas
 from adpilot.core.tools import AgentDeps
 from adpilot.packs.loader import Pack
 
@@ -106,7 +107,8 @@ def _synthesize(
 ) -> tuple[BriefSummary | None, list[str], str | None]:
     """One tool-less call, audited like the judge's. Any failure returns no summary and a caveat, never raises."""
     synth: Agent[None, BriefSummary] = Agent(
-        model, output_type=BriefSummary, instructions=SYNTH_INSTRUCTIONS, retries=1, name="adpilot-brief"
+        model, output_type=BriefSummary, instructions=SYNTH_INSTRUCTIONS, retries=1, name="adpilot-brief",
+        capabilities=[NoNullSchemas()],
     )
 
     @synth.output_validator

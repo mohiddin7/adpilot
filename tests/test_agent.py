@@ -322,3 +322,20 @@ def test_fell_back_marks_the_rule_based_path_only(agent, deps):
     assert canned.confidence == 0.3 and fell_back(canned)
     real, _, _ = ask(agent, deps, "What was total spend per platform?", model=scripted(GOOD_SQL))
     assert not fell_back(real)
+
+
+def test_the_model_is_never_shown_a_null_schema(agent, deps):
+    """qwen's strict grammar 400s a whole request over one `X | None` parameter (probe, 2026-09-23). Only the
+    schema the model sees changes: a null in the model's output still validates, and the wire shape keeps nulls."""
+    from adpilot.core.runtime import answer_body
+
+    shown = []
+
+    def fn(messages, info):
+        shown.extend(d.parameters_json_schema for d in [*info.function_tools, *info.output_tools])
+        return final("ok", sql=None, chart=None)
+
+    answer, _, _ = ask(agent, deps, "What was total spend per platform?", model=FunctionModel(fn))
+    assert shown and '"null"' not in json.dumps(shown)
+    assert answer.answer_md == "ok" and answer.chart is None
+    assert '"chart":null' in answer_body(answer, "t").model_dump_json()

@@ -18,7 +18,7 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext
 
 from adpilot.core.audit import AuditSink, RunContextInfo, build_record, new_trace_id, primary_model_name
-from adpilot.core.models import RateLimited, renamed_env
+from adpilot.core.models import NoNullSchemas, RateLimited, renamed_env
 from evals.cases import ACCURACY_FAMILIES, Expected, reference_rows
 from evals.evaluators import Factual
 from evals.task import Trace
@@ -119,7 +119,7 @@ def judge_answer(
     context: RunContextInfo | None = None,
     pack_name: str = "ads",
 ) -> JudgeVerdict:
-    agent: Agent[None, JudgeVerdict] = Agent(model, output_type=JudgeVerdict, instructions=_JUDGE_INSTRUCTIONS, retries=1, name="adpilot-judge")
+    agent: Agent[None, JudgeVerdict] = Agent(model, output_type=JudgeVerdict, instructions=_JUDGE_INSTRUCTIONS, retries=1, name="adpilot-judge", capabilities=[NoNullSchemas()])
     prompt = f"Question: {question}\n\nRubric: {rubric}\n\nData rows the answer was based on: {data_rows}\n\n"
     if reference_rows:
         prompt += f"Reference rows, what a correct query returns (max 30): {reference_rows[:30]}\n\n"

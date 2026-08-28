@@ -7,9 +7,11 @@ import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.models import Model
 from pydantic_ai.models.fallback import FallbackModel
@@ -205,3 +207,30 @@ def build_model(primary: str | None = None, fallback: str | None = None, api_key
         DEFAULT_AGENT_CHAIN,
     )
     return build_chain(names, openrouter_factory(api_key))
+
+
+def _no_null(schema: Any) -> Any:
+    """anyOf [X, {"type": "null"}] → X (a default of null goes too), recursively, $defs included."""
+    if isinstance(schema, list):
+        return [_no_null(s) for s in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {k: _no_null(v) for k, v in schema.items()}
+    alts = out.get("anyOf")
+    rest = [a for a in alts if a != {"type": "null"}] if isinstance(alts, list) else []
+    if rest and len(rest) < len(alts):
+        del out["anyOf"]
+        if "default" in out and out["default"] is None:
+            del out["default"]
+        out = {**(rest[0] if len(rest) == 1 else {"anyOf": rest}), **out}
+    return out
+
+
+class NoNullSchemas(AbstractCapability[Any]):
+    """Strict-grammar providers reject a whole request over one nullable parameter. Only what the model is shown
+    changes: signatures, validation and the API's wire shape still accept and return null."""
+
+    async def prepare_tools(self, ctx, tool_defs):
+        return [replace(d, parameters_json_schema=_no_null(d.parameters_json_schema)) for d in tool_defs]
+
+    prepare_output_tools = prepare_tools
