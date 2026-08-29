@@ -1,10 +1,14 @@
+import pytest
 from pydantic_ai import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_evals.evaluators import EvaluatorContext
 
 from adpilot.core.agent import AnalystAnswer
+from adpilot.core.audit import MemorySink
+from adpilot.core.models import DEFAULT_AGENT_CHAIN
 from evals.cases import Expected
 from evals.judge import (
+    DEFAULT_JUDGE_CHAIN,
     CalibratedJudge,
     JudgeVerdict,
     build_judge_model,
@@ -27,13 +31,15 @@ def verdict_model(**flags):
 def test_config_defaults_and_fallbacks():
     cfg = judge_config({})
     assert cfg.api_key is None and cfg.endpoint == "https://openrouter.ai/api/v1"
-    # 2026-09-21 calibration head-to-head: nex 10/10, dots 10/10, gemma 5/10 (429s on a shared quota).
-    assert cfg.primary == "nex-agi/nex-n2.5-pro:free" and cfg.fallback == "dots-studio/dots-3-note-preview:free"
+    # Live probe, 2026-09-23 (docs/models.md): 3/3 calibration agreement, fastest first; openrouter/free last.
+    assert cfg.models == list(DEFAULT_JUDGE_CHAIN) and cfg.agent_models == list(DEFAULT_AGENT_CHAIN)
     # the judge borrows the agent's key, but never the agent's model — a judge must not grade itself
-    cfg = judge_config({"AGENT_LLM_BEARER_TOKEN": "agent-key", "AGENT_LLM_TARGET_MODEL": "agent-model"})
-    assert cfg.api_key == "agent-key" and cfg.primary != "agent-model"
-    cfg = judge_config({"JUDGE_LLM_BEARER_TOKEN": "j", "JUDGE_LLM_TARGET_MODEL": "m", "JUDGE_LLM_FALLBACK_MODEL": ""})
-    assert cfg.api_key == "j" and cfg.primary == "m" and cfg.fallback is None
+    cfg = judge_config({"AGENT_LLM_BEARER_TOKEN": "agent-key", "AGENT_LLM_TARGET_MODEL": "agent/model"})
+    assert cfg.api_key == "agent-key" and "agent/model" not in cfg.models and cfg.agent_models[0] == "agent/model"
+    cfg = judge_config({"JUDGE_LLM_BEARER_TOKEN": "j", "JUDGE_LLM_TARGET_MODEL": "m/x", "JUDGE_LLM_FALLBACK_MODEL": ""})
+    assert cfg.api_key == "j" and cfg.models == ["m/x"]
+    cfg = judge_config({"JUDGE_LLM_FALLBACK_MODEL": "a/x, b/y"})
+    assert cfg.models == [DEFAULT_JUDGE_CHAIN[0], "a/x", "b/y"]
     cfg = judge_config({"JUDGE_LLM_BEARER_TOKEN": "j", "JUDGE_LLM_ENDPOINT_URL": "https://x.example/v1/chat/completions"})
     assert cfg.endpoint == "https://x.example/v1"
 
@@ -43,7 +49,7 @@ def test_legacy_judge_names_are_ignored_with_a_warning(caplog):
 
     with caplog.at_level(logging.WARNING):
         cfg = judge_config({"LLM_JUDGE_BEARER_TOKEN": "old", "LLM_JUDGE_TARGET_MODEL": "old-model"})
-    assert cfg.api_key is None and cfg.primary == "nex-agi/nex-n2.5-pro:free"
+    assert cfg.api_key is None and cfg.models[0] == DEFAULT_JUDGE_CHAIN[0]
     assert "JUDGE_LLM_BEARER_TOKEN" in caplog.text
 
 
@@ -174,3 +180,36 @@ def test_judge_sees_every_row_the_agent_saw_not_a_30_row_head():
 
     judge_answer(FunctionModel(fn), "q", "r", [{"day": i} for i in range(95)], "a")
     assert "'day': 94" in seen["prompt"]
+
+
+def test_default_chains_share_only_the_router():
+    assert set(DEFAULT_JUDGE_CHAIN) & set(DEFAULT_AGENT_CHAIN) == {"openrouter/free"}
+
+
+@pytest.mark.parametrize("env", [
+    {"AGENT_LLM_TARGET_MODEL": "x/shared:free", "JUDGE_LLM_TARGET_MODEL": "x/shared:free"},
+    {"JUDGE_LLM_FALLBACK_MODEL": "inclusionai/ling-3.0-flash-fin:free"},              # a default agent model
+    {"AGENT_LLM_TARGET_MODEL": "x/shared:free", "JUDGE_LLM_TARGET_MODEL": "x/shared"},  # same model, other spelling
+])
+def test_a_judge_chain_sharing_an_agent_model_refuses_to_start(env):
+    with pytest.raises(ValueError, match="shares"):
+        judge_config(env)
+
+
+def test_self_judged_verdict_is_discarded():
+    """openrouter/free is in both chains; when it routes the judge to one of the agent's models, the verdict is void."""
+    def fn(messages, info):
+        return ModelResponse(parts=[ToolCallPart("final_result", {"grounded": True, "answers_question": True, "honest_caveats": True, "no_invented_numbers": True})])
+
+    sink = MemorySink()
+    v = judge_answer(FunctionModel(fn, model_name="inclusionai/ling-3.0-flash-sante-20260901"), "q", "r", [], "a",
+                     audit=sink, agent_models=DEFAULT_AGENT_CHAIN)
+    assert v.reason == "judge_error: self-judged by inclusionai/ling-3.0-flash-sante-20260901" and v.score == 0
+    assert sink.calls[-1].caveats[0].startswith("JudgeError: judge_error: self-judged")
+    assert judge_answer(verdict_model(), "q", "r", [], "a", agent_models=DEFAULT_AGENT_CHAIN).score == 1.0
+
+
+def test_judge_sdk_retries_are_off_on_any_endpoint():
+    for endpoint in ("https://openrouter.ai/api/v1", "https://x.example/v1"):
+        chain = build_judge_model(judge_config({"JUDGE_LLM_BEARER_TOKEN": "k", "JUDGE_LLM_ENDPOINT_URL": endpoint}))
+        assert all(x.client.max_retries == 0 for x in chain.models)

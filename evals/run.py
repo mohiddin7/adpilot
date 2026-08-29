@@ -30,7 +30,7 @@ from adpilot.core.audit import (
     environment,
     git_sha,
 )
-from adpilot.core.models import agent_fallback_from_env, agent_primary_from_env, build_model
+from adpilot.core.models import agent_chain_from_env, build_model
 from adpilot.core.tools import AgentDeps
 from adpilot.packs.loader import REPO_ROOT, load_pack
 from evals import deterministic
@@ -144,6 +144,7 @@ def run(
     started = datetime.now(UTC)
 
     judge_model = None
+    agent_models: list[str] = []
     models = {"agent_primary": None, "agent_fallback": None, "judge": None}
     if tier == "deterministic":
         sink: AuditSink = audit or MemorySink()
@@ -164,17 +165,22 @@ def run(
             return RunResult(None, False, problems=[f"audit unavailable ({exc.kind}): {exc.hint}"], run_id=run_id)
         agent = build_agent(model)
         model_for = None
-        models.update(agent_primary=agent_primary_from_env(), agent_fallback=agent_fallback_from_env())
+        names = agent_chain_from_env()
+        models.update(agent_primary=names[0], agent_fallback=", ".join(names[1:]) or None)
         if not no_judge:
-            cfg = judge_config()
+            try:
+                cfg = judge_config()
+            except ValueError as exc:  # the judge would grade its own model: refuse to start
+                return RunResult(None, False, problems=[str(exc)], run_id=run_id)
             judge_model = build_judge_model(cfg)
-            models["judge"] = cfg.primary if judge_model else None
+            agent_models = cfg.agent_models
+            models["judge"] = cfg.models[0] if judge_model else None
 
     def deps_factory() -> AgentDeps:
         return AgentDeps(connector=RecordingSource(connector), pack=pack, schema_text=schema_text, audit=sink)
 
     family_of = {c.name: c.family for c in cases}
-    evaluators = [Factual(connector, pack), Refuses(), SafeSql(pack), Trajectory(), CalibratedJudge(judge_model, connector, pack, audit=sink, run_id=run_id)]
+    evaluators = [Factual(connector, pack), Refuses(), SafeSql(pack), Trajectory(), CalibratedJudge(judge_model, connector, pack, audit=sink, run_id=run_id, agent_models=agent_models)]
     task = make_task(agent, deps_factory, model_for, run_id=run_id, family_of=family_of)
 
     sample = [c for c in cases if c.consistency]
@@ -220,7 +226,7 @@ def run(
 
         traces = {c.name: c.output for c in report.cases if c.output is not None}
         invariants = evaluate_invariants(traces, connector, pack)
-        calibration = run_calibration(judge_model, pack, audit=sink, run_id=run_id) if judge_model else None
+        calibration = run_calibration(judge_model, pack, audit=sink, run_id=run_id, agent_models=agent_models) if judge_model else None
         judge_reliable = bool(calibration and calibration.reliable)
         results = collect(report, judge_reliable)
         repeats = collect(repeat_report, judge_reliable) if repeat_report else []
