@@ -113,7 +113,6 @@ def ask(
     first: list[ModelMessage] = []   # a failed first attempt: audited, never returned as history
     second: list[ModelMessage] = []
     rerun: list[str] = []            # ["Rerun: <kind>"] once the one re-run has started
-    n_history = len(history or [])   # capture_run_messages() lists the history first; the audit wants this turn only
 
     def done(answer: AnalystAnswer, messages: list[ModelMessage], usage=None) -> tuple[AnalystAnswer, list[ModelMessage], str]:
         answer.answer_md, leaked = redact_output(answer.answer_md)
@@ -122,11 +121,11 @@ def ask(
         answer.caveats.extend(c for c in guard_caveats + rerun if c not in answer.caveats)
         # messages_json is the next turn's history (load_session), so it holds only what ask() returns; the failed
         # attempt goes to the usage totals and to attributes["rerun"].
-        tried = first[n_history:]
+        tried = _this_turn(first)
         deps.audit.record(build_record(
             trace_id=trace_id, ts=started, latency_s=time.perf_counter() - t0, question=asked, answer_md=answer.answer_md,
             sql=answer.sql, refused=refused(answer), confidence=answer.confidence, caveats=answer.caveats, messages=messages,
-            usage=_usage_of([*tried, *(messages or second[n_history:])]) if rerun else usage, model_requested=model_requested,
+            usage=_usage_of([*tried, *(messages or _this_turn(second))]) if rerun else usage, model_requested=model_requested,
             context=deps.run_context, pack_name=deps.pack.name, prompt_hash=deps.pack.prompt_hash,
             extra_attributes={"rerun": summarize_messages(tried).model_dump()} if rerun else None,
         ))
@@ -151,7 +150,7 @@ def ask(
                 result = _run(agent, deps, question, history, model, event_stream_handler)
         except (UsageLimitExceeded, UnexpectedModelBehavior) as exc:
             # A quality failure, not an outage (outages were handled inside the chain): one re-run on the next model.
-            rest = after(model or agent.model, _answered_by(first[n_history:]))
+            rest = after(model or agent.model, _answered_by(_this_turn(first)))
             if rest is None:
                 raise
             rerun.append(f"Rerun: {_classify(exc)[0]}")
@@ -159,7 +158,7 @@ def ask(
             deps.budget = Budget()
             deps.results.clear()
             with _capture() as second:
-                result = _run(agent, deps, f"{question}\n\n{_failure_note(exc, first[n_history:])}", history, rest, event_stream_handler)
+                result = _run(agent, deps, f"{question}\n\n{_failure_note(exc, _this_turn(first))}", history, rest, event_stream_handler)
     except Exception as exc:  # noqa: BLE001 — every failure mode maps to a typed fallback
         kind, detail = _classify(exc)
         log.warning("agent run failed (%s): %s", kind, detail[:300])
@@ -221,6 +220,13 @@ def _run(agent, deps: AgentDeps, prompt: str, history, model, event_stream_handl
     )
 
 
+def _this_turn(messages: Sequence[ModelMessage]) -> list[ModelMessage]:
+    """A capture lists the history first, merged by pydantic-ai (so not len(history) long): this turn starts at the
+    last request carrying a user prompt — tool loops and output retries never add another."""
+    starts = [i for i, m in enumerate(messages) if isinstance(m, ModelRequest) and any(p.part_kind == "user-prompt" for p in m.parts)]
+    return list(messages[starts[-1]:]) if starts else list(messages)
+
+
 def _answered_by(messages: Sequence[ModelMessage]) -> str | None:
     return next((m.model_name for m in reversed(messages) if isinstance(m, ModelResponse) and m.model_name), None)
 
@@ -231,7 +237,8 @@ def _failure_note(exc: Exception, messages: Sequence[ModelMessage]) -> str:
         note = ("Note: a previous attempt failed (BudgetExceeded) — it used every allowed model call without answering. "
                 "Use at most two tool calls, then give the final answer.")
     else:
-        note = f"Note: a previous attempt failed (invalid output: {str(exc)[:200]}). Return the final answer in the required schema."
+        # exc.message, never str(exc): that appends the model's response body
+        note = f"Note: a previous attempt failed (invalid output: {getattr(exc, 'message', str(exc))[:200]}). Return the final answer in the required schema."
     # The SQL budget resets for the re-run, so a BudgetExceeded return says nothing useful; the error before it does.
     errors = [p.content for m in messages if isinstance(m, ModelRequest) for p in m.parts
               if p.part_kind == "tool-return" and isinstance(p.content, SqlError) and p.content.kind != "BudgetExceeded"]

@@ -47,7 +47,7 @@ It's excluded the same way a judge outage is.
 
 | condition | outcome | why |
 |---|---|---|
-| 429 with header `x-ratelimit-remaining: 0` | **stop** | the free daily cap is per account: every free model shares it |
+| 429, `x-ratelimit-remaining: 0`, and the message says `per-day` (or, naming neither window, the reset is > 2 min away) | **stop** | the free daily cap is per account: every free model shares it |
 | 401 | **stop** | bad or disabled key: no model will accept it |
 | 402, except `metadata.limit_source == "openrouter_in_flight_budget"` | **stop** | no credits |
 | 402 in-flight budget · 408 · any other 429 · 500 · 502 · 503 · 504 | **retry** | transient: timeout, per-model upstream limit, overload |
@@ -65,6 +65,9 @@ It's excluded the same way a judge outage is.
 
 Free models are limited to 20 requests/minute and 50/day (1000/day with ≥ 10 credits purchased), **per account across
 all keys**.
+The per-minute window also answers 429 with `x-ratelimit-remaining: 0`, so that alone doesn't mean the daily cap:
+a per-minute 429 is retried. The rate-limit headers are read from the response or, when OpenRouter only puts
+them there, from the error body's `metadata.headers`.
 
 ## One re-run
 

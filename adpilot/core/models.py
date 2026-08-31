@@ -33,10 +33,12 @@ DEFAULT_AGENT_CHAIN = (
 MAX_RETRIES = 2
 RETRY_DELAYS = (2, 5)
 MAX_RETRY_DELAY = 10
+DAILY_RESET_MIN_S = 120  # a per-minute window resets within 60 s
 
 Disposition = Literal["retry", "next", "stop"]
 _TRANSIENT = {408, 429, 500, 502, 503, 504}
-_sleep = time.sleep  # tests patch this
+_sleep = time.sleep  # tests patch these two
+_now = time.time
 
 
 def renamed_env(name: str, *legacy: str, env: Mapping[str, str] | None = None, default: str | None = None) -> str | None:
@@ -75,16 +77,30 @@ class RateLimited(WrapperModel):
 
 
 def daily_cap(exc: BaseException) -> str | None:
-    """A caveat for OpenRouter's account-wide free daily cap (a 429 with `x-ratelimit-remaining: 0`), else None."""
-    headers = getattr(exc, "headers", None) or {}
-    if not (isinstance(exc, ModelHTTPError) and exc.status_code == 429 and headers.get("x-ratelimit-remaining") == "0"):
+    """A caveat for OpenRouter's account-wide free daily cap, else None.
+
+    The per-minute window also answers 429 with `x-ratelimit-remaining: 0`, so remaining 0 alone is not enough: the
+    message must name the per-day limit, or (naming neither) the reset must be minutes away."""
+    if not (isinstance(exc, ModelHTTPError) and exc.status_code == 429):
         return None
-    reset = headers.get("x-ratelimit-reset", "unknown")
+    headers = _rate_headers(exc)
+    if headers.get("x-ratelimit-remaining") != "0":
+        return None
+    text, raw = str(exc.body), headers.get("x-ratelimit-reset", "unknown")
     try:
-        reset = f"{datetime.fromtimestamp(int(reset) / 1000, UTC):%Y-%m-%d %H:%M} UTC"
+        reset_s: float | None = int(raw) / 1000
+        when = f"{datetime.fromtimestamp(reset_s, UTC):%Y-%m-%d %H:%M} UTC"
     except (ValueError, OverflowError, OSError):
-        pass
-    return f"daily free-model cap reached (resets {reset})"
+        reset_s, when = None, raw
+    daily = "per-day" in text or ("per-min" not in text and reset_s is not None and reset_s - _now() > DAILY_RESET_MIN_S)
+    return f"daily free-model cap reached (resets {when})" if daily else None
+
+
+def _rate_headers(exc: ModelHTTPError) -> dict[str, str]:
+    """The response headers, over the copy OpenRouter puts in the error body's metadata; keys lower-cased."""
+    in_body = _metadata(exc).get("headers")
+    headers = {str(k).lower(): str(v) for k, v in in_body.items()} if isinstance(in_body, dict) else {}
+    return {**headers, **(exc.headers or {})}
 
 
 def _metadata(exc: ModelHTTPError) -> dict:

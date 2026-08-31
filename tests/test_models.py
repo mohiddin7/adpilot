@@ -17,6 +17,7 @@ LEGACY_ENV = ("OPENROUTER_API_KEY", "LLM_BEARER_TOKEN", "LLM_TARGET_MODEL", "LLM
 def clean_env(monkeypatch):
     for k in AGENT_ENV + LEGACY_ENV:
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(m, "_now", lambda: NOW)  # CAP's reset is 12 h away; the daily-cap rule reads the clock
 
 
 def test_defaults_are_the_measured_chain():
@@ -63,7 +64,9 @@ def test_empty_fallback_means_no_fallback(monkeypatch):
     assert not hasattr(model, "models") and model.model_name == m.DEFAULT_AGENT_CHAIN[0]
 
 
+NOW = 1790164800  # 2026-09-23 12:00 UTC
 CAP = {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1790208000000"}  # 2026-09-24 00:00 UTC, in ms
+PER_MIN = {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str((NOW + 40) * 1000)}
 IN_FLIGHT = {"limit_source": "openrouter_in_flight_budget"}
 
 
@@ -89,11 +92,26 @@ def test_classify_error(exc, expected):
     assert m.classify_error(exc) == expected
 
 
+def test_the_daily_cap_is_told_apart_from_the_per_minute_limit():
+    """Both windows answer 429 with x-ratelimit-remaining: 0. Only the daily one may stop the chain; stopping on the
+    per-minute one would send every question to the canned query for the rest of the minute."""
+    assert m.classify_error(http(429, PER_MIN)) == "retry"                                   # resets in 40 s
+    assert m.classify_error(http(429, CAP, body={"message": "Rate limit exceeded: free-models-per-min."})) == "retry"
+    assert m.classify_error(http(429, PER_MIN, body={"message": "Rate limit exceeded: free-models-per-day"})) == "stop"
+    # OpenRouter may put the rate-limit headers only in the error body's metadata, in any case
+    in_body = {"error": {"code": 429, "message": "Rate limit exceeded: free-models-per-day",
+                         "metadata": {"headers": {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1790208000000"}}}}
+    assert m.classify_error(http(429, body=in_body)) == "stop"
+    assert m.daily_cap(http(429, body=in_body)) == "daily free-model cap reached (resets 2026-09-24 00:00 UTC)"
+
+
 def test_daily_cap_says_when_it_resets_and_survives_bad_headers():
     assert m.daily_cap(http(429)) is None and m.daily_cap(http(503, CAP)) is None
     assert m.daily_cap(http(429, CAP)) == "daily free-model cap reached (resets 2026-09-24 00:00 UTC)"
-    for raw in ("soon", "9" * 30):
-        assert m.daily_cap(http(429, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": raw})).endswith(f"(resets {raw})")
+    for raw in ("soon", "9" * 30):  # an unreadable reset is only the daily cap when the message says so
+        per_day = {"message": "free-models-per-day"}
+        assert m.daily_cap(http(429, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": raw}, per_day)).endswith(f"(resets {raw})")
+        assert m.daily_cap(http(429, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": raw})) is None
 
 
 def flaky(*errors, name="m/x"):
