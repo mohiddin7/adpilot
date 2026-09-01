@@ -18,6 +18,8 @@ models.ALLOW_MODEL_REQUESTS = False
 os.environ["ADPILOT_INPUT_CLASSIFIER"] = ""
 os.environ["JEV_API_KEY"] = ""
 os.environ["LOGFIRE_TOKEN"] = ""  # create_app() calls configure_tracing(); the suite must not ship traces
+os.environ["AGENT_LLM_MODELS"] = ""  # empty = the code defaults, whatever chain the developer's .env pins
+os.environ["JUDGE_LLM_MODELS"] = ""
 
 
 @pytest.fixture(scope="session")

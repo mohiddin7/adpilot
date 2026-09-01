@@ -8,11 +8,13 @@ policy and the same code (`adpilot/core/models.py`). They never share a model.
 
 | | Default chain | Override |
 |---|---|---|
-| Agent | `inclusionai/ling-3.0-flash-fin:free` → `inclusionai/ling-3.0-flash-sante:free` → `nvidia/nemotron-3.5-lightning:free` → `openrouter/free` | `AGENT_LLM_TARGET_MODEL`, `AGENT_LLM_FALLBACK_MODEL` |
-| Judge | `nex-agi/nex-n2.5-mini:free` → `dots-studio/dots-3-note-preview:free` → `cohere/north-mini-code:free` → `qwen/qwen3.8-27b:free` → `openrouter/free` | `JUDGE_LLM_TARGET_MODEL`, `JUDGE_LLM_FALLBACK_MODEL` |
+| Agent | `inclusionai/ling-3.0-flash-fin:free` → `inclusionai/ling-3.0-flash-sante:free` → `nvidia/nemotron-3.5-lightning:free` → `openrouter/free` | `AGENT_LLM_MODELS` |
+| Judge | `nex-agi/nex-n2.5-mini:free` → `dots-studio/dots-3-note-preview:free` → `cohere/north-mini-code:free` → `qwen/qwen3.8-27b:free` → `openrouter/free` | `JUDGE_LLM_MODELS` |
 
-`*_FALLBACK_MODEL` takes a comma-separated list. If it's unset, you get the default fallbacks. If it's empty (`""`),
-there's no fallback. Duplicates are dropped and the order is kept.
+Each variable is a comma-separated list, tried in order: `AGENT_LLM_MODELS=a/x:free,b/y:free,openrouter/free`.
+If it's set, it replaces the whole default chain. If it's unset or empty, the chain in code is used; GitHub Actions
+passes an undefined repository variable as empty, so leaving it undefined means the defaults. One name means no
+fallback. The old split names (`*_TARGET_MODEL`, `*_FALLBACK_MODEL`) are ignored, with a warning.
 
 The defaults come from a live probe on 2026-09-23. Every tool-capable free model was tried **alone** (no fallback)
 through the real `ask()` (3 questions) and `judge_answer()` (3 calibration items):
@@ -108,11 +110,11 @@ When a free slug disappears or a new one shows up, try it alone:
 
 ```bash
 # agent candidate: one model, no fallback, nothing recorded
-AGENT_LLM_TARGET_MODEL=vendor/model:free AGENT_LLM_FALLBACK_MODEL= ADPILOT_AUDIT=memory \
+AGENT_LLM_MODELS=vendor/model:free ADPILOT_AUDIT=memory \
   adpilot chat -q "What was total spend per platform?"
 
 # judge candidate: a few narrative cases plus the calibration check
-JUDGE_LLM_TARGET_MODEL=vendor/model:free JUDGE_LLM_FALLBACK_MODEL= ADPILOT_AUDIT=memory \
+JUDGE_LLM_MODELS=vendor/model:free ADPILOT_AUDIT=memory \
   adpilot eval --tier model --family narrative --limit 3 --repeat 1 --out /tmp/probe
 ```
 

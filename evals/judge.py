@@ -29,7 +29,7 @@ from adpilot.core.models import (
     NoNullSchemas,
     agent_chain_from_env,
     build_chain,
-    chain_names,
+    chain_from,
     openrouter_factory,
     renamed_env,
     same_model,
@@ -67,11 +67,10 @@ def judge_config(env: Mapping[str, str] | None = None) -> JudgeConfig:
     endpoint = (renamed_env("JUDGE_LLM_ENDPOINT_URL", "LLM_JUDGE_ENDPOINT_URL", "LLM_ENDPOINT_URL", env=env) or DEFAULT_ENDPOINT).rstrip("/")
     if endpoint.endswith("/chat/completions"):
         endpoint = endpoint[: -len("/chat/completions")]
-    models = chain_names(
-        renamed_env("JUDGE_LLM_TARGET_MODEL", "LLM_JUDGE_TARGET_MODEL", env=env),
-        renamed_env("JUDGE_LLM_FALLBACK_MODEL", "LLM_JUDGE_FALLBACK_MODEL", env=env),
-        DEFAULT_JUDGE_CHAIN,
-    )
+    # JUDGE_LLM_MODELS overrides DEFAULT_JUDGE_CHAIN; the old split names are ignored, with a warning
+    models = chain_from(renamed_env(
+        "JUDGE_LLM_MODELS", "JUDGE_LLM_TARGET_MODEL", "JUDGE_LLM_FALLBACK_MODEL", "LLM_JUDGE_TARGET_MODEL", "LLM_JUDGE_FALLBACK_MODEL", env=env
+    ), DEFAULT_JUDGE_CHAIN)
     agent_models = agent_chain_from_env(env)
     base = lambda names: {n.removesuffix(":free") for n in names} - {ROUTER}  # noqa: E731
     if shared := sorted(base(models) & base(agent_models)):

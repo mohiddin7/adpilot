@@ -34,12 +34,13 @@ def test_config_defaults_and_fallbacks():
     # Live probe, 2026-09-23 (docs/models.md): 3/3 calibration agreement, fastest first; openrouter/free last.
     assert cfg.models == list(DEFAULT_JUDGE_CHAIN) and cfg.agent_models == list(DEFAULT_AGENT_CHAIN)
     # the judge borrows the agent's key, but never the agent's model — a judge must not grade itself
-    cfg = judge_config({"AGENT_LLM_BEARER_TOKEN": "agent-key", "AGENT_LLM_TARGET_MODEL": "agent/model"})
-    assert cfg.api_key == "agent-key" and "agent/model" not in cfg.models and cfg.agent_models[0] == "agent/model"
-    cfg = judge_config({"JUDGE_LLM_BEARER_TOKEN": "j", "JUDGE_LLM_TARGET_MODEL": "m/x", "JUDGE_LLM_FALLBACK_MODEL": ""})
+    cfg = judge_config({"AGENT_LLM_BEARER_TOKEN": "agent-key", "AGENT_LLM_MODELS": "agent/model"})
+    assert cfg.api_key == "agent-key" and "agent/model" not in cfg.models and cfg.agent_models == ["agent/model"]
+    cfg = judge_config({"JUDGE_LLM_BEARER_TOKEN": "j", "JUDGE_LLM_MODELS": "m/x"})
     assert cfg.api_key == "j" and cfg.models == ["m/x"]
-    cfg = judge_config({"JUDGE_LLM_FALLBACK_MODEL": "a/x, b/y"})
-    assert cfg.models == [DEFAULT_JUDGE_CHAIN[0], "a/x", "b/y"]
+    cfg = judge_config({"JUDGE_LLM_MODELS": "a/x, b/y"})
+    assert cfg.models == ["a/x", "b/y"]
+    assert judge_config({"JUDGE_LLM_MODELS": ""}).models == list(DEFAULT_JUDGE_CHAIN)  # empty = the defaults
     cfg = judge_config({"JUDGE_LLM_BEARER_TOKEN": "j", "JUDGE_LLM_ENDPOINT_URL": "https://x.example/v1/chat/completions"})
     assert cfg.endpoint == "https://x.example/v1"
 
@@ -48,9 +49,9 @@ def test_legacy_judge_names_are_ignored_with_a_warning(caplog):
     import logging
 
     with caplog.at_level(logging.WARNING):
-        cfg = judge_config({"LLM_JUDGE_BEARER_TOKEN": "old", "LLM_JUDGE_TARGET_MODEL": "old-model"})
-    assert cfg.api_key is None and cfg.models[0] == DEFAULT_JUDGE_CHAIN[0]
-    assert "JUDGE_LLM_BEARER_TOKEN" in caplog.text
+        cfg = judge_config({"LLM_JUDGE_BEARER_TOKEN": "old", "LLM_JUDGE_TARGET_MODEL": "old-model", "JUDGE_LLM_FALLBACK_MODEL": "old/split"})
+    assert cfg.api_key is None and cfg.models == list(DEFAULT_JUDGE_CHAIN)
+    assert "JUDGE_LLM_BEARER_TOKEN" in caplog.text and "JUDGE_LLM_FALLBACK_MODEL" in caplog.text
 
 
 def test_build_model_none_without_key():
@@ -187,9 +188,9 @@ def test_default_chains_share_only_the_router():
 
 
 @pytest.mark.parametrize("env", [
-    {"AGENT_LLM_TARGET_MODEL": "x/shared:free", "JUDGE_LLM_TARGET_MODEL": "x/shared:free"},
-    {"JUDGE_LLM_FALLBACK_MODEL": "inclusionai/ling-3.0-flash-fin:free"},              # a default agent model
-    {"AGENT_LLM_TARGET_MODEL": "x/shared:free", "JUDGE_LLM_TARGET_MODEL": "x/shared"},  # same model, other spelling
+    {"AGENT_LLM_MODELS": "x/shared:free", "JUDGE_LLM_MODELS": "x/shared:free"},
+    {"JUDGE_LLM_MODELS": "j/x:free,inclusionai/ling-3.0-flash-fin:free"},  # a default agent model
+    {"AGENT_LLM_MODELS": "x/shared:free", "JUDGE_LLM_MODELS": "x/shared"},  # same model, other spelling
 ])
 def test_a_judge_chain_sharing_an_agent_model_refuses_to_start(env):
     with pytest.raises(ValueError, match="shares"):

@@ -9,8 +9,8 @@ from pydantic_ai.models.function import FunctionModel
 
 from adpilot.core import models as m
 
-AGENT_ENV = ("AGENT_LLM_BEARER_TOKEN", "AGENT_LLM_TARGET_MODEL", "AGENT_LLM_FALLBACK_MODEL")
-LEGACY_ENV = ("OPENROUTER_API_KEY", "LLM_BEARER_TOKEN", "LLM_TARGET_MODEL", "LLM_FALLBACK_MODEL")
+AGENT_ENV = ("AGENT_LLM_BEARER_TOKEN", "AGENT_LLM_MODELS")
+LEGACY_ENV = ("OPENROUTER_API_KEY", "LLM_BEARER_TOKEN", "LLM_TARGET_MODEL", "LLM_FALLBACK_MODEL", "AGENT_LLM_TARGET_MODEL", "AGENT_LLM_FALLBACK_MODEL")
 
 
 @pytest.fixture(autouse=True)
@@ -49,19 +49,33 @@ def test_legacy_name_beside_the_new_one_warns_but_uses_the_new_one(monkeypatch, 
     assert "LLM_BEARER_TOKEN" in caplog.text
 
 
-def test_model_names_come_from_the_agent_env(monkeypatch):
+def test_the_env_list_overrides_the_default_chain(monkeypatch):
     monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "k")
-    monkeypatch.setenv("AGENT_LLM_TARGET_MODEL", "vendor/primary")
-    monkeypatch.setenv("AGENT_LLM_FALLBACK_MODEL", "vendor/fallback")
-    chain = m.build_model()
-    assert [x.model_name for x in chain.models] == ["vendor/primary", "vendor/fallback"]
+    monkeypatch.setenv("AGENT_LLM_MODELS", "vendor/primary, vendor/fallback")
+    assert [x.model_name for x in m.build_model().models] == ["vendor/primary", "vendor/fallback"]
 
 
-def test_empty_fallback_means_no_fallback(monkeypatch):
+def test_one_model_means_no_fallback(monkeypatch):
     monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "k")
-    monkeypatch.setenv("AGENT_LLM_FALLBACK_MODEL", "")
+    monkeypatch.setenv("AGENT_LLM_MODELS", "vendor/only")
     model = m.build_model()
-    assert not hasattr(model, "models") and model.model_name == m.DEFAULT_AGENT_CHAIN[0]
+    assert not hasattr(model, "models") and model.model_name == "vendor/only"
+
+
+@pytest.mark.parametrize("value", [None, "", " , "])
+def test_unset_or_empty_env_means_the_default_chain(monkeypatch, value):
+    # GitHub Actions passes an undefined repository variable as "": that must mean "use the code's defaults"
+    if value is not None:
+        monkeypatch.setenv("AGENT_LLM_MODELS", value)
+    assert m.agent_chain_from_env() == list(m.DEFAULT_AGENT_CHAIN)
+
+
+def test_the_old_split_names_are_ignored_with_a_warning(monkeypatch, caplog):
+    monkeypatch.setenv("AGENT_LLM_TARGET_MODEL", "old/primary")
+    monkeypatch.setenv("AGENT_LLM_FALLBACK_MODEL", "old/fallback")
+    with caplog.at_level(logging.WARNING):
+        assert m.agent_chain_from_env() == list(m.DEFAULT_AGENT_CHAIN)
+    assert "AGENT_LLM_TARGET_MODEL" in caplog.text and "AGENT_LLM_MODELS" in caplog.text
 
 
 NOW = 1790164800  # 2026-09-23 12:00 UTC
@@ -221,22 +235,15 @@ def test_build_model_is_the_default_chain_with_sdk_retries_off():
     assert all(x.client.max_retries == 0 for x in chain.models)
 
 
-@pytest.mark.parametrize("primary, fallback, expected", [
-    (None, None, ["p/0", "p/1", "p/2"]),
-    ("x/y", None, ["x/y", "p/1", "p/2"]),
-    (None, "", ["p/0"]),
-    (None, "a/x,b/y", ["p/0", "a/x", "b/y"]),
-    (None, " a/x , ,b/y,a/x", ["p/0", "a/x", "b/y"]),
-    ("a/x", "a/x,p/0", ["a/x", "p/0"]),
+@pytest.mark.parametrize("value, expected", [
+    (None, ["p/0", "p/1"]),
+    ("", ["p/0", "p/1"]),
+    ("a/x", ["a/x"]),
+    ("a/x,b/y", ["a/x", "b/y"]),
+    (" a/x , ,b/y,a/x\n", ["a/x", "b/y"]),   # spaces, empty items, duplicates, a pasted newline
 ])
-def test_chain_names(primary, fallback, expected):
-    assert m.chain_names(primary, fallback, ("p/0", "p/1", "p/2")) == expected
-
-
-def test_comma_fallback_env_builds_every_model(monkeypatch):
-    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "k")
-    monkeypatch.setenv("AGENT_LLM_FALLBACK_MODEL", "a/x, b/y")
-    assert [x.model_name for x in m.build_model().models] == [m.DEFAULT_AGENT_CHAIN[0], "a/x", "b/y"]
+def test_chain_from(value, expected):
+    assert m.chain_from(value, ("p/0", "p/1")) == expected
 
 
 def named(*names):

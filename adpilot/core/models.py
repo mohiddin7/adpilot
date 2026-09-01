@@ -189,40 +189,30 @@ def openrouter_factory(api_key: str) -> Callable[[str], Model]:
     return lambda name: OpenRouterModel(name, provider=provider)
 
 
-def chain_names(primary: str | None, fallback: str | None, default: Sequence[str]) -> list[str]:
-    """primary (or default[0]), then fallback: None → default[1:], "" → none, "a, b" → both. Duplicates dropped, order kept."""
-    rest = default[1:] if fallback is None else [n.strip() for n in fallback.split(",")]
-    return list(dict.fromkeys(n for n in (primary or default[0], *rest) if n))
+def chain_from(value: str | None, default: Sequence[str]) -> list[str]:
+    """A comma-separated list of model names, in order; unset or empty means `default`. Duplicates dropped."""
+    names = [n.strip() for n in (value or "").split(",")]
+    return list(dict.fromkeys(n for n in names if n)) or list(default)
 
 
 def api_key_from_env() -> str | None:
     return renamed_env("AGENT_LLM_BEARER_TOKEN", "OPENROUTER_API_KEY", "LLM_BEARER_TOKEN") or None
 
 
-def agent_primary_from_env(env: Mapping[str, str] | None = None) -> str | None:
-    return renamed_env("AGENT_LLM_TARGET_MODEL", "LLM_TARGET_MODEL", env=env) or None
-
-
-def agent_fallback_from_env(env: Mapping[str, str] | None = None) -> str | None:
-    """Unset → the default fallbacks; an explicit empty value → none; "a,b" → both, in order."""
-    return renamed_env("AGENT_LLM_FALLBACK_MODEL", "LLM_FALLBACK_MODEL", env=env)
-
-
 def agent_chain_from_env(env: Mapping[str, str] | None = None) -> list[str]:
-    return chain_names(agent_primary_from_env(env), agent_fallback_from_env(env), DEFAULT_AGENT_CHAIN)
+    """AGENT_LLM_MODELS overrides DEFAULT_AGENT_CHAIN; the old split names are ignored, with a warning."""
+    value = renamed_env(
+        "AGENT_LLM_MODELS", "AGENT_LLM_TARGET_MODEL", "AGENT_LLM_FALLBACK_MODEL", "LLM_TARGET_MODEL", "LLM_FALLBACK_MODEL", env=env
+    )
+    return chain_from(value, DEFAULT_AGENT_CHAIN)
 
 
-def build_model(primary: str | None = None, fallback: str | None = None, api_key: str | None = None) -> Model | None:
+def build_model(api_key: str | None = None) -> Model | None:
     """Return the configured model chain, or None when no API key is available (rule-based mode)."""
     api_key = api_key or api_key_from_env()
     if not api_key:
         return None
-    names = chain_names(
-        primary or agent_primary_from_env(),
-        fallback if fallback is not None else agent_fallback_from_env(),
-        DEFAULT_AGENT_CHAIN,
-    )
-    return build_chain(names, openrouter_factory(api_key))
+    return build_chain(agent_chain_from_env(), openrouter_factory(api_key))
 
 
 def _no_null(schema: Any) -> Any:

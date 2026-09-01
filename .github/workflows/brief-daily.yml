@@ -31,6 +31,7 @@ jobs:
         id: brief
         env:
           AGENT_LLM_BEARER_TOKEN: ${{ secrets.AGENT_LLM_BEARER_TOKEN }}
+          AGENT_LLM_MODELS: ${{ vars.AGENT_LLM_MODELS }}  # repository variable; unset = the chain in code
           JEV_API_KEY: ${{ secrets.JEV_API_KEY }}
           ADPILOT_INPUT_CLASSIFIER: ${{ secrets.JEV_API_KEY != '' && 'jev' || '' }}
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}

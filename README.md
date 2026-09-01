@@ -122,9 +122,9 @@ All names and keys come from `.env` (local) or `secrets.toml` (Streamlit Cloud).
 The agent and the eval judge have separate chains, so the agent's model never grades its own answers. Each variable is read under one name only — a legacy spelling is ignored with a warning, never silently aliased.
 
 - `AGENT_LLM_BEARER_TOKEN` — OpenRouter key for the analyst agent (required for model answers; without it the CLI answers from pre-defined queries).
-- `AGENT_LLM_TARGET_MODEL` / `AGENT_LLM_FALLBACK_MODEL` — the agent's chain: a primary, then a comma-separated list of fallbacks (unset → the default free chain, empty → primary only). See [docs/models.md](docs/models.md).
+- `AGENT_LLM_MODELS` — the agent's chain, a comma-separated list tried in order (`a/x:free,b/y:free,openrouter/free`). Unset or empty → the default free chain in code. See [docs/models.md](docs/models.md).
 - `JUDGE_LLM_BEARER_TOKEN` — key for the judge; falls back to the agent's key.
-- `JUDGE_LLM_TARGET_MODEL` / `JUDGE_LLM_FALLBACK_MODEL` / `JUDGE_LLM_ENDPOINT_URL` — the judge's chain (same format) and, optionally, a different OpenAI-compatible provider. The eval refuses to start if the two chains share a model other than `openrouter/free`.
+- `JUDGE_LLM_MODELS` / `JUDGE_LLM_ENDPOINT_URL` — the judge's chain (same format) and, optionally, a different OpenAI-compatible provider. The eval refuses to start if the two chains share a model other than `openrouter/free`.
 
 - `GCP_SERVICE_ACCOUNT_JSON` / `GOOGLE_APPLICATION_CREDENTIALS` — BigQuery credentials for the audit trail (service-account JSON, or a key file path / ADC).
 - `BQ_PROJECT_ID` — GCP project holding the audit dataset (required; no default).
