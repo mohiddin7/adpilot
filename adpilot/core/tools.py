@@ -35,6 +35,15 @@ class SqlResult(BaseModel):
     rows: list[dict]
     row_count: int
     truncated: bool = False
+    note: str = ""
+
+
+# Without this the model read "no rows" from a pipeline table as a bad query and searched until it ran out of calls.
+EMPTY_PIPELINE_NOTE = (
+    "No rows: the pipeline found nothing, or its output table has not been populated yet. That is the answer: "
+    "give a normal answer (not a refusal — the question is in scope) saying no pipeline output is available, "
+    "Do not query further for it, and do not recompute it from other tables: the pipeline's method is not yours."
+)
 
 
 class SqlError(BaseModel):
@@ -87,6 +96,14 @@ def _gold_columns(deps: AgentDeps) -> list[tuple[str, str]]:
         return [(c, "") for c in deps.pack.tables["gold"].get("columns", {})]
 
 
+def _pipeline(deps: AgentDeps, sql: str) -> SqlResult | SqlError:
+    """A pipeline-output table (anomalies, forecast, budget): an empty result says why, and that it is final."""
+    res = execute(deps, deps.pack.render(sql, deps.connector.dialect))
+    if isinstance(res, SqlResult) and not res.rows:
+        res.note = EMPTY_PIPELINE_NOTE
+    return res
+
+
 def register_tools(agent: Agent[AgentDeps, object]) -> None:
     @agent.tool
     def get_schema(ctx: RunContext[AgentDeps]) -> str:
@@ -101,27 +118,24 @@ def register_tools(agent: Agent[AgentDeps, object]) -> None:
     @agent.tool
     def get_anomalies(ctx: RunContext[AgentDeps], limit: int = 20) -> SqlResult | SqlError:
         """Most severe cost-per-acquisition anomalies (highest |z_score|) flagged by the pipeline."""
-        d = ctx.deps.connector.dialect
         sql = (
             "SELECT date, platform, campaign_name, observed_cpa, rolling_mean_cpa, z_score, anomaly_direction "
             "FROM {anomalies} WHERE is_anomaly = 1 ORDER BY ABS(z_score) DESC LIMIT " + str(max(1, min(limit, 100)))
         )
-        return execute(ctx.deps, ctx.deps.pack.render(sql, d))
+        return _pipeline(ctx.deps, sql)
 
     @agent.tool
     def get_forecast(ctx: RunContext[AgentDeps], platform: str | None = None) -> SqlResult | SqlError:
         """14-day forecast rows (predicted_value with bounds) per platform and metric."""
-        d = ctx.deps.connector.dialect
         where = f" WHERE platform = '{platform.replace(chr(39), '')}'" if platform else ""
         sql = "SELECT target_date, platform, metric_name, predicted_value, lower_bound, upper_bound FROM {forecast}" + where + " ORDER BY platform, metric_name, target_date"
-        return execute(ctx.deps, ctx.deps.pack.render(sql, d))
+        return _pipeline(ctx.deps, sql)
 
     @agent.tool
     def get_budget_plan(ctx: RunContext[AgentDeps]) -> SqlResult | SqlError:
         """Budget optimizer recommendation: current vs recommended spend per platform and projected conversion delta."""
-        d = ctx.deps.connector.dialect
         sql = "SELECT platform, current_spend, current_spend_pct, recommended_spend, recommended_spend_pct, projected_conversions, conversion_delta FROM {budget} ORDER BY conversion_delta DESC"
-        return execute(ctx.deps, ctx.deps.pack.render(sql, d))
+        return _pipeline(ctx.deps, sql)
 
     @agent.tool
     def render_chart(ctx: RunContext[AgentDeps], spec: ChartSpec) -> ChartSpec | SqlError:
