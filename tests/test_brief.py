@@ -167,6 +167,14 @@ def test_a_number_not_in_the_answers_is_flagged(agent, deps):
     assert "> ⚠ BriefUngrounded: 99999" in brief.markdown
 
 
+def test_question_citations_and_list_commas_are_not_figures(agent, deps):
+    """brief-daily 2026-09-24 flagged "BriefUngrounded: 3," — the number pattern read the citation "(Q3, Q4)" as
+    a figure and kept the comma. Citations are labels, and a comma after a number is punctuation."""
+    findings = [{"what": "TikTok spent 74266.7, the most", "so_what": "see Q1, Q2 and Q12", "source": 1}]
+    model, _ = brief_model(synth={**SUMMARY, "findings": findings})
+    assert run_brief(deps, agent, model).caveats == []
+
+
 def test_no_actions_says_so(agent, deps):
     model, _ = brief_model(synth={**SUMMARY, "actions": []})
     assert "- No action this time." in run_brief(deps, agent, model).markdown
