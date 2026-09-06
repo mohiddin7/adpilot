@@ -6,6 +6,9 @@ precedence or on how strictly a missing audit store is treated.
 
 from __future__ import annotations
 
+import dataclasses
+import importlib.util
+import logging
 import os
 import sys
 
@@ -16,8 +19,19 @@ from adpilot.core import schema
 from adpilot.core.agent import AnalystAnswer, refused
 from adpilot.core.audit import AuditSink, AuditUnavailable, audit_config, build_sink
 from adpilot.core.chart import ChartSpec
+from adpilot.core.guardrails import Budget
 from adpilot.core.tools import AgentDeps
 from adpilot.packs.loader import load_pack
+
+log = logging.getLogger(__name__)
+
+# Transport limits every non-CLI surface applies before ask() — the first of the two size tiers. Over them is an
+# unaudited reject (422 / tool error). The semantic 600-char cap is sanitize_question's, inside ask(), and is audited.
+QUESTION_MAX_CHARS = 4000
+# session_id is a BigQuery query parameter and an SSE field: bound it at the trust boundary even though the
+# query is parameterised.
+SESSION_ID_PATTERN = r"^[A-Za-z0-9._-]+$"
+SESSION_ID_MAX_CHARS = 64
 
 
 def build_deps(pack_name: str, connector_name: str | None, audit: AuditSink) -> AgentDeps:
@@ -63,6 +77,38 @@ def configure_tracing() -> None:
         return
     logfire.configure()
     logfire.instrument_pydantic_ai()
+
+
+def fresh_deps(template: AgentDeps) -> AgentDeps:
+    """A per-call copy: the connector, pack, schema text and sink are shared; per-turn state is not.
+
+    ask() also resets budget/results, but a fresh list object per call means two concurrent calls can never see
+    each other's rows even before ask() runs. Sharing the connector is safe: tools._EXEC_LOCK serialises queries.
+    """
+    return dataclasses.replace(template, budget=Budget(), last_result=None, results=[], run_context=None)
+
+
+def flush_audit(sink: AuditSink) -> None:
+    """Persist buffered rows; never raises. A failure leaves them buffered for the next flush."""
+    try:
+        rep = sink.flush()
+    except Exception:  # never let a flush failure escape: callers run it in a finally or after the response
+        log.exception("audit: flush raised, row(s) stay buffered")
+        return
+    if not rep.ok:
+        log.warning(
+            "audit: %d row(s) not persisted, retrying on the next request: %s",
+            rep.pending, "; ".join(rep.errors),
+        )
+
+
+def mcp_installed() -> bool:
+    """`mcp` is an optional extra: an api-only or CLI-only install must still run, and say what is missing.
+
+    Checked explicitly rather than by catching ImportError, so a real import bug inside adpilot.mcp_server
+    fails loudly instead of silently switching the MCP surface off.
+    """
+    return importlib.util.find_spec("mcp") is not None
 
 
 class AnswerBody(BaseModel):

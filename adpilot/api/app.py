@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import json
 import logging
 import math
@@ -29,10 +28,21 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from adpilot.core.agent import ask, build_agent
-from adpilot.core.audit import AuditSink, RunContextInfo
-from adpilot.core.guardrails import Budget, RateLimiter
+from adpilot.core.audit import RunContextInfo
+from adpilot.core.guardrails import RateLimiter
 from adpilot.core.models import build_model
-from adpilot.core.runtime import AnswerBody, answer_body, build_deps, configure_tracing, open_sink
+from adpilot.core.runtime import (
+    QUESTION_MAX_CHARS,
+    SESSION_ID_MAX_CHARS,
+    SESSION_ID_PATTERN,
+    AnswerBody,
+    answer_body,
+    build_deps,
+    configure_tracing,
+    flush_audit,
+    fresh_deps,
+    open_sink,
+)
 from adpilot.core.tools import AgentDeps
 
 MIN_KEY_LEN = 24
@@ -44,32 +54,13 @@ class AskRequest(BaseModel):
     # reads is server-side configuration, never something a caller can repoint.
     model_config = {"extra": "forbid"}
 
-    question: str = Field(min_length=1, max_length=4000)  # tier 1; sanitize_question enforces 600 inside ask()
-    session_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    question: str = Field(min_length=1, max_length=QUESTION_MAX_CHARS)  # tier 1; sanitize_question enforces 600 inside ask()
+    session_id: str | None = Field(default=None, max_length=SESSION_ID_MAX_CHARS, pattern=SESSION_ID_PATTERN)
 
 
 def request_deps(app: FastAPI) -> AgentDeps:
-    """A per-request copy: the connector, pack, schema text and sink are shared; per-turn state is not.
-
-    ask() also resets budget/results, but a fresh list object per request means two concurrent requests can
-    never see each other's rows even before ask() runs.
-    """
-    return dataclasses.replace(
-        app.state.deps_template, budget=Budget(), last_result=None, results=[], run_context=None
-    )
-
-
-def flush_audit(sink: AuditSink) -> None:
-    try:
-        rep = sink.flush()
-    except Exception:  # never let a flush failure escape: on the SSE path it runs in run()'s finally,
-        log.exception("audit: flush raised, row(s) stay buffered")  # outside the try that maps run errors
-        return
-    if not rep.ok:
-        log.warning(
-            "audit: %d row(s) not persisted, retrying on the next request: %s",
-            rep.pending, "; ".join(rep.errors),
-        )
+    """A per-request copy of the shared template — see runtime.fresh_deps."""
+    return fresh_deps(app.state.deps_template)
 
 
 def status_event(ev) -> dict | None:
@@ -162,8 +153,8 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
 
     @app.get("/ask/stream", dependencies=[Depends(require_key)])
     async def ask_stream(
-        question: str = Query(min_length=1, max_length=4000),
-        session_id: str | None = Query(default=None, max_length=64, pattern=r"^[A-Za-z0-9._-]+$"),
+        question: str = Query(min_length=1, max_length=QUESTION_MAX_CHARS),
+        session_id: str | None = Query(default=None, max_length=SESSION_ID_MAX_CHARS, pattern=SESSION_ID_PATTERN),
     ) -> StreamingResponse:
         wait = app.state.limiter.try_acquire()
         if wait:
