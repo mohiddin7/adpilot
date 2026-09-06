@@ -69,3 +69,23 @@ def no_waits(monkeypatch):
     monkeypatch.setattr(guardrails.MODEL_RATE_LIMITER, "acquire", lambda: None)
     monkeypatch.setattr(model_chain, "_sleep", sleeps.append)
     return sleeps
+
+
+API_KEY = "k" * 32  # tests/test_api.py and tests/test_mcp.py use the same literal as their KEY
+
+
+@pytest.fixture
+def api(monkeypatch):
+    """A started app with a memory sink, no model and DuckDB. Returns (TestClient, MemorySink)."""
+    from fastapi.testclient import TestClient
+
+    import adpilot.core.runtime as runtime
+    from adpilot.api.app import create_app
+
+    sink = MemorySink()
+    monkeypatch.setenv("ADPILOT_API_KEY", API_KEY)
+    monkeypatch.setenv("ADPILOT_AUDIT", "memory")
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "")  # no model: ask() takes the rule-based path
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: sink)
+    app = create_app(connector="duckdb")
+    return TestClient(app), sink

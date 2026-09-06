@@ -9,23 +9,6 @@ from adpilot.core.audit import MemorySink
 KEY = "k" * 32
 
 
-@pytest.fixture
-def api(monkeypatch):
-    """A started app with a memory sink, a scripted-free agent and DuckDB. Returns (TestClient, MemorySink)."""
-    from fastapi.testclient import TestClient
-
-    import adpilot.core.runtime as runtime
-    from adpilot.api.app import create_app
-
-    sink = MemorySink()
-    monkeypatch.setenv("ADPILOT_API_KEY", KEY)
-    monkeypatch.setenv("ADPILOT_AUDIT", "memory")
-    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "")  # no model: ask() takes the rule-based path
-    monkeypatch.setattr(runtime, "build_sink", lambda cfg: sink)
-    app = create_app(connector="duckdb")
-    return TestClient(app), sink
-
-
 def test_healthz_needs_no_key_and_leaks_nothing(api):
     client, _ = api
     r = client.get("/healthz")
