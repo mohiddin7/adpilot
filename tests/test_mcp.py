@@ -149,7 +149,8 @@ def test_a_shed_call_is_an_error_result_and_never_reaches_ask(deps):
 
 
 def test_an_internal_failure_reaches_the_client_as_a_fixed_message(served, monkeypatch, caplog):
-    """The SDK would return str(exc): a BigQuery error names the project and table to an arbitrary caller."""
+    """A BigQuery error names the project and table; the caller gets a fixed message whatever the SDK's own
+    exception handling does, and the operator gets the cause in the log."""
     server, sink = served
 
     def boom(session_id, *a, **k):
@@ -189,3 +190,61 @@ def test_schema_returns_the_table_text(served):
     r = call(server, "schema")
     assert r.is_error is False
     assert "fct_unified_marketing_performance  (gold)" in r.content[0].text
+
+
+# ---- stdio ------------------------------------------------------------------------------------------------
+
+
+def test_mcp_command_says_how_to_install_the_missing_extra(monkeypatch, capsys):
+    import adpilot.cli as cli
+
+    monkeypatch.setattr(cli, "mcp_installed", lambda: False)
+    assert cli.main(["--connector", "duckdb", "mcp"]) == 2
+    captured = capsys.readouterr()
+    assert "pip install 'adpilot[mcp]'" in captured.err and captured.out == ""
+
+
+def test_mcp_command_refuses_to_serve_unrecorded(monkeypatch, capsys):
+    import adpilot.cli as cli
+    import adpilot.core.runtime as runtime
+    from adpilot.core.audit import AuditUnavailable
+
+    class Broken:
+        def preflight(self):
+            raise AuditUnavailable("permissions", "grant roles")
+
+    monkeypatch.delenv("ADPILOT_AUDIT", raising=False)
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: Broken())
+    assert cli.main(["--connector", "duckdb", "mcp"]) == 2
+    captured = capsys.readouterr()
+    assert "audit unavailable (permissions)" in captured.err and captured.out == ""
+
+
+def test_stdio_serves_both_tools_with_a_clean_stdout(tmp_path):
+    """A real `adpilot mcp` subprocess, started from an unrelated directory the way Claude Desktop starts it.
+    Any non-protocol line on stdout arrives at the client as an Exception message and fails this test."""
+    import os
+    import sys
+
+    from mcp.client.stdio import StdioServerParameters
+
+    env = {**os.environ, "ADPILOT_AUDIT": "memory", "AGENT_LLM_BEARER_TOKEN": "", "ADPILOT_CONNECTOR": "duckdb"}
+    params = StdioServerParameters(
+        command=sys.executable, args=["-m", "adpilot.cli", "mcp"], env=env, cwd=str(tmp_path)
+    )
+    noise: list = []
+
+    async def on_message(msg) -> None:
+        if isinstance(msg, Exception):
+            noise.append(msg)
+
+    async def go():
+        async with Client(params, message_handler=on_message, read_timeout_seconds=120) as c:
+            names = {t.name for t in (await c.list_tools()).tools}
+            return names, await c.call_tool("ask", {"question": QUESTION})
+
+    names, r = anyio.run(go)
+    assert names == {"ask", "schema"}
+    assert r.is_error is False
+    assert any(row["platform"] == "TikTok" for row in r.structured_content["data"])
+    assert noise == []
