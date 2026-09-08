@@ -7,6 +7,9 @@ recorded, exactly as the CLI shows it.
 One documented exception to "ask() owns redaction": the `detail` of a `sql` status event is the SQL the model
 *attempted*, taken from the tool-call event before ask() ever sees a result, so it is the one text a surface
 emits that has not passed redact_output — including a query the validator went on to reject.
+
+/mcp serves the same two MCP tools as `adpilot mcp` (adpilot/mcp_server.py) over streamable HTTP. It is a raw
+ASGI route, which FastAPI's Depends cannot reach, so KeyGate applies the identical key check.
 """
 
 from __future__ import annotations
@@ -24,8 +27,9 @@ import sys
 import anyio.to_thread
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.datastructures import Headers
 
 from adpilot.core.agent import ask, build_agent
 from adpilot.core.audit import RunContextInfo
@@ -41,6 +45,7 @@ from adpilot.core.runtime import (
     configure_tracing,
     flush_audit,
     fresh_deps,
+    mcp_installed,
     open_sink,
 )
 from adpilot.core.tools import AgentDeps
@@ -94,6 +99,27 @@ def _api_key() -> str:
     return key
 
 
+def key_ok(presented: str | None, expected: str) -> bool:
+    # isascii() first: Starlette decodes header bytes as latin-1, and compare_digest raises TypeError
+    # (→ 500 traceback for an unauthenticated caller) on a str with any code point above 0x7F.
+    return bool(presented) and presented.isascii() and secrets.compare_digest(presented, expected)
+
+
+class KeyGate:
+    """The require_key check for a raw ASGI app. A class, not a function: Starlette treats a plain function
+    endpoint as a request handler, not as an ASGI app."""
+
+    def __init__(self, app, api_key: str) -> None:
+        self.app = app
+        self.api_key = api_key
+
+    async def __call__(self, scope, receive, send) -> None:
+        if not key_ok(Headers(scope=scope).get("x-api-key"), self.api_key):
+            await JSONResponse({"detail": "invalid api key"}, status_code=401)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
     load_dotenv()
     configure_tracing()
@@ -102,9 +128,12 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
     if sink is None:
         raise RuntimeError("audit store unreachable — refusing to serve (ADPILOT_AUDIT=memory to run unrecorded)")
 
+    mcp_server = None  # assigned below, before the lifespan ever runs
+
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
-        yield
+        async with (mcp_server.session_manager.run() if mcp_server else contextlib.nullcontext()):
+            yield
         # Cloud Run runs with --min-instances 0: a BackgroundTasks flush is not guaranteed to get CPU after
         # the response, so the last rows would die with the instance. flush_audit logs whatever it cannot persist.
         flush_audit(sink)
@@ -119,10 +148,20 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
     # per-request deps are a copy with fresh per-turn state.
     app.state.deps_template = build_deps(pack, connector, sink)
 
+    if mcp_installed():
+        from adpilot.mcp_server import build_mcp, http_endpoint
+
+        # One rate bucket for /ask, /ask/stream and /mcp: a remote MCP client must not be a way around the limit.
+        # Looked up per call, so replacing app.state.limiter (as the tests do) applies to /mcp too.
+        mcp_server = build_mcp(
+            app.state.agent, lambda: request_deps(app), sink, limit=lambda: app.state.limiter.try_acquire()
+        )
+        app.add_route("/mcp", KeyGate(http_endpoint(mcp_server), api_key), methods=["GET", "POST", "DELETE"])
+    else:
+        log.warning("mcp extra not installed — /mcp is not served (pip install 'adpilot[mcp]')")
+
     def require_key(x_api_key: str | None = Header(default=None)) -> None:
-        # isascii() first: Starlette decodes header bytes as latin-1, and compare_digest raises TypeError
-        # (→ 500 traceback for an unauthenticated caller) on a str with any code point above 0x7F.
-        if not x_api_key or not x_api_key.isascii() or not secrets.compare_digest(x_api_key, api_key):
+        if not key_ok(x_api_key, api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
 
     @app.get("/healthz")

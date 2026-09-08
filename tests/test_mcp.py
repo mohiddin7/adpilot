@@ -248,3 +248,87 @@ def test_stdio_serves_both_tools_with_a_clean_stdout(tmp_path):
     assert r.is_error is False
     assert any(row["platform"] == "TikTok" for row in r.structured_content["data"])
     assert noise == []
+
+
+# ---- HTTP (/mcp on the API) -------------------------------------------------------------------------------
+
+RPC_HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+
+
+def rpc(client, method: str, params: dict, key: str | bytes | None = KEY, **headers):
+    hdrs = {**RPC_HEADERS, **({"X-API-Key": key} if key is not None else {}), **headers}
+    body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    return client.post("/mcp", json=body, headers=hdrs)
+
+
+@pytest.fixture
+def http(api):
+    """The API with its lifespan running: /mcp needs the MCP session manager's task group."""
+    from fastapi.testclient import TestClient
+
+    client, sink = api
+    with TestClient(client.app) as c:
+        yield c, sink
+
+
+@pytest.mark.parametrize("key", [None, "k" * 31 + "x", ("k" * 31 + "é").encode("latin-1")])
+def test_http_mcp_rejects_a_missing_wrong_or_non_ascii_key_without_an_audit_row(http, key):
+    c, sink = http
+    r = rpc(c, "tools/call", {"name": "ask", "arguments": {"question": QUESTION}}, key=key)
+    assert r.status_code == 401 and r.json() == {"detail": "invalid api key"}
+    assert sink.calls == []
+
+
+def test_http_mcp_lists_the_two_tools(http):
+    c, _ = http
+    r = rpc(c, "tools/list", {})
+    assert r.status_code == 200
+    assert {t["name"] for t in r.json()["result"]["tools"]} == {"ask", "schema"}
+
+
+def test_http_mcp_ask_matches_post_ask_and_is_audited_as_mcp(http):
+    c, sink = http
+    posted = c.post("/ask", json={"question": QUESTION}, headers={"X-API-Key": KEY}).json()
+    r = rpc(c, "tools/call", {"name": "ask", "arguments": {"question": QUESTION}})
+    assert r.status_code == 200
+    result = r.json()["result"]
+    assert result["isError"] is False
+    assert strip(result["structuredContent"]) == strip(posted)
+    assert [rec.source for rec in sink.calls] == ["api", "mcp"]
+
+
+def test_http_mcp_serves_a_deployed_host_header(http):
+    """The SDK's default DNS-rebinding guard is a localhost Host allowlist: Cloud Run's host would get a 421."""
+    c, _ = http
+    r = rpc(c, "tools/list", {}, host="adpilot-abc123-uc.a.run.app")
+    assert r.status_code == 200
+
+
+def test_http_mcp_shares_the_api_rate_limit(http):
+    from adpilot.core.guardrails import RateLimiter
+
+    c, sink = http
+    c.app.state.limiter = RateLimiter(per_minute=1)
+    assert c.post("/ask", json={"question": QUESTION}, headers={"X-API-Key": KEY}).status_code == 200
+    r = rpc(c, "tools/call", {"name": "ask", "arguments": {"question": QUESTION}})
+    result = r.json()["result"]
+    assert result["isError"] is True and "rate limit" in result["content"][0]["text"]
+    assert len(sink.calls) == 1  # the shed MCP call never reached ask()
+
+
+def test_the_api_serves_without_the_mcp_extra(monkeypatch, caplog):
+    from fastapi.testclient import TestClient
+
+    import adpilot.api.app as app_mod
+    import adpilot.core.runtime as runtime
+    from adpilot.core.audit import MemorySink
+
+    monkeypatch.setenv("ADPILOT_API_KEY", KEY)
+    monkeypatch.setenv("ADPILOT_AUDIT", "memory")
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "")
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: MemorySink())
+    monkeypatch.setattr(app_mod, "mcp_installed", lambda: False)
+    with TestClient(app_mod.create_app(connector="duckdb")) as c:
+        assert rpc(c, "tools/list", {}).status_code == 404
+        assert c.get("/healthz").status_code == 200
+    assert "mcp extra not installed" in caplog.text

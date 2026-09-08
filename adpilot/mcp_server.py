@@ -15,6 +15,8 @@ from typing import Annotated
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.streamable_http_manager import StreamableHTTPASGIApp
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
@@ -87,3 +89,23 @@ def build_mcp(
         return deps_factory().schema_text
 
     return server
+
+
+def http_endpoint(server: MCPServer):
+    """The streamable-HTTP handler, for registering on an existing app at one exact path.
+
+    The caller must run `server.session_manager.run()` in its lifespan (it can run once per server object).
+    - Stateless, JSON responses: each POST stands alone, so any Cloud Run instance can serve any call — a stateful
+      session would be pinned to the instance that minted it — and there is no server-initiated stream to hold.
+    - DNS-rebinding protection off: the SDK's version is a localhost Host allowlist that would reject the deployed
+      *.run.app host. What it defends against, a hostile page reaching a local server through the user's browser,
+      is covered by X-API-Key, which that page does not have.
+    """
+    # streamable_http_app() is called for its side effect: it builds server.session_manager with these settings.
+    # Its Starlette app is not used — mounting it would make /mcp a redirect to /mcp/.
+    server.streamable_http_app(
+        stateless_http=True,
+        json_response=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+    return StreamableHTTPASGIApp(server.session_manager)

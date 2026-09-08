@@ -300,12 +300,13 @@ def test_a_non_ascii_key_is_a_401_not_a_500(api):
     assert sink.calls == []
 
 
-@pytest.mark.parametrize("path", ["/schema", "/ask", "/ask/stream", "/openapi.json", "/docs", "/redoc"])
+@pytest.mark.parametrize("path", ["/schema", "/ask", "/ask/stream", "/mcp", "/openapi.json", "/docs", "/redoc"])
 def test_healthz_is_the_only_path_that_answers_without_a_key(api, path):
     """/openapi.json, /docs and /redoc are FastAPI's own routes: they took no dependency and enumerated every
-    route and request schema to an unauthenticated caller."""
+    route and request schema to an unauthenticated caller. /mcp is a raw ASGI route that Depends cannot reach."""
     client, _ = api
-    r = client.request("POST" if path == "/ask" else "GET", path, json={"question": "spend by platform"})
+    method = "POST" if path in ("/ask", "/mcp") else "GET"
+    r = client.request(method, path, json={"question": "spend by platform"})
     assert r.status_code in (401, 404), f"{path} answered {r.status_code} with no key"
 
 
