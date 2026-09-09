@@ -24,7 +24,7 @@ a dependency, so an unauthenticated caller could otherwise enumerate every route
 ## Configuration
 
 - `ADPILOT_API_KEY` — required, ≥24 characters, compared with `secrets.compare_digest`.
-- `ADPILOT_API_RPM` — requests/minute shared by `/ask` and `/ask/stream` (default 20), enforced by
+- `ADPILOT_API_RPM` — requests/minute shared by `/ask`, `/ask/stream` and `/mcp` tool calls (default 20), enforced by
   `app.state.limiter`. Over the limit: `429` with a `Retry-After` header, and the request never reaches
   `ask()` — nothing is audited. This is separate from `MODEL_RATE_LIMITER`, a fixed 20 rpm bucket inside
   `adpilot/core/models.py` that throttles the actual model calls `ask()` makes and is not configurable by
@@ -38,6 +38,7 @@ a dependency, so an unauthenticated caller could otherwise enumerate every route
 | GET | `/schema` | key | plain-text schema summary the agent sees |
 | POST | `/ask` | key | `AnswerBody` JSON, once the answer is ready |
 | GET | `/ask/stream` | key | `text/event-stream` — progress events, then the same `AnswerBody` |
+| GET/POST/DELETE | `/mcp` | key | the MCP tools `ask` and `schema` over streamable HTTP — see [mcp.md](mcp.md) |
 
 ## `POST /ask`
 

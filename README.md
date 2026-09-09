@@ -4,7 +4,7 @@
 
 **An agentic analytics platform for marketing data.** Unifies multi-channel ad performance in a BigQuery lakehouse, enriches it with anomaly detection, forecasting and budget optimization, and puts an AI analyst on top that answers questions in plain English — with guardrails, self-healing SQL and an evaluation harness.
 
-> Status: active rebuild. The agent core now runs on Pydantic AI with a data-agnostic "pack" system. The FastAPI service and the daily brief are live; next up is an MCP server. See the roadmap below.
+> Status: active rebuild. The agent core now runs on Pydantic AI with a data-agnostic "pack" system. The FastAPI service, the daily brief and the MCP server are live. See the roadmap below.
 
 ## What it does today
 
@@ -21,7 +21,7 @@
 | 0 | Repo hygiene, env-driven config, CI ✅ |
 | 1 | Data-agnostic agent core (Pydantic AI), typed tools, guardrails, `adpilot chat` CLI ✅ |
 | 2 | Eval harness: golden cases, red-team, self-heal rate, LLM judge, scorecard ✅ |
-| 3 | Three surfaces over the same agent: FastAPI service ✅ · daily brief ✅ · MCP server |
+| 3 | Three surfaces over the same agent: FastAPI service ✅ · daily brief ✅ · MCP server ✅ |
 | 4 | Pack-driven dashboard + human-in-the-loop budget approvals |
 | 5 | Production rollout: Docker ✅, tracing ✅, deployed Cloud Run service |
 
@@ -67,6 +67,17 @@ docker build -t adpilot . && docker run --rm -p 8080:8080 \
 
 See [docs/api.md](docs/api.md) for auth, `/ask/stream` (SSE) and the two request-size tiers, and
 [docs/deploy.md](docs/deploy.md) for Cloud Run.
+
+## MCP
+
+Claude Desktop and Claude Code can use the agent as two MCP tools, `ask` and `schema`:
+
+```bash
+pip install -e ".[mcp]"
+claude mcp add adpilot -e ADPILOT_AUDIT=memory -- "$(pwd)/.venv/bin/adpilot" --connector duckdb mcp
+```
+
+The deployed API serves the same tools at `/mcp` behind `X-API-Key`. See [docs/mcp.md](docs/mcp.md).
 
 Pipeline (needs a GCP project with BigQuery and `gcloud auth application-default login`):
 
