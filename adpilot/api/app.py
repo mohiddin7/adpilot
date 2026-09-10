@@ -121,6 +121,10 @@ class KeyGate:
 
 
 def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
+    # The process's logging is the app's, not a dependency's: MCPServer() calls logging.basicConfig(INFO,
+    # RichHandler), which on Cloud Run splits each record across 80-column lines and ships every library's INFO
+    # chatter. basicConfig is a no-op once the root logger has a handler, so claiming it first keeps it ours.
+    logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
     load_dotenv()
     configure_tracing()
     api_key = _api_key()
@@ -156,7 +160,10 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         mcp_server = build_mcp(
             app.state.agent, lambda: request_deps(app), sink, limit=lambda: app.state.limiter.try_acquire()
         )
-        app.add_route("/mcp", KeyGate(http_endpoint(mcp_server), api_key), methods=["GET", "POST", "DELETE"])
+        # POST only. In stateless mode the SDK still answers GET with a standalone event stream that never closes,
+        # which would pin a concurrency slot per connected client; DELETE is a 405 from the SDK anyway. A 405 on GET
+        # is how a server says it offers no such stream.
+        app.add_route("/mcp", KeyGate(http_endpoint(mcp_server), api_key), methods=["POST"])
     else:
         log.warning("mcp extra not installed — /mcp is not served (pip install 'adpilot[mcp]')")
 

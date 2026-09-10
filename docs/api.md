@@ -38,7 +38,7 @@ a dependency, so an unauthenticated caller could otherwise enumerate every route
 | GET | `/schema` | key | plain-text schema summary the agent sees |
 | POST | `/ask` | key | `AnswerBody` JSON, once the answer is ready |
 | GET | `/ask/stream` | key | `text/event-stream` — progress events, then the same `AnswerBody` |
-| GET/POST/DELETE | `/mcp` | key | the MCP tools `ask` and `schema` over streamable HTTP — see [mcp.md](mcp.md) |
+| POST | `/mcp` | key | the MCP tools `ask` and `schema` over streamable HTTP — see [mcp.md](mcp.md); `GET` is a 405 |
 
 ## `POST /ask`
 

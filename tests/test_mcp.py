@@ -297,6 +297,14 @@ def test_http_mcp_ask_matches_post_ask_and_is_audited_as_mcp(http):
     assert [rec.source for rec in sink.calls] == ["api", "mcp"]
 
 
+def test_http_mcp_get_is_a_405_not_an_open_stream(http):
+    """In stateless mode the SDK still serves a standalone GET event stream that never closes: each client holding
+    one would pin a Cloud Run concurrency slot (--concurrency 4) until the request timeout."""
+    c, _ = http
+    r = c.get("/mcp", headers={"X-API-Key": KEY, "Accept": "text/event-stream"})
+    assert r.status_code == 405
+
+
 def test_http_mcp_serves_a_deployed_host_header(http):
     """The SDK's default DNS-rebinding guard is a localhost Host allowlist: Cloud Run's host would get a 421."""
     c, _ = http
@@ -332,3 +340,24 @@ def test_the_api_serves_without_the_mcp_extra(monkeypatch, caplog):
         assert rpc(c, "tools/list", {}).status_code == 404
         assert c.get("/healthz").status_code == 200
     assert "mcp extra not installed" in caplog.text
+
+
+def test_building_the_api_keeps_the_process_logging_its_own(monkeypatch):
+    """MCPServer() calls logging.basicConfig(INFO, RichHandler). On Cloud Run that splits each record across 80-column
+    lines and ships every library's INFO chatter. pytest's own capture handler sits on the root logger and would make
+    basicConfig a no-op, so the root starts empty here, the way it does under uvicorn."""
+    import logging
+
+    import adpilot.core.runtime as runtime
+    from adpilot.api.app import create_app
+    from adpilot.core.audit import MemorySink
+
+    monkeypatch.setattr(logging.root, "handlers", [])
+    monkeypatch.setattr(logging.root, "level", logging.WARNING)
+    monkeypatch.setenv("ADPILOT_API_KEY", KEY)
+    monkeypatch.setenv("ADPILOT_AUDIT", "memory")
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "")
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: MemorySink())
+    create_app(connector="duckdb")
+    assert not any(type(h).__name__ == "RichHandler" for h in logging.root.handlers)
+    assert logging.root.level == logging.WARNING

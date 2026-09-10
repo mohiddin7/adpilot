@@ -96,7 +96,8 @@ def http_endpoint(server: MCPServer):
 
     The caller must run `server.session_manager.run()` in its lifespan (it can run once per server object).
     - Stateless, JSON responses: each POST stands alone, so any Cloud Run instance can serve any call — a stateful
-      session would be pinned to the instance that minted it — and there is no server-initiated stream to hold.
+      session would be pinned to the instance that minted it. The SDK would still hold a GET event stream open, so
+      the route is registered for POST only (see adpilot/api/app.py).
     - DNS-rebinding protection off: the SDK's version is a localhost Host allowlist that would reject the deployed
       *.run.app host. What it defends against, a hostile page reaching a local server through the user's browser,
       is covered by X-API-Key, which that page does not have.

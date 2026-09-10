@@ -63,8 +63,9 @@ The HTTP API (see [api.md](api.md)) serves the same two tools at `/mcp` over str
 claude mcp add --transport http adpilot https://<service-url>/mcp --header "X-API-Key: $ADPILOT_API_KEY"
 ```
 
-- **Stateless, JSON responses.** Each call stands alone, so any instance can serve it; there are no
-  server-initiated messages.
+- **Stateless, JSON responses, POST only.** Each call stands alone, so any instance can serve it. There are no
+  server-initiated messages, so `GET /mcp` (the optional server-to-client event stream) is a 405 rather than a
+  connection held open per client.
 - **The API's rate limit applies.** `/ask`, `/ask/stream` and `/mcp` share one `ADPILOT_API_RPM` bucket.
 - **Use `/mcp`, not `/mcp/`.** The trailing-slash form redirects.
 - **Any `Host` is accepted.** The SDK's DNS-rebinding check is a localhost allowlist that would reject the
