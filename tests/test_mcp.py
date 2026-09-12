@@ -250,6 +250,106 @@ def test_stdio_serves_both_tools_with_a_clean_stdout(tmp_path):
     assert noise == []
 
 
+# A tool that prints to stdout, the way a debugging print or a stdout-configured logger (Logfire's console
+# output, for one) would. Test-only: it wraps the real ask() inside a real `adpilot mcp` process.
+NOISY_SERVER = """
+import sys
+import adpilot.mcp_server as m
+from adpilot import cli
+real = m.ask
+def noisy(*a, **k):
+    print("stray print from a tool")
+    return real(*a, **k)
+m.ask = noisy
+sys.exit(cli.main(["--connector", "duckdb", "mcp"]))
+"""
+
+
+def test_a_stray_print_never_reaches_the_protocol_channel(tmp_path):
+    """While serving, the SDK points fd 1 at stderr, but Python's stdout is block-buffered on a pipe: a print stayed
+    in the buffer and was written to the real stdout after the SDK handed fd 1 back — onto the channel, as the client
+    disconnected. Every stdout line, including anything written at exit, must be a protocol message."""
+    import json
+    import os
+    import subprocess
+    import sys
+    import threading
+
+    env = {**os.environ, "ADPILOT_AUDIT": "memory", "AGENT_LLM_BEARER_TOKEN": "", "ADPILOT_CONNECTOR": "duckdb"}
+    proc = subprocess.Popen(
+        [sys.executable, "-c", NOISY_SERVER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env=env, cwd=str(tmp_path), text=True,
+    )
+    watchdog = threading.Timer(120, proc.kill)
+    watchdog.start()
+    try:
+        for msg in (
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "ask", "arguments": {"question": QUESTION}}},
+        ):
+            proc.stdin.write(json.dumps(msg) + "\n")
+        proc.stdin.flush()
+        lines = []
+        while not any('"id":2' in ln.replace(" ", "") for ln in lines):
+            line = proc.stdout.readline()
+            assert line, "server closed stdout before answering"
+            lines.append(line)
+        rest, stderr = proc.communicate()  # closes stdin: the client disconnects
+    finally:
+        watchdog.cancel()
+    lines += rest.splitlines()
+    frames = [json.loads(ln) for ln in lines if ln.strip()]  # a non-JSON line fails here
+    answer = next(f for f in frames if f.get("id") == 2)
+    assert answer["result"]["isError"] is False
+    assert "stray print from a tool" in stderr  # the print happened, and went where it cannot hurt
+
+
+def test_mcp_command_exits_2_when_the_final_flush_raises(monkeypatch, caplog):
+    """cmd_mcp called sink.flush() directly: a sink that raised (instead of reporting) ended the process with a
+    traceback and exit 1, where every other command reports unpersisted rows and exits 2."""
+    import adpilot.cli as cli
+    import adpilot.core.runtime as runtime
+    from adpilot.core.audit import MemorySink
+
+    class Raising(MemorySink):
+        def flush(self):
+            raise RuntimeError("bigquery is on fire")
+
+    monkeypatch.setenv("ADPILOT_AUDIT", "memory")
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "")
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: Raising())
+    monkeypatch.setattr("mcp.server.mcpserver.MCPServer.run", lambda self, *a, **k: None)  # client disconnects at once
+    assert cli.main(["--connector", "duckdb", "mcp"]) == 2
+    assert "flush raised" in caplog.text
+
+
+def test_the_shutdown_flush_runs_even_when_the_mcp_session_manager_fails_to_stop(api, monkeypatch):
+    """The lifespan flushed after `async with session_manager.run()`; an exception from its teardown skipped the
+    flush, and the last requests' audit rows died with the instance."""
+    import contextlib
+
+    from fastapi.testclient import TestClient
+
+    from adpilot.core.audit import FlushReport
+
+    client, sink = api
+    flushes = []
+    monkeypatch.setattr(sink, "flush", lambda: flushes.append(1) or FlushReport())
+
+    @contextlib.asynccontextmanager
+    async def failing_run():
+        yield
+        raise RuntimeError("session manager teardown failed")
+
+    monkeypatch.setattr(client.app.state.mcp_server.session_manager, "run", failing_run)
+    with pytest.raises(RuntimeError, match="teardown failed"), TestClient(client.app):
+        pass
+    assert flushes == [1]
+
+
 # ---- HTTP (/mcp on the API) -------------------------------------------------------------------------------
 
 RPC_HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}

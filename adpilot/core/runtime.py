@@ -88,18 +88,19 @@ def fresh_deps(template: AgentDeps) -> AgentDeps:
     return dataclasses.replace(template, budget=Budget(), last_result=None, results=[], run_context=None)
 
 
-def flush_audit(sink: AuditSink) -> None:
-    """Persist buffered rows; never raises. A failure leaves them buffered for the next flush."""
+def flush_audit(sink: AuditSink) -> bool:
+    """Persist buffered rows; never raises. True when everything is persisted; a failure leaves rows buffered."""
     try:
         rep = sink.flush()
     except Exception:  # never let a flush failure escape: callers run it in a finally or after the response
         log.exception("audit: flush raised, row(s) stay buffered")
-        return
+        return False
     if not rep.ok:
         log.warning(
             "audit: %d row(s) not persisted, retrying on the next request: %s",
             rep.pending, "; ".join(rep.errors),
         )
+    return rep.ok
 
 
 def mcp_installed() -> bool:

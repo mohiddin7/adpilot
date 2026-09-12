@@ -51,7 +51,7 @@ def test_flush_audit_logs_a_partial_flush(caplog):
         def flush(self):
             return FlushReport(written={}, failed={"agent_calls": 2}, errors=["503 backend"])
 
-    flush_audit(Partial())
+    assert flush_audit(Partial()) is False
     assert "2 row(s) not persisted" in caplog.text and "503 backend" in caplog.text
 
 
@@ -62,7 +62,7 @@ def test_flush_audit_never_raises(caplog):
         def flush(self):
             raise RuntimeError("bigquery is on fire")
 
-    flush_audit(Broken())  # must not raise
+    assert flush_audit(Broken()) is False  # must not raise
     assert "flush raised" in caplog.text
 
 
@@ -73,3 +73,9 @@ def test_mcp_installed_reflects_the_import_system(monkeypatch):
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
     assert runtime.mcp_installed() is False
+
+
+def test_flush_audit_reports_a_clean_flush():
+    from adpilot.core.runtime import flush_audit
+
+    assert flush_audit(MemorySink()) is True

@@ -136,11 +136,14 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
-        async with (mcp_server.session_manager.run() if mcp_server else contextlib.nullcontext()):
-            yield
-        # Cloud Run runs with --min-instances 0: a BackgroundTasks flush is not guaranteed to get CPU after
-        # the response, so the last rows would die with the instance. flush_audit logs whatever it cannot persist.
-        flush_audit(sink)
+        try:
+            async with (mcp_server.session_manager.run() if mcp_server else contextlib.nullcontext()):
+                yield
+        finally:
+            # Cloud Run runs with --min-instances 0: a BackgroundTasks flush is not guaranteed to get CPU after the
+            # response, so the last rows would die with the instance — and with them if the MCP session manager
+            # fails to stop, hence the finally. flush_audit logs whatever it cannot persist.
+            flush_audit(sink)
 
     app = FastAPI(title="AdPilot API", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     model = build_model()
@@ -164,6 +167,7 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         # which would pin a concurrency slot per connected client; DELETE is a 405 from the SDK anyway. A 405 on GET
         # is how a server says it offers no such stream.
         app.add_route("/mcp", KeyGate(http_endpoint(mcp_server), api_key), methods=["POST"])
+        app.state.mcp_server = mcp_server
     else:
         log.warning("mcp extra not installed — /mcp is not served (pip install 'adpilot[mcp]')")
 

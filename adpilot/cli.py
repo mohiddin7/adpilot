@@ -24,6 +24,7 @@ from adpilot.core.runtime import (
     announce_audit,
     build_deps,
     configure_tracing,
+    flush_audit,
     fresh_deps,
     mcp_installed,
     open_sink,
@@ -180,14 +181,17 @@ def cmd_mcp(args, out) -> int:
     if model is None:
         print("No AGENT_LLM_BEARER_TOKEN set — answering from pre-defined queries only.", file=err)
     server = build_mcp(build_agent(model), lambda: fresh_deps(template), sink)
+    # While serving, the SDK points fd 1 at stderr, but a block-buffered sys.stdout would hold a stray print (or a
+    # stdout logger's line — Logfire's console output, say) until exit, after fd 1 is the wire again. Line
+    # buffering writes each line while the diversion is in place.
+    sys.stdout.reconfigure(line_buffering=True)
     try:
         server.run("stdio")  # returns when the client closes stdin
     finally:
         # Each tool call already flushed its own record; this catches anything a failed flush left buffered.
-        rep = sink.flush()
-        if not rep.ok:
-            print(f"audit: {rep.pending} row(s) not persisted — {'; '.join(rep.errors)}", file=err)
-    return 0 if rep.ok else 2
+        # flush_audit never raises and logs what it could not persist, to stderr.
+        persisted = flush_audit(sink)
+    return 0 if persisted else 2
 
 
 def cmd_audit(args, out) -> int:
