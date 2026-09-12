@@ -38,3 +38,4 @@ docs/superpowers/
 
 # Local agent state (chat sessions)
 .adpilot/
+uv.lock
