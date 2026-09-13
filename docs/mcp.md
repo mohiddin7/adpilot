@@ -66,7 +66,9 @@ claude mcp add --transport http adpilot https://<service-url>/mcp --header "X-AP
 - **Stateless, JSON responses, POST only.** Each call stands alone, so any instance can serve it. There are no
   server-initiated messages, so `GET /mcp` (the optional server-to-client event stream) is a 405 rather than a
   connection held open per client.
-- **The API's rate limit applies.** `/ask`, `/ask/stream` and `/mcp` share one `ADPILOT_API_RPM` bucket.
+- **The API's rate limit applies.** `/ask`, `/ask/stream`, `/schema` and both MCP tools share one
+  `ADPILOT_API_RPM` bucket. (Over stdio there is no request limit: it is one local user; model calls are still
+  throttled inside `ask()`.)
 - **Use `/mcp`, not `/mcp/`.** The trailing-slash form redirects.
 - **Any `Host` is accepted.** The SDK's DNS-rebinding check is a localhost allowlist that would reject the
   deployed host; the attack it defends against needs the API key, which the key gate already requires.
@@ -75,11 +77,14 @@ claude mcp add --transport http adpilot https://<service-url>/mcp --header "X-AP
 
 ## What a client sees when something goes wrong
 
+Tool errors reach the client as text prefixed by the SDK, e.g. `Error executing tool ask: rate limit exceeded —
+retry in 13 s`; the table gives the part after the prefix.
+
 | condition | result |
 |---|---|
 | missing / wrong key (HTTP) | `401`, no audit row |
 | question >4000 chars, bad `session_id` | tool error (`isError: true`), no audit row |
-| over the rate limit (HTTP) | tool error `rate limit exceeded — retry in N s`, no audit row |
+| over the rate limit (HTTP, `ask` or `schema`) | tool error `rate limit exceeded — retry in N s`, no audit row |
 | question >600 chars, injection shape, secret name | a normal result with `refused: true` and an `InputPolicy` caveat, audited |
 | out of scope | a normal result with `refused: true`, audited |
 | model unavailable / 429 / budget exceeded | a normal result from the rule-based fallback, with a caveat naming why, audited |
@@ -89,5 +94,7 @@ A refusal is an answer, not an error, exactly as in the CLI and the HTTP API.
 
 ## Audit
 
-Every call is one `agent_calls` row with `source = 'mcp'`. A `session_id` continues across surfaces: a session
-started in `adpilot chat` or over `/ask` can be continued over MCP with the same id, and the other way round.
+Every `ask` and every `schema` call is one `agent_calls` row with `source = 'mcp'`. A schema read has
+`case_name = 'schema'`, `question = '(schema)'` and an empty answer — it records who read the schema and when, not
+the text. A `session_id` continues across surfaces: a session started in `adpilot chat` or over `/ask` can be
+continued over MCP with the same id, and the other way round.

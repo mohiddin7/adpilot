@@ -47,6 +47,7 @@ from adpilot.core.runtime import (
     fresh_deps,
     mcp_installed,
     open_sink,
+    record_schema_read,
 )
 from adpilot.core.tools import AgentDeps
 
@@ -175,23 +176,30 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         if not key_ok(x_api_key, api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
 
-    @app.get("/healthz")
-    def healthz() -> dict:
-        # Unauthenticated: it says the process is up and nothing else — not the pack, connector or model chain.
-        return {"status": "ok"}
-
-    @app.get("/schema", response_class=PlainTextResponse, dependencies=[Depends(require_key)])
-    def get_schema() -> str:
-        return app.state.deps_template.schema_text
-
-    @app.post("/ask", response_model=AnswerBody, dependencies=[Depends(require_key)])
-    def post_ask(req: AskRequest, background: BackgroundTasks) -> AnswerBody:
+    def shed() -> None:
+        """429 before any work: a shed request never reaches ask() or the audit trail."""
         wait = app.state.limiter.try_acquire()
         if wait:
             raise HTTPException(
                 status_code=429, detail="rate limit exceeded",
                 headers={"Retry-After": str(max(1, math.ceil(wait)))},
             )
+
+    @app.get("/healthz")
+    def healthz() -> dict:
+        # Unauthenticated: it says the process is up and nothing else — not the pack, connector or model chain.
+        return {"status": "ok"}
+
+    @app.get("/schema", response_class=PlainTextResponse, dependencies=[Depends(require_key)])
+    def get_schema(background: BackgroundTasks) -> str:
+        shed()
+        record_schema_read(sink, app.state.deps_template.pack.name, "api")
+        background.add_task(flush_audit, sink)
+        return app.state.deps_template.schema_text
+
+    @app.post("/ask", response_model=AnswerBody, dependencies=[Depends(require_key)])
+    def post_ask(req: AskRequest, background: BackgroundTasks) -> AnswerBody:
+        shed()
         deps = request_deps(app)
         deps.run_context = RunContextInfo(source="api", session_id=req.session_id)
         history = sink.load_session(req.session_id) if req.session_id else None
@@ -206,12 +214,7 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         question: str = Query(min_length=1, max_length=QUESTION_MAX_CHARS),
         session_id: str | None = Query(default=None, max_length=SESSION_ID_MAX_CHARS, pattern=SESSION_ID_PATTERN),
     ) -> StreamingResponse:
-        wait = app.state.limiter.try_acquire()
-        if wait:
-            raise HTTPException(
-                status_code=429, detail="rate limit exceeded",
-                headers={"Retry-After": str(max(1, math.ceil(wait)))},
-            )
+        shed()
         events: queue.Queue = queue.Queue()
         deps = request_deps(app)
         deps.run_context = RunContextInfo(source="api", session_id=session_id)

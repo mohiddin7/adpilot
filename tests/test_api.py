@@ -23,6 +23,24 @@ def test_schema_requires_the_key(api):
     assert r.status_code == 200 and "fct_unified_marketing_performance  (gold)" in r.text
 
 
+def test_a_schema_read_is_recorded_as_api(api):
+    client, sink = api
+    assert client.get("/schema", headers={"X-API-Key": KEY}).status_code == 200
+    assert len(sink.calls) == 1
+    assert sink.calls[0].source == "api" and sink.calls[0].case_name == "schema"
+    assert sink.flushed["agent_calls"] == 1
+
+
+def test_schema_sheds_load_with_429_and_writes_no_row(api):
+    client, sink = api
+    from adpilot.core.guardrails import RateLimiter
+
+    client.app.state.limiter = RateLimiter(per_minute=0)
+    r = client.get("/schema", headers={"X-API-Key": KEY})
+    assert r.status_code == 429 and int(r.headers["Retry-After"]) >= 1
+    assert sink.calls == []
+
+
 def test_a_wrong_key_is_rejected_and_writes_no_audit_row(api):
     client, sink = api
     assert client.get("/schema", headers={"X-API-Key": "k" * 31 + "x"}).status_code == 401

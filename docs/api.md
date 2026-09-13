@@ -24,9 +24,9 @@ a dependency, so an unauthenticated caller could otherwise enumerate every route
 ## Configuration
 
 - `ADPILOT_API_KEY` — required, ≥24 characters, compared with `secrets.compare_digest`.
-- `ADPILOT_API_RPM` — requests/minute shared by `/ask`, `/ask/stream` and `/mcp` tool calls (default 20), enforced by
-  `app.state.limiter`. Over the limit: `429` with a `Retry-After` header, and the request never reaches
-  `ask()` — nothing is audited. This is separate from `MODEL_RATE_LIMITER`, a fixed 20 rpm bucket inside
+- `ADPILOT_API_RPM` — requests/minute shared by `/ask`, `/ask/stream`, `/schema` and the MCP `ask`/`schema` tool
+  calls on `/mcp` (default 20), enforced by `app.state.limiter`. Over the limit: `429` with a `Retry-After`
+  header (a tool error on `/mcp`), and the request never reaches `ask()` — nothing is audited. This is separate from `MODEL_RATE_LIMITER`, a fixed 20 rpm bucket inside
   `adpilot/core/models.py` that throttles the actual model calls `ask()` makes and is not configurable by
   `ADPILOT_API_RPM` — see [One worker](#one-worker).
 
@@ -35,7 +35,7 @@ a dependency, so an unauthenticated caller could otherwise enumerate every route
 | Method | Path | Auth | Returns |
 |---|---|---|---|
 | GET | `/healthz` | none | `{"status": "ok"}` — process liveness only, nothing about pack/connector/model |
-| GET | `/schema` | key | plain-text schema summary the agent sees |
+| GET | `/schema` | key | plain-text schema summary the agent sees; rate-limited, and recorded as an audit row with `case_name = 'schema'` |
 | POST | `/ask` | key | `AnswerBody` JSON, once the answer is ready |
 | GET | `/ask/stream` | key | `text/event-stream` — progress events, then the same `AnswerBody` |
 | POST | `/mcp` | key | the MCP tools `ask` and `schema` over streamable HTTP — see [mcp.md](mcp.md); `GET` is a 405 |

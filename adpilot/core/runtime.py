@@ -11,13 +11,22 @@ import importlib.util
 import logging
 import os
 import sys
+from datetime import UTC, datetime
 
 from pydantic import BaseModel
 
 from adpilot.connectors import get_connector
 from adpilot.core import schema
 from adpilot.core.agent import AnalystAnswer, refused
-from adpilot.core.audit import AuditSink, AuditUnavailable, audit_config, build_sink
+from adpilot.core.audit import (
+    AuditSink,
+    AuditUnavailable,
+    RunContextInfo,
+    audit_config,
+    build_record,
+    build_sink,
+    new_trace_id,
+)
 from adpilot.core.chart import ChartSpec
 from adpilot.core.guardrails import Budget
 from adpilot.core.tools import AgentDeps
@@ -101,6 +110,19 @@ def flush_audit(sink: AuditSink) -> bool:
             rep.pending, "; ".join(rep.errors),
         )
     return rep.ok
+
+
+def record_schema_read(sink: AuditSink, pack_name: str, source: str) -> None:
+    """A schema read is not an agent call, but it is an authenticated surface call, so it gets one row too.
+
+    `case_name = 'schema'` is how queries tell these rows from answers (the question and answer are empty markers,
+    not the schema text: it is the same large string every time and already in the pack).
+    """
+    sink.record(build_record(
+        trace_id=new_trace_id(), ts=datetime.now(UTC), latency_s=0.0, question="(schema)", answer_md="", sql=None,
+        refused=False, confidence=1.0, caveats=[], messages=[], usage=None, model_requested=None,
+        context=RunContextInfo(source=source, case_name="schema"), pack_name=pack_name, prompt_hash=None,
+    ))
 
 
 def mcp_installed() -> bool:

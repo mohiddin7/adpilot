@@ -192,6 +192,28 @@ def test_schema_returns_the_table_text(served):
     assert "fct_unified_marketing_performance  (gold)" in r.content[0].text
 
 
+def test_a_schema_read_is_recorded_and_flushed(served):
+    """Not an agent call, but an authenticated read: one row, so every surface call is on the record."""
+    server, sink = served
+    call(server, "schema")
+    assert len(sink.calls) == 1
+    rec = sink.calls[0]
+    assert rec.source == "mcp" and rec.case_name == "schema"
+    assert rec.question == "(schema)" and rec.answer_md == "" and rec.refused is False
+    assert sink.flushed["agent_calls"] == 1
+
+
+def test_a_shed_schema_read_is_an_error_and_not_recorded(deps):
+    from adpilot.core.agent import build_agent
+    from adpilot.core.runtime import fresh_deps
+    from adpilot.mcp_server import build_mcp
+
+    server = build_mcp(build_agent(None), lambda: fresh_deps(deps), deps.audit, limit=lambda: 5.0)
+    r = call(server, "schema")
+    assert r.is_error is True and "retry in 5 s" in r.content[0].text
+    assert deps.audit.calls == []
+
+
 # ---- stdio ------------------------------------------------------------------------------------------------
 
 

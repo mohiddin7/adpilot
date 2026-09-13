@@ -29,6 +29,7 @@ from adpilot.core.runtime import (
     AnswerBody,
     answer_body,
     flush_audit,
+    record_schema_read,
 )
 from adpilot.core.tools import AgentDeps
 
@@ -52,6 +53,11 @@ def build_mcp(
     """The server object both transports serve. `limit()` returns seconds to wait, 0.0 to go (try_acquire)."""
     server = MCPServer("adpilot", instructions=INSTRUCTIONS)
 
+    def shed() -> None:
+        # Before any work: like the API's 429, a shed call is not a surface call and writes no audit row.
+        if limit is not None and (wait := limit()):
+            raise ToolError(f"rate limit exceeded — retry in {max(1, math.ceil(wait))} s")
+
     # Sync tools run in the SDK's worker thread (anyio.to_thread), which is what the blocking ask() needs.
     @server.tool(name="ask", annotations=READ_ONLY)
     def ask_question(
@@ -66,9 +72,7 @@ def build_mcp(
         a confidence score, caveats and whether the question was refused. Pass the same session_id on follow-up
         questions to keep the last three turns as context.
         """
-        if limit is not None and (wait := limit()):
-            # Shed before ask(): like the API's 429, a shed call is not an agent call and writes no audit row.
-            raise ToolError(f"rate limit exceeded — retry in {max(1, math.ceil(wait))} s")
+        shed()
         try:
             deps = deps_factory()
             deps.run_context = RunContextInfo(source="mcp", session_id=session_id)
@@ -86,7 +90,13 @@ def build_mcp(
     @server.tool(annotations=READ_ONLY, structured_output=False)
     def schema() -> str:
         """The tables and columns `ask` can query, with the data pack's column descriptions."""
-        return deps_factory().schema_text
+        shed()
+        deps = deps_factory()
+        try:
+            record_schema_read(sink, deps.pack.name, "mcp")
+        finally:
+            flush_audit(sink)
+        return deps.schema_text
 
     return server
 

@@ -84,8 +84,14 @@ Fallback rate by day:
 
 ```sql
 SELECT DATE(ts) AS day, COUNTIF(fell_back) / COUNT(*) AS fallback_rate, COUNT(*) AS calls
-FROM `adpilot_audit.agent_calls` WHERE source != 'judge' GROUP BY day ORDER BY day DESC;
+FROM `adpilot_audit.agent_calls`
+WHERE source != 'judge' AND IFNULL(case_name, '') != 'schema'
+GROUP BY day ORDER BY day DESC;
 ```
+
+Schema reads over the API and MCP are recorded too, as rows with `case_name = 'schema'`, `question = '(schema)'`
+and an empty answer: they say who read the schema and when. They are not answers, so leave them out of any rate
+over answers (refusals, fallbacks), as above.
 
 The latest daily brief, question by question, then the synthesis:
 
@@ -100,10 +106,11 @@ ORDER BY ts;
 Calls by surface over the last 7 days:
 
 ```sql
-SELECT source, COUNT(*) AS calls, COUNTIF(refused) AS refused, COUNTIF(fell_back) AS fell_back
+SELECT source, COUNTIF(IFNULL(case_name, '') != 'schema') AS answers,
+       COUNTIF(case_name = 'schema') AS schema_reads, COUNTIF(refused) AS refused, COUNTIF(fell_back) AS fell_back
 FROM `adpilot_audit.agent_calls`
 WHERE ts >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND source IN ('chat', 'api', 'mcp', 'brief')
-GROUP BY source ORDER BY calls DESC;
+GROUP BY source ORDER BY answers DESC;
 ```
 
 Re-grade a run later: insert new `scores` rows with the same `trace_id`, a new `grader`, and `source = 'judge'`
