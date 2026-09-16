@@ -44,6 +44,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -392,11 +393,13 @@ class BigQueryWriter:
                 f"Target '{target_table}' missing - creating from staging schema"
             )
             temp_obj = self._client.get_table(temp_table)
-            self._client.create_table(
-                bigquery.Table(target_table, schema=temp_obj.schema)
-            )
+            table = bigquery.Table(target_table, schema=temp_obj.schema)
+            table.clustering_fields = ["date", "campaign_id"]   # batch-bounded MERGEs prune to their dates
+            self._client.create_table(table)
 
-        merge_sql = self._build_merge_sql(target_table, temp_table, config)
+        merge_sql = self._build_merge_sql(
+            target_table, temp_table, config, list(df.columns), df["date"].min(), df["date"].max()
+        )
         self._logger.info(f"Executing MERGE into '{target_table}'")
         self._execute_query_with_retry(merge_sql)
 
@@ -407,26 +410,28 @@ class BigQueryWriter:
 
         return (len(df), target_count)
 
+    @staticmethod
     def _build_merge_sql(
-        self, target: str, source: str, config: PlatformConfig
+        target: str, source: str, config: PlatformConfig,
+        columns: list[str], date_min: str, date_max: str,
     ) -> str:
-        sub_group_id = config.sub_group_col
-        sub_group_name = sub_group_id.replace("_id", "_name")
+        """Every non-key column is updated, so restated conversion_value, reach and video columns are never dropped.
+        The target is bounded to the batch's dates, so on the date-clustered table the MERGE prunes to them."""
+        lo, hi = (datetime.date.fromisoformat(d).isoformat() for d in (date_min, date_max))
+        unsafe = [c for c in columns if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", c)]
+        if unsafe:
+            raise ValueError(f"unsafe column names in upload: {unsafe}")
+        keys = ("date", "campaign_id", config.sub_group_col)
+        update_set = ",\n            ".join(f"target.{c} = source.{c}" for c in columns if c not in keys)
         return f"""
         MERGE `{target}` AS target
         USING `{source}` AS source
         ON  target.date = source.date
         AND target.campaign_id = source.campaign_id
-        AND target.{sub_group_id} = source.{sub_group_id}
+        AND target.{config.sub_group_col} = source.{config.sub_group_col}
+        AND target.date BETWEEN '{lo}' AND '{hi}'
         WHEN MATCHED THEN UPDATE SET
-            target.impressions = source.impressions,
-            target.clicks = source.clicks,
-            target.{config.cost_col} = source.{config.cost_col},
-            target.conversions = source.conversions,
-            target.campaign_name = source.campaign_name,
-            target.{sub_group_name} = source.{sub_group_name},
-            target.ingested_at = source.ingested_at,
-            target.source_file = source.source_file
+            {update_set}
         WHEN NOT MATCHED THEN INSERT ROW
         """
 
