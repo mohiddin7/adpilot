@@ -56,17 +56,13 @@ from google.cloud import bigquery
 from google.cloud import storage
 from google.cloud.exceptions import NotFound
 
-# Logging setup
-_LOG_DIR = pathlib.Path(__file__).parent / "logs"
-_LOG_DIR.mkdir(parents=True, exist_ok=True)
+import common  # noqa: E402
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(name)-35s | %(levelname)-8s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(_LOG_DIR / "ingestion.log", mode="a", encoding="utf-8"),
-    ],
+    handlers=common.log_handlers("ingestion"),
 )
 
 # Constants
@@ -455,12 +451,10 @@ class BigQueryWriter:
         last_exc = None
         for attempt in range(self.MAX_RETRIES):
             try:
-                # 1. Initialize config without the schema update options
-                job_config = bigquery.LoadJobConfig(
-                    write_disposition=disposition,
-                    autodetect=True,
-                )
-                
+                # 1. Initialize config without the schema update options. Parquet carries
+                # the schema, so autodetect goes.
+                job_config = common.parquet_load_config(write_disposition=disposition)
+
                 # 2. Only add schema update options if we are APPENDING data
                 if disposition in (bigquery.WriteDisposition.WRITE_APPEND, "WRITE_APPEND"):
                     job_config.schema_update_options = [
@@ -570,7 +564,7 @@ class IngestionPipeline:
     """End-to-end orchestrator for a single file ingestion."""
 
     def __init__(self) -> None:
-        self._bq_client = bigquery.Client()
+        self._bq_client = common.bq_client()
         self._writer = BigQueryWriter(self._bq_client)
         self._auditor = AuditLogger(self._bq_client)
         self._archiver = FileArchiver(GCS_BUCKET_NAME)

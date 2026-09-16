@@ -152,22 +152,7 @@ class Config:
 # =============================================================================
 
 def setup_logging(log_file: Path) -> logging.Logger:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    log = logging.getLogger("05_forecast")
-    log.setLevel(logging.DEBUG)
-    fmt = logging.Formatter(
-        "%(asctime)s %(levelname)-8s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"
-    )
-    if not log.handlers:
-        ch = logging.StreamHandler(sys.stdout)
-        ch.setLevel(logging.INFO)
-        ch.setFormatter(fmt)
-        log.addHandler(ch)
-        fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(fmt)
-        log.addHandler(fh)
-    return log
+    return common.get_logger(log_file.stem)
 
 
 # =============================================================================
@@ -341,7 +326,7 @@ class ForecastPipeline:
 
     def __init__(self) -> None:
         self._log    = setup_logging(Config.LOGS_DIR / "05_forecast.log")
-        self._client = bigquery.Client(project=Config.PROJECT)
+        self._client = common.bq_client()
 
     def run(self) -> None:
         self._log.info("=" * 72)
@@ -488,7 +473,7 @@ class ForecastPipeline:
         df["forecast_execution_date"] = pd.to_datetime(df["forecast_execution_date"])
         df["target_date"]             = pd.to_datetime(df["target_date"])
 
-        job_config = bigquery.LoadJobConfig(
+        job_config = common.parquet_load_config(
             schema=Config.OUTPUT_SCHEMA,
             write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         )

@@ -110,22 +110,7 @@ class Config:
 # =============================================================================
 
 def setup_logging(log_file: Path) -> logging.Logger:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    log = logging.getLogger("02_run_transformations")
-    log.setLevel(logging.DEBUG)
-    fmt = logging.Formatter(
-        "%(asctime)s %(levelname)-8s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"
-    )
-    if not log.handlers:
-        ch = logging.StreamHandler(sys.stdout)
-        ch.setLevel(logging.INFO)
-        ch.setFormatter(fmt)
-        log.addHandler(ch)
-        fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(fmt)
-        log.addHandler(fh)
-    return log
+    return common.get_logger(log_file.stem)
 
 
 # =============================================================================
@@ -1244,7 +1229,7 @@ def main() -> None:
     log.info("=" * 72)
 
     try:
-        client = bigquery.Client(project=Config.PROJECT)
+        client = common.bq_client()
         log.info("BigQuery client initialised  project=%s", client.project)
     except Exception as exc:
         log.error("Failed to initialise BigQuery client: %s", exc)

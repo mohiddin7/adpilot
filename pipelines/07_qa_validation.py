@@ -25,25 +25,13 @@ import common
 
 
 # ---------------------------------------------------------------------------
-# Resolve paths relative to repo root (works from any working directory)
-# ---------------------------------------------------------------------------
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_LOG_DIR    = os.path.join(_SCRIPT_DIR, "logs")
-os.makedirs(_LOG_DIR, exist_ok=True)
-_LOG_FILE   = os.path.join(_LOG_DIR, "07_qa_validation.log")
-
-
-# ---------------------------------------------------------------------------
 # Logging — matches 03/04/05 format exactly
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(_LOG_FILE, mode="a"),
-    ],
+    handlers=common.log_handlers("07_qa_validation"),
 )
 
 
@@ -99,7 +87,7 @@ class QAValidationRunner:
 
     def __init__(self):
         self._log = logging.getLogger(self.__class__.__name__)
-        self._client = bigquery.Client(project=Config.PROJECT)
+        self._client = common.bq_client()
         self._critical_failures: list[str] = []
         self._warnings: list[str] = []
         self._info_messages: list[str] = []
