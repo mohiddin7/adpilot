@@ -35,3 +35,6 @@ phase_2_branch_b.sh
 
 # AI working docs (never committed)
 docs/superpowers/
+
+# Local agent state (chat sessions)
+.adpilot/
