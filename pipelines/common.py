@@ -42,10 +42,12 @@ class _JsonFormatter(logging.Formatter):
         return json.dumps(entry)
 
 
-def log_handlers(file_stem: str) -> list[logging.Handler]:
-    """stdout always (JSON under Cloud Run, where K_SERVICE is set); a file in LOG_DIR only when writable."""
-    fmt = _JsonFormatter() if os.getenv("K_SERVICE") else logging.Formatter(
-        "%(asctime)s %(levelname)-8s %(message)s", "%Y-%m-%dT%H:%M:%S")
+def log_handlers(file_stem: str, fmt: str | None = None) -> list[logging.Handler]:
+    """stdout always (JSON under Cloud Run, where K_SERVICE is set); a file in LOG_DIR only when writable.
+    `fmt` overrides the plain-text format string (ignored under Cloud Run — the JSON formatter already
+    carries `logger`)."""
+    formatter = _JsonFormatter() if os.getenv("K_SERVICE") else logging.Formatter(
+        fmt or "%(asctime)s %(levelname)-8s %(message)s", "%Y-%m-%dT%H:%M:%S")
     out = logging.StreamHandler(sys.stdout)
     out.setLevel(logging.INFO)
     handlers: list[logging.Handler] = [out]
@@ -57,7 +59,7 @@ def log_handlers(file_stem: str) -> list[logging.Handler]:
     except OSError:
         pass  # read-only filesystem (Cloud Run functions): stdout only
     for h in handlers:
-        h.setFormatter(fmt)
+        h.setFormatter(formatter)
     return handlers
 
 

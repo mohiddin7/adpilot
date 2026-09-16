@@ -44,7 +44,6 @@ import hashlib
 import json
 import logging
 import os
-import pathlib
 import sys
 import time
 import uuid
@@ -60,9 +59,7 @@ import common  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(name)-35s | %(levelname)-8s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=common.log_handlers("ingestion"),
+    handlers=common.log_handlers("ingestion", fmt="%(asctime)s | %(name)-35s | %(levelname)-8s | %(message)s"),
 )
 
 # Constants

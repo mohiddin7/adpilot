@@ -45,6 +45,20 @@ def test_log_handlers_add_a_file_when_writable(tmp_path, monkeypatch):
     handlers[1].close()
 
 
+def test_log_handlers_fmt_overrides_plain_format(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    common = _fresh_common()
+    monkeypatch.setattr(common, "LOG_DIR", _unwritable(tmp_path))
+    log = logging.getLogger("fmt-test")
+    log.handlers.clear()
+    log.propagate = False
+    log.setLevel(logging.INFO)
+    for h in common.log_handlers("fmt-test", fmt="%(name)s|%(message)s"):
+        log.addHandler(h)
+    log.info("hello")
+    assert capsys.readouterr().out.strip().splitlines()[-1] == "fmt-test|hello"
+
+
 def test_json_logs_under_cloud_run(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("K_SERVICE", "run-pipeline")
     monkeypatch.setenv("PIPELINE_RUN_ID", "r1")
