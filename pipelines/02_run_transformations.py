@@ -29,11 +29,12 @@ Quality guarantees (LLD §3):
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,10 @@ from google.api_core.exceptions import (
 from google.cloud import bigquery
 
 import common
+
+# Inclusive [start, end] ISO-date bound applied to a batch's reads/writes.
+# None means unbounded — today's full-history behaviour.
+Window = tuple[str, str] | None
 
 
 # =============================================================================
@@ -493,8 +498,20 @@ class SqlBuilder:
             return f"COALESCE(SAFE_CAST(NULLIF({bronze_col}, '') AS {bq_type}), 0)"
         return f"CAST({default} AS {bq_type})"
 
+    @staticmethod
+    def _iso(d: str) -> str:
+        return date.fromisoformat(d).isoformat()   # fail closed: only real ISO dates reach SQL
+
     @classmethod
-    def _l1_select(cls, pspec: dict, bronze_ref: str) -> str:
+    def _bronze_window(cls, window: Window) -> str:
+        """Bronze `date` is an ISO STRING on a date-clustered table, so a string BETWEEN prunes blocks."""
+        if window is None:
+            return ""
+        lo, hi = (cls._iso(d) for d in window)
+        return f"\nWHERE date BETWEEN '{lo}' AND '{hi}'"
+
+    @classmethod
+    def _l1_select(cls, pspec: dict, bronze_ref: str, window: Window = None) -> str:
         """
         Level-1 SELECT: cast all-STRING bronze columns to typed gold columns.
         Returns 24 columns: 6 dims + 18 metrics (engagement_rate intentionally absent).
@@ -510,10 +527,10 @@ class SqlBuilder:
         for gold_col, bronze_col, bq_type, default in pspec['l1_metrics']:
             expr = cls._cast_expr(bronze_col, bq_type, default)
             lines.append(f"{expr}  AS {gold_col}")
-        return "SELECT\n    " + ",\n    ".join(lines) + f"\nFROM `{bronze_ref}`"
+        return "SELECT\n    " + ",\n    ".join(lines) + f"\nFROM `{bronze_ref}`" + cls._bronze_window(window)
 
     @classmethod
-    def _quarantine_l1(cls, pspec: dict, bronze_ref: str) -> str:
+    def _quarantine_l1(cls, pspec: dict, bronze_ref: str, window: Window = None) -> str:
         """
         Minimal Level-1 for quarantine MERGE: only validation-relevant columns.
         Reads universal G1-G5 cols + platform-specific quarantine_extra_cols.
@@ -537,7 +554,7 @@ class SqlBuilder:
         for gold_col, bronze_col, bq_type in pspec.get('quarantine_extra_cols', []):
             expr = cls._cast_expr(bronze_col, bq_type, None)
             lines.append(f"{expr}  AS {gold_col}")
-        return "SELECT\n    " + ",\n    ".join(lines) + f"\nFROM `{bronze_ref}`"
+        return "SELECT\n    " + ",\n    ".join(lines) + f"\nFROM `{bronze_ref}`" + cls._bronze_window(window)
 
     @classmethod
     def _violation_array(cls, pspec: dict) -> str:
@@ -591,12 +608,12 @@ class SqlBuilder:
     # ── Public SQL generators ─────────────────────────────────────────────────
 
     @classmethod
-    def quarantine_merge(cls, platform: str) -> str:
+    def quarantine_merge(cls, platform: str, window: Window = None) -> str:
         """Idempotent quarantine MERGE for one platform (MD5 primary key)."""
         pspec  = cls._PLATFORM_CONFIG[platform]
         qref   = Config.quarantine_ref()
         bronze = Config.bronze_ref(pspec['bronze_table'])
-        q_l1   = cls._quarantine_l1(pspec, bronze)
+        q_l1   = cls._quarantine_l1(pspec, bronze, window)
         v_arr  = cls._violation_array(pspec)
         name   = pspec['name_literal']
         origin = pspec['origin']
@@ -628,20 +645,30 @@ ON target.quarantine_id = source.quarantine_id
 WHEN NOT MATCHED THEN INSERT ROW""".strip()
 
     @classmethod
-    def gold_merge(cls, platform: str) -> str:
+    def gold_merge(cls, platform: str, window: Window = None) -> str:
         """
         Incremental MERGE for one platform.
         Level-1: casts all-STRING bronze → typed (24 cols, no engagement_rate).
         Level-2 (USING): computes engagement_rate + 5 derived metrics; applies
                          G-filter WHERE clause.
         UPDATE covers all 26 non-key gold columns.
+
+        With `window`, the bronze source is filtered to those dates (string
+        BETWEEN prunes the clustered blocks) and the ON clause adds a DATE
+        BETWEEN predicate on `target` so BigQuery prunes to the gold table's
+        day partitions instead of scanning all of history.
         """
         pspec  = cls._PLATFORM_CONFIG[platform]
         gold   = Config.gold_ref()
         bronze = Config.bronze_ref(pspec['bronze_table'])
-        l1     = cls._l1_select(pspec, bronze)
+        l1     = cls._l1_select(pspec, bronze, window)
         roas   = pspec['roas_expr']
         where  = cls._gold_where(pspec)
+
+        target_window = ""
+        if window is not None:
+            lo, hi = (cls._iso(d) for d in window)
+            target_window = f"\nAND target.date BETWEEN DATE '{lo}' AND DATE '{hi}'"
 
         update_cols = [
             'campaign_name', 'sub_group_name',
@@ -675,7 +702,7 @@ USING (
 ON  target.date         = source.date
 AND target.platform     = source.platform
 AND target.campaign_id  = source.campaign_id
-AND target.sub_group_id = source.sub_group_id
+AND target.sub_group_id = source.sub_group_id{target_window}
 WHEN MATCHED THEN UPDATE SET
     {update_set}
 WHEN NOT MATCHED THEN INSERT ROW""".strip()
@@ -776,14 +803,14 @@ WHEN NOT MATCHED THEN INSERT ROW""".strip()
         )
 
     @classmethod
-    def incremental_transaction(cls) -> str:
+    def incremental_transaction(cls, window: Window = None) -> str:
         """
         Wrap all 3 gold MERGEs in a BigQuery transaction.
         Atomicity: if TikTok MERGE fails after Facebook+Google commit,
         the whole transaction rolls back — no partial-platform state.
         DDL is not allowed inside BigQuery transactions; only DML (MERGE) here.
         """
-        stmts = "\n".join(cls.gold_merge(p) + ";" for p in cls._PLATFORM_CONFIG)
+        stmts = "\n".join(cls.gold_merge(p, window) + ";" for p in cls._PLATFORM_CONFIG)
         return f"BEGIN TRANSACTION;\n{stmts}\nCOMMIT TRANSACTION;"
 
     @classmethod
@@ -959,9 +986,10 @@ class GoldTransformer:
     runs the appropriate path, verifies, and keeps the audit in sync.
     """
 
-    def __init__(self, client: bigquery.Client, log: logging.Logger) -> None:
+    def __init__(self, client: bigquery.Client, log: logging.Logger, window: Window = None) -> None:
         self._client   = client
         self._log      = log
+        self._window   = window
         self._ex       = BQExecutor(client, log)
         self._audit    = AuditLogger(self._ex, log)
         self._sql      = SqlBuilder
@@ -1123,6 +1151,9 @@ class GoldTransformer:
         """
         platforms = list(self._sql._PLATFORM_CONFIG.keys())
 
+        if self._window is not None:
+            self._log.info("First run: window ignored, building all of history")
+
         for platform in platforms:
             self._log.info("First-run: quarantine MERGE — %s", platform)
             self._ex.run_query(
@@ -1167,11 +1198,13 @@ class GoldTransformer:
         """
         platforms = list(self._sql._PLATFORM_CONFIG.keys())
 
+        self._log.info("Incremental: window %s", self._window)
+
         # Phase 1: quarantine MERGEs
         for platform in platforms:
             self._log.info("Incremental: quarantine MERGE — %s", platform)
             q_job = self._ex.run_query(
-                self._sql.quarantine_merge(platform),
+                self._sql.quarantine_merge(platform, self._window),
                 max_bytes=Config.QUARANTINE_MERGE_MAX_BYTES,
                 description=f"incremental:quarantine:{platform}",
             )
@@ -1181,7 +1214,7 @@ class GoldTransformer:
         # Phase 2: gold MERGEs in a single transaction
         self._log.info("Incremental: BEGIN gold MERGEs transaction (3 platforms)")
         self._ex.run_query(
-            self._sql.incremental_transaction(),
+            self._sql.incremental_transaction(self._window),
             max_bytes=Config.GOLD_TXN_MAX_BYTES,
             description="incremental:gold_transaction",
         )
@@ -1221,7 +1254,17 @@ class GoldTransformer:
 # Entry point
 # =============================================================================
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(
+        description="Bronze → gold. With --start/--end only those dates are read and merged."
+    )
+    ap.add_argument("--start", help="first date, YYYY-MM-DD")
+    ap.add_argument("--end", help="last date, YYYY-MM-DD")
+    args = ap.parse_args(argv)
+    if (args.start is None) != (args.end is None):
+        ap.error("--start and --end go together")
+    window: Window = (args.start, args.end) if args.start else None
+
     log = setup_logging(Config.LOGS_DIR / "02_run_transformations.log")
     log.info("=" * 72)
     log.info("Script 02 — Gold Transformation  started at %s",
@@ -1236,7 +1279,7 @@ def main() -> None:
         log.error("Run: gcloud auth application-default login")
         sys.exit(1)
 
-    transformer = GoldTransformer(client, log)
+    transformer = GoldTransformer(client, log, window)
     try:
         transformer.run()
     except Exception as exc:
