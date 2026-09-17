@@ -1,8 +1,10 @@
 # AdPilot
 
+![ci](https://github.com/mohiddin7/adpilot/actions/workflows/ci.yml/badge.svg) ![evals](https://img.shields.io/badge/evals-0%25-lightgrey)
+
 **An agentic analytics platform for marketing data.** Unifies multi-channel ad performance in a BigQuery lakehouse, enriches it with anomaly detection, forecasting and budget optimization, and puts an AI analyst on top that answers questions in plain English — with guardrails, self-healing SQL and an evaluation harness.
 
-> Status: active rebuild. The agent core now runs on Pydantic AI with a data-agnostic "pack" system. Next up: the eval harness, a FastAPI service, a proactive briefing agent and an MCP server. See the roadmap below.
+> Status: active rebuild. The agent core now runs on Pydantic AI with a data-agnostic "pack" system. Next up: a FastAPI service, a proactive briefing agent and an MCP server. See the roadmap below.
 
 ## What it does today
 
@@ -18,7 +20,7 @@
 |---|---|
 | 0 | Repo hygiene, env-driven config, CI ✅ |
 | 1 | Data-agnostic agent core (Pydantic AI), typed tools, guardrails, `adpilot chat` CLI ✅ |
-| 2 | Eval harness: golden cases, red-team, self-heal rate, LLM judge, scorecard |
+| 2 | Eval harness: golden cases, red-team, self-heal rate, LLM judge, scorecard ✅ |
 | 3 | FastAPI streaming API + generic dashboard driven by pack config |
 | 4 | Proactive briefing agent + human-in-the-loop budget approvals |
 | 5 | MCP server, tracing, Docker |
@@ -65,6 +67,16 @@ Tests (deterministic — the model is scripted with pydantic-ai's `TestModel`/`F
 ```bash
 ruff check . && pytest -q
 ```
+
+### Evals
+
+```bash
+adpilot eval                       # deterministic tier, no API key needed
+adpilot eval --check-cases         # verify golden values against the sample data
+adpilot eval --tier model          # real models; writes evals/reports/ and the badge
+```
+
+See [docs/evals.md](docs/evals.md) for how scoring works and what the nightly PR means.
 
 ## Configuration
 

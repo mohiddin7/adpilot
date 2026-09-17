@@ -19,3 +19,5 @@ jobs:
       - run: pip install -e .[dev]
       - run: ruff check .
       - run: pytest -q
+      - run: adpilot eval --check-cases
+      - run: adpilot eval --tier deterministic --out .adpilot/evals

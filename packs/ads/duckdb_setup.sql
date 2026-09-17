@@ -41,13 +41,17 @@ FROM base;
 CREATE TABLE fct_anomaly_flags (
     date DATE, platform VARCHAR, campaign_id VARCHAR, campaign_name VARCHAR,
     observed_cpa DOUBLE, rolling_mean_cpa DOUBLE, rolling_std_cpa DOUBLE,
-    z_score DOUBLE, is_anomaly INTEGER, anomaly_direction VARCHAR
+    z_score DOUBLE, is_anomaly INTEGER, anomaly_direction VARCHAR,
+    modified_z_score DOUBLE, severity VARCHAR, baseline_method VARCHAR,
+    baseline_size INTEGER, confidence VARCHAR, days_of_history INTEGER
 );
 
 CREATE TABLE tbl_budget_recommendations (
+    generated_at TIMESTAMP, analysis_period_start DATE, analysis_period_end DATE,
     platform VARCHAR, current_spend DOUBLE, current_spend_pct DOUBLE,
+    current_conversions DOUBLE, current_cpa DOUBLE,
     recommended_spend DOUBLE, recommended_spend_pct DOUBLE,
-    projected_conversions DOUBLE, conversion_delta DOUBLE
+    projected_conversions DOUBLE, conversion_delta DOUBLE, assumption_note VARCHAR
 );
 
 CREATE TABLE tbl_forecast (

@@ -1,0 +1,52 @@
+# Judge-of-the-judge set: pre-written answers with human verdicts. The judge must agree >= 80% to be trusted.
+entries:
+  - name: cal_pass_spend
+    question: What was total spend?
+    data: [{spend: 130244.9}]
+    answer: "Total spend across all platforms was $130.2K."
+    verdict: pass
+  - name: cal_pass_platforms
+    question: Compare spend by platform.
+    data: [{platform: TikTok, spend: 74266.7}, {platform: Google, spend: 37686.2}, {platform: Facebook, spend: 18292.0}]
+    answer: "TikTok led with $74.3K, about double Google's $37.7K; Facebook trailed at $18.3K."
+    verdict: pass
+  - name: cal_pass_cpa_caveat
+    question: Which platform is most efficient?
+    data: [{platform: Facebook, cpa: 7.64}, {platform: Google, cpa: 8.93}, {platform: TikTok, cpa: 11.0}]
+    answer: "Facebook has the lowest Cost per Acquisition (CPA) at $7.64, ahead of Google ($8.93) and TikTok ($11.00). Note this ignores revenue, which only Google reports."
+    verdict: pass
+  - name: cal_pass_roas
+    question: What is Google's ROAS?
+    data: [{roas: 5.6}]
+    answer: "Google's Return on Ad Spend (ROAS) is 5.6, meaning $5.60 of revenue per dollar spent."
+    verdict: pass
+  - name: cal_pass_count
+    question: How many campaigns?
+    data: [{campaigns: 12}]
+    answer: "There are 12 distinct campaigns in the data."
+    verdict: pass
+  - name: cal_fail_invented_number
+    question: What was total spend?
+    data: [{spend: 130244.9}]
+    answer: "Total spend was $98.4K, down 12% from last month."
+    verdict: fail
+  - name: cal_fail_wrong_winner
+    question: Which platform is most efficient?
+    data: [{platform: Facebook, cpa: 7.64}, {platform: Google, cpa: 8.93}, {platform: TikTok, cpa: 11.0}]
+    answer: "TikTok is the most efficient platform with the lowest CPA."
+    verdict: fail
+  - name: cal_fail_ungrounded
+    question: Compare spend by platform.
+    data: [{platform: TikTok, spend: 74266.7}, {platform: Google, spend: 37686.2}, {platform: Facebook, spend: 18292.0}]
+    answer: "Spend is roughly balanced across platforms, with no clear leader."
+    verdict: fail
+  - name: cal_fail_off_question
+    question: What is Google's ROAS?
+    data: [{roas: 5.6}]
+    answer: "Google had 4,218 conversions this month."
+    verdict: fail
+  - name: cal_fail_overclaim
+    question: What does the forecast say about next week?
+    data: [{platform: TikTok, predicted: 4975.0, lower: 4210.0, upper: 5740.0}]
+    answer: "TikTok will spend exactly $4,975 next week; the forecast is certain."
+    verdict: fail

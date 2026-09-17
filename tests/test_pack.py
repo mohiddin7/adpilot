@@ -1,3 +1,5 @@
+import pytest
+
 from adpilot.connectors import get_connector
 from adpilot.packs.loader import load_pack
 
@@ -34,3 +36,14 @@ def test_duckdb_gold_matches_pipeline_totals():
     }
     assert {"cpa", "roas", "engagement_rate"} <= {c for c, _ in src.columns("fct_unified_marketing_performance")}
     assert src.query("SELECT COUNT(*) AS n FROM tbl_forecast")["n"][0] == 0
+
+
+@pytest.mark.parametrize("logical", ["anomalies", "budget", "forecast"])
+def test_tier2_docs_match_duckdb_columns(pack, duck, logical):
+    documented = list(pack.tables[logical]["columns"])
+    physical = [c for c, _ in duck.columns(pack.table_ref(logical, "duckdb"))]
+    assert documented == physical
+
+
+def test_anomaly_direction_values_documented(pack):
+    assert "HIGH_CPA" in pack.tables["anomalies"]["columns"]["anomaly_direction"]

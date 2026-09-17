@@ -17,6 +17,10 @@ class DuckDBSource:
         self._con = duckdb.connect()
         self._con.execute(init_sql.replace("{csv_dir}", Path(csv_dir).as_posix()))
 
+    def execute_script(self, sql: str) -> None:
+        """Run trusted setup SQL (fixtures). Never called with model-written text."""
+        self._con.execute(sql)
+
     def query(self, sql: str, max_bytes: int | None = None) -> pd.DataFrame:
         try:
             return self._con.execute(sql).df()

@@ -25,3 +25,25 @@ def duck(pack):
 @pytest.fixture
 def deps(pack, duck):
     return AgentDeps(connector=duck, pack=pack, schema_text=schema.summary(duck, pack))
+
+
+@pytest.fixture(scope="session")
+def eval_duck(pack):
+    from evals.task import load_fixtures
+
+    con = get_connector("duckdb", pack)
+    load_fixtures(con, pack)
+    return con
+
+
+@pytest.fixture
+def eval_deps_factory(pack, eval_duck):
+    from evals.task import RecordingSource
+
+    text = schema.summary(eval_duck, pack)
+    return lambda: AgentDeps(connector=RecordingSource(eval_duck), pack=pack, schema_text=text)
+
+
+@pytest.fixture
+def eval_deps(eval_deps_factory):
+    return eval_deps_factory()
