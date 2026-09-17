@@ -503,11 +503,27 @@ class SqlBuilder:
         return date.fromisoformat(d).isoformat()   # fail closed: only real ISO dates reach SQL
 
     @classmethod
+    def _validated_bounds(cls, window: Window) -> tuple[str, str] | None:
+        """
+        One shared place for window validation: real ISO dates (via `_iso`) and
+        `lo <= hi`. Both the bronze source filter and the gold target predicate
+        call this, so a reversed range fails closed before either SQL string
+        is built.
+        """
+        if window is None:
+            return None
+        lo, hi = (cls._iso(d) for d in window)
+        if lo > hi:
+            raise ValueError(f"window start {lo!r} is after end {hi!r}")
+        return lo, hi
+
+    @classmethod
     def _bronze_window(cls, window: Window) -> str:
         """Bronze `date` is an ISO STRING on a date-clustered table, so a string BETWEEN prunes blocks."""
-        if window is None:
+        bounds = cls._validated_bounds(window)
+        if bounds is None:
             return ""
-        lo, hi = (cls._iso(d) for d in window)
+        lo, hi = bounds
         return f"\nWHERE date BETWEEN '{lo}' AND '{hi}'"
 
     @classmethod
@@ -666,8 +682,9 @@ WHEN NOT MATCHED THEN INSERT ROW""".strip()
         where  = cls._gold_where(pspec)
 
         target_window = ""
-        if window is not None:
-            lo, hi = (cls._iso(d) for d in window)
+        bounds = cls._validated_bounds(window)
+        if bounds is not None:
+            lo, hi = bounds
             target_window = f"\nAND target.date BETWEEN DATE '{lo}' AND DATE '{hi}'"
 
         update_cols = [
@@ -1032,6 +1049,9 @@ class GoldTransformer:
 
             error_stage = "VERIFY"
             self._audit.verifying()
+            # ponytail: verification reconciles all of bronze vs gold, O(history) bytes but
+            # under BigQuery's 10 MB per-query minimum for ~a decade; bound it to self._window
+            # once a query bills above the minimum
             gold_counts, rows_quarantined = self._run_verification(bronze_rows)
             rows_accepted = sum(gold_counts.values())
 
@@ -1263,6 +1283,8 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
     if (args.start is None) != (args.end is None):
         ap.error("--start and --end go together")
+    if args.start is not None and args.end is not None and args.start > args.end:
+        ap.error("--start must not be after --end")
     window: Window = (args.start, args.end) if args.start else None
 
     log = setup_logging(Config.LOGS_DIR / "02_run_transformations.log")
