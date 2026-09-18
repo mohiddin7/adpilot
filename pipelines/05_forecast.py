@@ -435,6 +435,7 @@ class ForecastPipeline:
             )
             return pd.DataFrame()
 
+        mature = common.mature_through_sql(Config.gold_ref())
         sql = f"""
         SELECT
             date,
@@ -443,10 +444,8 @@ class ForecastPipeline:
             SUM(conversions) AS daily_conversions
         FROM `{Config.gold_ref()}`
         WHERE
-            date >= DATE_SUB(
-                (SELECT MAX(date) FROM `{Config.gold_ref()}`),
-                INTERVAL {Config.LOOKBACK_DAYS - 1} DAY
-            )
+            date BETWEEN DATE_SUB({mature}, INTERVAL {Config.LOOKBACK_DAYS - 1} DAY)
+                     AND {mature}
         GROUP BY date, platform
         ORDER BY platform, date
         """

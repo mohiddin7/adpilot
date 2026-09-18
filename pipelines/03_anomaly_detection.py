@@ -506,7 +506,7 @@ class AnomalyDetectionPipeline:
         because the gold grain includes sub_group_id — we want CPA at the
         campaign level (SUM(spend) / SUM(conversions)), not per ad set.
 
-        Anchored to MAX(date) in gold so the script is data-date-agnostic.
+        Anchored to the newest mature date (MAX(date) − RESTATING_DAYS) so the script is data-date-agnostic.
         Rows with zero conversions are filtered out in the engine, not here,
         so the engine has visibility into a campaign's full history.
         """
@@ -521,7 +521,8 @@ class AnomalyDetectionPipeline:
 
         sql = f"""
         WITH bounds AS (
-            SELECT MAX(date) AS max_d FROM `{Config.gold_ref()}`
+            SELECT DATE_SUB(MAX(date), INTERVAL {common.RESTATING_DAYS} DAY) AS max_d
+            FROM `{Config.gold_ref()}`
         )
         SELECT
             date,
@@ -532,8 +533,8 @@ class AnomalyDetectionPipeline:
             SUM(conversions) AS conversions
         FROM `{Config.gold_ref()}`
         CROSS JOIN bounds
-        WHERE date >= DATE_SUB(bounds.max_d,
-                               INTERVAL {Config.LOOKBACK_WINDOW_DAYS - 1} DAY)
+        WHERE date BETWEEN DATE_SUB(bounds.max_d, INTERVAL {Config.LOOKBACK_WINDOW_DAYS - 1} DAY)
+                       AND bounds.max_d
         GROUP BY date, platform, campaign_id, campaign_name
         ORDER BY platform, campaign_id, date
         """

@@ -407,6 +407,7 @@ class BudgetOptimizerPipeline:
             )
             return pd.DataFrame()
 
+        mature = common.mature_through_sql(Config.gold_ref())
         sql = f"""
         SELECT
             platform,
@@ -416,10 +417,8 @@ class BudgetOptimizerPipeline:
             MAX(date)               AS period_end
         FROM `{Config.gold_ref()}`
         WHERE
-            date >= DATE_SUB(
-                (SELECT MAX(date) FROM `{Config.gold_ref()}`),
-                INTERVAL {Config.LOOKBACK_DAYS - 1} DAY
-            )
+            date BETWEEN DATE_SUB({mature}, INTERVAL {Config.LOOKBACK_DAYS - 1} DAY)
+                     AND {mature}
         GROUP BY platform
         HAVING SUM(conversions) > 0
            AND SUM(spend) > 0
