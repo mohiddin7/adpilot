@@ -61,10 +61,12 @@ def test_deterministic_tier_end_to_end(tmp_path):
     assert not (tmp_path / "README.md").exists()  # badge only touched for the default model-tier report dir
 
 
-def test_debug_flag_logs_each_case(caplog, tmp_path):
+def test_debug_flag_logs_each_case_with_progress_and_timing(caplog, tmp_path):
     with caplog.at_level("DEBUG", logger="evals"):
         run(tier="deterministic", out_dir=tmp_path, readme=tmp_path / "R.md", families={"scope"}, limit=1, debug=True)
-    assert any("case sc_weather: turn 1/1" in r.message for r in caplog.records)
+    msgs = [r.message for r in caplog.records]
+    assert any("[1/1] sc_weather (scope):" in m for m in msgs)
+    assert any(m.startswith("[1/1] sc_weather done in") and "refused=" in m for m in msgs)
 
 
 def test_check_only(tmp_path):

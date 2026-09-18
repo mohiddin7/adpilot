@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 import sys
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 
 from adpilot.connectors import get_connector
 from adpilot.core import schema
@@ -35,6 +39,8 @@ from evals.task import RecordingSource, load_fixtures, make_task
 MODEL_REPORTS = REPO_ROOT / "evals" / "reports"
 DET_REPORTS = REPO_ROOT / ".adpilot" / "evals"
 
+log = logging.getLogger(__name__)
+
 
 @dataclass
 class RunResult:
@@ -60,7 +66,9 @@ def run(
     debug: bool = False,
 ) -> RunResult:
     if debug:
-        logging.basicConfig(level=logging.DEBUG, format="%(message)s")
+        # WARNING as the default keeps httpx/httpcore/asyncio's own (very verbose) debug logging
+        # quiet; only our "evals" logger is turned up, so --debug shows just our per-case lines.
+        logging.basicConfig(level=logging.WARNING, format="%(message)s")
         logging.getLogger("evals").setLevel(logging.DEBUG)
     pack = load_pack(pack_name)
     connector = get_connector("duckdb", pack)
@@ -102,19 +110,45 @@ def run(
             models["judge"] = cfg.primary if judge_model else None
 
     judge_mod.CALLS["n"] = 0
-    # A live progress bar and our own debug logging fight for the same terminal lines, so debug
-    # mode carries its own visibility (log line per case) and turns the bar off.
-    show_progress = sys.stdout.isatty() and not debug
     evaluators = [Factual(connector, pack), Refuses(), SafeSql(pack), Trajectory(), CalibratedJudge(judge_model, connector, pack)]
     task = make_task(agent, deps_factory, model_for)
-    report = to_dataset(cases, evaluators).evaluate_sync(task, max_concurrency=1, progress=show_progress)
 
-    repeat_report = None
     sample = [c for c in cases if c.consistency]
-    if tier == "model" and repeat > 1 and sample:
-        repeat_report = to_dataset(sample, [Factual(connector, pack)]).evaluate_sync(
-            task, max_concurrency=1, progress=show_progress, repeat=repeat
-        )
+    total_tasks = len(cases) + (repeat * len(sample) if tier == "model" and repeat > 1 else 0)
+    family_of = {c.name: c.family for c in cases}
+    counter = itertools.count(1)
+    # pydantic-evals' own bar and our own debug logging both want the terminal to themselves, so
+    # debug mode gets a log line per case (with timing) instead of the bar.
+    bar = (
+        Progress(TextColumn("[progress.description]{task.description}"), BarColumn(), MofNCompleteColumn(), TimeElapsedColumn())
+        if sys.stdout.isatty() and not debug
+        else None
+    )
+
+    def counted_task(inputs):
+        i = next(counter)
+        if debug:
+            log.debug("[%d/%d] %s (%s): %s", i, total_tasks, inputs.name, family_of.get(inputs.name, "?"), inputs.final_question)
+        trace = task(inputs)
+        if debug:
+            log.debug(
+                "[%d/%d] %s done in %.2fs — %d model call(s), %d repair(s), refused=%s — %s",
+                i, total_tasks, inputs.name, trace.duration_s, trace.model_calls, trace.repairs, trace.refused,
+                (trace.answer.answer_md or "")[:160],
+            )
+        elif bar is not None:
+            bar.update(bar_task_id, advance=1)
+        return trace
+
+    with bar or nullcontext():
+        bar_task_id = bar.add_task("Evaluating", total=total_tasks) if bar else None
+        report = to_dataset(cases, evaluators).evaluate_sync(counted_task, max_concurrency=1, progress=False)
+
+        repeat_report = None
+        if tier == "model" and repeat > 1 and sample:
+            repeat_report = to_dataset(sample, [Factual(connector, pack)]).evaluate_sync(
+                counted_task, max_concurrency=1, progress=False, repeat=repeat
+            )
 
     traces = {c.name: c.output for c in report.cases if c.output is not None}
     invariants = evaluate_invariants(traces, connector, pack)
