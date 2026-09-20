@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import date, timedelta
+import zlib
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
@@ -122,6 +125,191 @@ def write_seasonality() -> dict:
     CALIBRATION_DIR.mkdir(exist_ok=True)
     SEASONALITY_PATH.write_text(json.dumps(cal, indent=1) + "\n")
     return cal
+
+
+GENERATOR_VERSION = "1"
+SEED = 20240131
+HISTORY_START = date(2024, 1, 31)       # first synthetic day; data/raw holds 2024-01-01 … 01-30
+MATURITY = {1: 0.85, 2: 0.95}           # age in days → share of final conversions reported; final from age 3
+DOW_STRENGTH = 0.5                      # GA's corporate-buyer weekend dip is stronger than consumer retail
+ACTIVE_P = 0.92                         # the real exports: 110 rows over 120 campaign-days
+ANOMALY_P = 1 / 60
+MIN_PLANT_CONVERSIONS = 5               # below this, CPA is noise and a plant would test nothing
+CREATIVE_DAYS = 90                      # CTR fatigue resets when the creative refreshes
+LAUNCH_EVERY_DAYS = 91                  # about one launch and one pause per platform per quarter
+NEW_NAMES = ("Seasonal_Push", "Retargeting_Refresh", "Prospecting_Broad", "Lookalike_Expansion", "Promo_Flash", "Always_On")
+
+
+@lru_cache(maxsize=1)
+def _seasonality() -> dict:
+    return json.loads(SEASONALITY_PATH.read_text())
+
+
+@lru_cache(maxsize=1)
+def _levels() -> dict:
+    return json.loads(LEVELS_PATH.read_text())
+
+
+def _rng(*parts: str | int) -> np.random.Generator:
+    """A stream fixed by `parts`. crc32 for strings, because Python's hash() is salted per process."""
+    return np.random.default_rng([SEED, *(zlib.crc32(p.encode()) if isinstance(p, str) else p for p in parts)])
+
+
+@dataclass(frozen=True)
+class Campaign:
+    platform: str
+    campaign_id: str
+    campaign_name: str
+    sub_id: str
+    sub_name: str
+    start: date
+    end: date | None = None                                        # last active day; None while running
+    level: dict = field(default_factory=dict, compare=False, hash=False)
+
+
+@lru_cache(maxsize=None)
+def roster(platform: str, until: date) -> tuple[Campaign, ...]:
+    """Every campaign on `platform` from HISTORY_START to `until`. The real campaigns continue; every
+    LAUNCH_EVERY_DAYS one running campaign pauses and a new one launches from a real campaign's level at its own
+    scale. A shorter `until` never changes a campaign that started before it."""
+    seeds = _levels()[platform]["campaigns"]
+    pc, ps = PLATFORMS[platform]["ids"]
+    next_c = max(int(s["campaign_id"].removeprefix(pc)) for s in seeds)
+    next_s = max(int(s["sub_id"].removeprefix(ps)) for s in seeds)
+    running = [Campaign(platform, s["campaign_id"], s["campaign_name"], s["sub_id"], s["sub_name"], HISTORY_START,
+                        level=s["level"]) for s in seeds]
+    paused = []
+    launch = HISTORY_START + timedelta(days=LAUNCH_EVERY_DAYS)
+    while launch <= until:
+        r = _rng("roster", platform, launch.toordinal())
+        paused.append(replace(running.pop(int(r.integers(len(running)))), end=launch - timedelta(days=1)))
+        template = seeds[int(r.integers(len(seeds)))]["level"]
+        name = NEW_NAMES[int(r.integers(len(NEW_NAMES)))]
+        next_c, next_s = next_c + 1, next_s + 1
+        running.append(Campaign(platform, f"{pc}{next_c}", f"{name}_{launch:%Y_%m}", f"{ps}{next_s}", f"{name}_Audience",
+                                launch, level={**template, "imp": template["imp"] * float(r.lognormal(0, 0.25))}))
+        launch += timedelta(days=LAUNCH_EVERY_DAYS)
+    return tuple(paused + running)
+
+
+def season(d: date) -> float:
+    """Demand index: GA day-of-year shape × damped weekday × retail event."""
+    cal = _seasonality()
+    idx = cal["doy"][d.timetuple().tm_yday - 1] * cal["dow"][d.weekday()] ** DOW_STRENGTH
+    for name, days in retail_events(d.year).items():
+        if d in days:
+            idx *= cal["events"][name]
+    return idx
+
+
+def _q4_cpm(d: date) -> float:
+    # ponytail: hand-set Q4 auction inflation (the GA sample has no cost); replace with a measured CPM index if one appears
+    if d.month == 11:
+        return 1.25
+    return 1.35 if d.month == 12 and d.day <= 20 else 1.0
+
+
+def _plant(campaign_id: str, d: date) -> tuple[str, float] | None:
+    r = _rng("plant", campaign_id, d.toordinal())
+    if r.random() >= ANOMALY_P:
+        return None
+    if r.random() < 0.5:
+        return "HIGH_CPA", float(r.uniform(0.25, 0.4))    # broken pixel or landing page
+    return "LOW_CPA", float(r.uniform(4.0, 6.0))          # duplicate conversion firing
+
+
+def _drift(c: Campaign, last: date) -> np.ndarray:
+    """Multiplicative walk from the campaign's start: ±0.5 %/day, clipped to 0.5–2×. One stream per campaign, so a
+    date's value never depends on how far the window reaches."""
+    n = (last - c.start).days + 1
+    return np.clip(np.exp(np.cumsum(_rng("drift", c.campaign_id).normal(0, 0.005, n))), 0.5, 2.0)
+
+
+def _facebook(lv, r, row):
+    imp = row["impressions"]
+    reach = min(imp, round(imp / (lv["freq"] * float(r.lognormal(0, 0.03)))))
+    return {"video_views": int(r.binomial(imp, min(lv["vv"], 1.0))),
+            "engagement_rate": round(lv["er"] * float(r.lognormal(0, 0.15)), 4),
+            "reach": reach, "frequency": round(imp / reach, 2) if reach else 0.0}
+
+
+def _google(lv, r, row):
+    imp, clicks, cost = row["impressions"], row["clicks"], row["cost"]
+    return {"conversion_value": round(row["conversions"] * lv["aov"] * float(r.lognormal(0, 0.05)), 2),
+            "ctr": round(clicks / imp, 4) if imp else 0.0, "avg_cpc": round(cost / clicks, 2) if clicks else 0.0,
+            "quality_score": int(lv["qs"]),
+            "search_impression_share": round(min(1.0, lv["sis"] * float(r.lognormal(0, 0.05))), 2)}
+
+
+def _tiktok(lv, r, row):
+    views = [int(r.binomial(row["impressions"], min(lv["vv"], 1.0)))]
+    for q in lv["q"]:
+        views.append(int(r.binomial(views[-1], min(q, 1.0))))
+    return {"video_views": views[0], "video_watch_25": views[1], "video_watch_50": views[2],
+            "video_watch_75": views[3], "video_watch_100": views[4],
+            "likes": int(r.binomial(views[0], min(lv["like"], 1.0))),
+            "shares": int(r.binomial(views[0], min(lv["share"], 1.0))),
+            "comments": int(r.binomial(views[0], min(lv["comment"], 1.0)))}
+
+
+_PLATFORM_COLUMNS = {"facebook": _facebook, "google": _google, "tiktok": _tiktok}
+
+
+def _row(c: Campaign, d: date, as_of: date, drift: float) -> tuple[dict, tuple[str, float] | None]:
+    """One campaign-day as reported on as_of, and the anomaly that took effect in it (None if none did). Every draw
+    happens in the same order whatever as_of is: restatement changes counts, never the noise."""
+    p, lv = PLATFORMS[c.platform], c.level
+    r = _rng("day", c.campaign_id, d.toordinal())
+    idx = season(d)
+    fatigue = 1 - 0.2 * ((d - c.start).days % CREATIVE_DAYS) / CREATIVE_DAYS
+    impressions = int(r.poisson(lv["imp"] * idx ** 0.5 * drift))
+    clicks = int(r.binomial(impressions, min(lv["ctr"] * fatigue, 1.0)))
+    final = int(r.binomial(clicks, min(lv["cvr"] * idx ** 0.5, 1.0)))
+    spend = round(impressions / 1000 * lv["cpm"] * _q4_cpm(d) * float(r.lognormal(0, 0.05)), 2)
+    plant = _plant(c.campaign_id, d) if final >= MIN_PLANT_CONVERSIONS else None
+    if plant:
+        final = min(clicks, round(final * plant[1]))
+    row = {"date": d.isoformat(), "campaign_id": c.campaign_id, "campaign_name": c.campaign_name,
+           f"{p['sub']}_id": c.sub_id, f"{p['sub']}_name": c.sub_name, "impressions": impressions, "clicks": clicks,
+           p["cost"]: spend, "conversions": int(final * MATURITY.get((as_of - d).days, 1.0))}
+    row |= _PLATFORM_COLUMNS[c.platform](lv, r, row)
+    return row, plant
+
+
+def _simulate(start: date, end: date, as_of: date, today: date | None) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    today = today or datetime.now(timezone.utc).date()
+    if not HISTORY_START <= start <= end:
+        raise ValueError(f"need {HISTORY_START} <= start <= end, got {start} … {end}")
+    if end >= today:
+        raise ValueError(f"end {end} is not before today {today} (UTC): a day is reported only once it is over")
+    if as_of <= end:
+        raise ValueError(f"as_of {as_of} must be after end {end}")
+    frames, labels = {}, []
+    for platform, p in PLATFORMS.items():
+        rows = []
+        for c in roster(platform, end):
+            first, last = max(start, c.start), min(end, c.end or end)
+            if last < first:
+                continue
+            walk = _drift(c, last)
+            d = first
+            while d <= last:
+                if _rng("active", c.campaign_id, d.toordinal()).random() < ACTIVE_P:
+                    row, plant = _row(c, d, as_of, float(walk[(d - c.start).days]))
+                    rows.append(row)
+                    if plant:
+                        labels.append({"date": d, "platform": p["label"], "campaign_id": c.campaign_id,
+                                       "direction": plant[0], "factor": round(plant[1], 3)})
+                d += timedelta(days=1)
+        frames[platform] = (pd.DataFrame(rows, columns=_levels()[platform]["header"])
+                            .sort_values(["date", "campaign_id"], ignore_index=True))
+    return frames, pd.DataFrame(labels, columns=["date", "platform", "campaign_id", "direction", "factor"])
+
+
+def generate(start: date, end: date, as_of: date, *, today: date | None = None) -> dict[str, pd.DataFrame]:
+    """Rows for start … end as the platforms report them on as_of, in each real export's column order.
+    Same arguments → same bytes, and a date's values depend only on its age (as_of − date)."""
+    return _simulate(start, end, as_of, today)[0]
 
 
 if __name__ == "__main__":
