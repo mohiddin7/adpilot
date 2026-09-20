@@ -218,6 +218,13 @@ def _plant(campaign_id: str, d: date) -> tuple[str, float] | None:
     return "LOW_CPA", float(r.uniform(4.0, 6.0))          # duplicate conversion firing
 
 
+def _creative_phase(campaign_id: str) -> int:
+    """A per-campaign offset into the CREATIVE_DAYS cycle, so the fleet's fatigue resets don't all land on the
+    same day (they would otherwise: every real campaign starts on HISTORY_START). Seeded by campaign id only,
+    so it never depends on the window or on `d`."""
+    return int(_rng("creative", campaign_id).integers(CREATIVE_DAYS))
+
+
 def _drift(c: Campaign, last: date) -> np.ndarray:
     """Multiplicative walk from the campaign's start: ±0.5 %/day, clipped to 0.5–2×. One stream per campaign, so a
     date's value never depends on how far the window reaches."""
@@ -261,7 +268,7 @@ def _row(c: Campaign, d: date, as_of: date, drift: float) -> tuple[dict, tuple[s
     p, lv = PLATFORMS[c.platform], c.level
     r = _rng("day", c.campaign_id, d.toordinal())
     idx = season(d)
-    fatigue = 1 - 0.2 * ((d - c.start).days % CREATIVE_DAYS) / CREATIVE_DAYS
+    fatigue = 1 - 0.2 * (((d - c.start).days + _creative_phase(c.campaign_id)) % CREATIVE_DAYS) / CREATIVE_DAYS
     impressions = int(r.poisson(lv["imp"] * idx ** 0.5 * drift))
     clicks = int(r.binomial(impressions, min(lv["ctr"] * fatigue, 1.0)))
     final = int(r.binomial(clicks, min(lv["cvr"] * idx ** 0.5, 1.0)))
@@ -284,6 +291,9 @@ def _simulate(start: date, end: date, as_of: date, today: date | None) -> tuple[
         raise ValueError(f"end {end} is not before today {today} (UTC): a day is reported only once it is over")
     if as_of <= end:
         raise ValueError(f"as_of {as_of} must be after end {end}")
+    if as_of > today:
+        raise ValueError(f"as_of {as_of} is after today {today} (UTC): a platform can't report a restatement "
+                         f"before as_of arrives")
     frames, labels = {}, []
     for platform, p in PLATFORMS.items():
         rows = []

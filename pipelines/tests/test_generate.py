@@ -96,3 +96,13 @@ def test_roster_launches_and_pauses_with_unique_ids():
     assert len(ids) == len(set(ids))
     assert sum(c.end is None for c in r) == 4                  # the running count stays at the real 4
     assert sum(c.start > gen.HISTORY_START for c in r) == sum(c.end is not None for c in r) > 0
+
+
+def test_refuses_an_as_of_after_today():
+    with pytest.raises(ValueError):
+        gen.generate(date(2026, 9, 20), date(2026, 9, 21), TODAY + timedelta(days=1), today=TODAY)
+
+
+def test_creative_fatigue_resets_are_staggered_across_campaigns():
+    real = [c for p in gen.PLATFORMS for c in gen.roster(p, date(2024, 12, 31)) if c.start == gen.HISTORY_START]
+    assert len({gen._creative_phase(c.campaign_id) for c in real}) > 1
