@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext, UnexpectedModelBehavior, UsageLimitExceeded, UsageLimits
@@ -12,12 +14,14 @@ from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
 
+from adpilot.core.audit import build_record, new_trace_id, primary_model_name
 from adpilot.core.chart import ChartSpec, heuristic_chart
 from adpilot.core.errors import AdPilotError, ErrorKind
 from adpilot.core.guardrails import Budget, is_in_scope, sanitize_question
 from adpilot.core.tools import AgentDeps, SqlResult, execute, records, register_tools
 
 log = logging.getLogger(__name__)
+Agent.instrument_all()
 
 MAX_MODEL_CALLS = 4
 
@@ -61,24 +65,46 @@ REFUSAL_TEXT = (
 )
 
 
+def refused(answer: AnalystAnswer) -> bool:
+    """True for a model Refusal, an out-of-scope block, or a guard rejection (sanitize_question)."""
+    blocked_by_guard = answer.caveats == ["SqlPolicy"] and answer.confidence == 0.0
+    return "OutOfScope" in answer.caveats or answer.answer_md == REFUSAL_TEXT or blocked_by_guard
+
+
 def ask(
     agent: Agent[AgentDeps, AnalystAnswer | Refusal],
     deps: AgentDeps,
     question: str,
     history: Sequence[ModelMessage] | None = None,
     model: Model | str | None = None,
-) -> tuple[AnalystAnswer, list[ModelMessage]]:
-    """Guard → run → map failures. Never raises for model/data problems; returns (answer, new_messages)."""
+) -> tuple[AnalystAnswer, list[ModelMessage], str]:
+    """Guard → run → map failures. Never raises for model/data problems; returns (answer, new_messages, trace_id).
+
+    Every exit path buffers one AuditRecord in deps.audit (no I/O here — the caller flushes)."""
+    trace_id = new_trace_id()
+    started, t0 = datetime.now(UTC), time.perf_counter()
+    asked = question
+    model_requested = primary_model_name(model) or primary_model_name(agent.model)
+
+    def done(answer: AnalystAnswer, messages: list[ModelMessage], usage=None) -> tuple[AnalystAnswer, list[ModelMessage], str]:
+        deps.audit.record(build_record(
+            trace_id=trace_id, ts=started, latency_s=time.perf_counter() - t0, question=asked, answer_md=answer.answer_md,
+            sql=answer.sql, refused=refused(answer), confidence=answer.confidence, caveats=answer.caveats, messages=messages,
+            usage=usage, model_requested=model_requested, context=deps.run_context, pack_name=deps.pack.name,
+            prompt_hash=deps.pack.prompt_hash,
+        ))
+        return answer, messages, trace_id
+
     try:
         question = sanitize_question(question)
     except AdPilotError as exc:
-        return AnalystAnswer(answer_md=exc.message, confidence=0.0, caveats=[exc.kind]), []
+        return done(AnalystAnswer(answer_md=exc.message, confidence=0.0, caveats=[exc.kind]), [])
     if not is_in_scope(question):
-        return AnalystAnswer(answer_md=REFUSAL_TEXT, confidence=1.0, caveats=["OutOfScope"]), []
+        return done(AnalystAnswer(answer_md=REFUSAL_TEXT, confidence=1.0, caveats=["OutOfScope"]), [])
 
     deps.budget = Budget()
     if model is None and agent.model is None:
-        return _rule_based(deps, question, "ModelUnavailable", "No model API key configured"), []
+        return done(_rule_based(deps, question, "ModelUnavailable", "No model API key configured"), [])
 
     try:
         result = agent.run_sync(
@@ -91,14 +117,15 @@ def ask(
     except Exception as exc:  # noqa: BLE001 — every failure mode maps to a typed fallback
         kind, detail = _classify(exc)
         log.warning("agent run failed (%s): %s", kind, detail[:300])
-        return _rule_based(deps, question, kind, detail), []
+        return done(_rule_based(deps, question, kind, detail), [])
 
     out = result.output
+    usage = result.usage() if callable(result.usage) else result.usage
     if isinstance(out, Refusal):
-        return AnalystAnswer(answer_md=REFUSAL_TEXT, confidence=1.0, caveats=["OutOfScope", out.reason]), result.new_messages()
+        return done(AnalystAnswer(answer_md=REFUSAL_TEXT, confidence=1.0, caveats=["OutOfScope", out.reason]), result.new_messages(), usage)
     if out.data is None and deps.last_result is not None:
         out.data = records(deps.last_result.head(deps.pack.max_result_rows))
-    return out, result.new_messages()
+    return done(out, result.new_messages(), usage)
 
 
 def _classify(exc: Exception) -> tuple[ErrorKind, str]:

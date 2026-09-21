@@ -25,6 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+logfire = ["logfire>=5"]
 
 [project.scripts]
 adpilot = "adpilot.cli:main"

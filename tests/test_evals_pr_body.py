@@ -19,3 +19,9 @@ def test_render_regression_and_no_baseline():
     body = render(sc(60.0, rt=0.9), sc(76.0))
     assert "- [ ] Red-team refusal 100%" in body and "Label: `evals:regression`" in body and "dropped" in body
     assert "no baseline" in render(sc(70.0), None)
+
+
+def test_render_shows_run_id_and_cost():
+    latest = sc(78.0).model_copy(update={"run_id": "run_abc", "tokens_in": 5000, "tokens_out": 900, "cost_usd": 0.05})
+    body = render(latest, None)
+    assert "run_abc" in body and "5000 in / 900 out" in body and "$0.0500" in body

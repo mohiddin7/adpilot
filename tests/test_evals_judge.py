@@ -73,3 +73,24 @@ def test_calibration_agreement(pack):
     always_pass = verdict_model()
     res = run_calibration(always_pass, pack)
     assert res.n == 10 and res.agreement == 0.5 and len(res.mismatches) == 5  # 5 fail-labelled entries mismatched
+
+
+def test_judge_answer_records_a_judge_call(pack):
+    from adpilot.core.audit import MemorySink, RunContextInfo
+
+    sink = MemorySink()
+    v = judge_answer(verdict_model(), "q", "rubric", [{"spend": 1}], "answer", audit=sink, context=RunContextInfo(source="judge", run_id="r", case_name="c"))
+    rec = sink.calls[-1]
+    assert v.score == 1.0 and rec.source == "judge" and rec.run_id == "r" and rec.case_name == "c" and rec.requests == 1
+    assert rec.question == "q" and '"grounded":true' in rec.answer_md and rec.attributes["rubric"] == "rubric"
+
+
+def test_judge_error_is_recorded_as_judge_error_kind():
+    from adpilot.core.audit import MemorySink
+
+    def boom(messages, info):
+        raise RuntimeError("down")
+
+    sink = MemorySink()
+    judge_answer(FunctionModel(boom), "q", "r", [], "a", audit=sink)
+    assert sink.calls[-1].error_kind == "JudgeError" and sink.calls[-1].caveats[0].startswith("JudgeError: judge_error")

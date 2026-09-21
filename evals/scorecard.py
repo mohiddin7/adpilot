@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,6 +64,10 @@ class Scorecard(BaseModel):
     cases: dict[str, bool | None] = {}
     flips: dict[str, list[str]] = {"regressed": [], "fixed": []}
     failures_by_kind: dict[str, int] = {}
+    run_id: str | None = None
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
 
 
 def collect(report: Any, judge_reliable: bool) -> list[CaseResult]:
@@ -102,7 +105,10 @@ def _pct(x: float | None) -> float | None:
     return None if x is None else round(x * 100, 1)
 
 
-def build_scorecard(results, repeat_results, invariants, calibration, *, tier, prompt_hash, models, calls_used, baseline) -> Scorecard:
+def build_scorecard(
+    results, repeat_results, invariants, calibration, *, tier, prompt_hash, models, calls_used, baseline,
+    run_id=None, tokens_in=0, tokens_out=0, cost_usd=0.0,
+) -> Scorecard:
     judge_reliable = bool(calibration and calibration.reliable)
     # a judge rescue counts as a pass only while the judge is trusted
     results = [
@@ -162,6 +168,7 @@ def build_scorecard(results, repeat_results, invariants, calibration, *, tier, p
         paraphrase_agreement=agreement, invariants=inv, judge_agreement=(calibration.agreement if calibration else None),
         judge_reliable=judge_reliable, judge_rescued=sum(bool(r.judge_rescued) for r in results), dimensions=dims,
         overall=overall, cases=cases, flips=flips, failures_by_kind=dict(sorted(kinds.items())),
+        run_id=run_id, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd,
     )
 
 
@@ -179,11 +186,7 @@ def gate(sc: Scorecard, baseline: Scorecard | None) -> tuple[bool, list[str]]:
 
 
 def prompt_hash(pack: Any) -> str:
-    import yaml
-
-    tables = yaml.safe_dump(pack.raw.get("tables", {}), sort_keys=True)
-    blob = pack.system_prompt + "\n" + pack.glossary + "\n" + tables
-    return hashlib.sha256(blob.encode()).hexdigest()[:12]
+    return pack.prompt_hash
 
 
 def load_baseline(path: Path) -> Scorecard | None:
@@ -212,7 +215,7 @@ def render_markdown(sc: Scorecard, baseline: Scorecard | None) -> str:
     delta = f" ({sc.overall - baseline.overall:+.1f} vs baseline {baseline.overall})" if baseline else " (no baseline)"
     lines = [
         "# AdPilot eval scorecard", "",
-        f"**Overall: {sc.overall}**{delta} · tier `{sc.tier}` · {sc.run_at} · prompt `{sc.prompt_hash}` · {sc.calls_used} model calls",
+        f"**Overall: {sc.overall}**{delta} · tier `{sc.tier}` · {sc.run_at} · prompt `{sc.prompt_hash}` · {sc.calls_used} model calls · run `{sc.run_id or 'n/a'}`",
         f"Gate: {'PASS' if ok else 'FAIL'}" + (" — " + "; ".join(reasons) if reasons else ""), "",
         "| Dimension | Weight | Score |", "|---|---|---|",
         *[f"| {d} | {int(w * 100)}% | {_fmt(sc.dimensions.get(d))} |" for d, w in sc.weights.items()], "",
@@ -222,7 +225,8 @@ def render_markdown(sc: Scorecard, baseline: Scorecard | None) -> str:
         f"- Consistency: pass^{sc.pass_k.get('k', 0)} = {_fmt(_pct(sc.pass_k.get('rate')))} over {sc.pass_k.get('cases', 0)} cases; paraphrase agreement {_fmt(_pct(sc.paraphrase_agreement))}",
         f"- Safe SQL rate: {_fmt(sc.safe_sql_rate)}; trajectory: " + ", ".join(f"{k} {v:.1f}%" for k, v in sc.trajectory.items()),
         f"- Judge: agreement with calibration set {_fmt(_pct(sc.judge_agreement))} → {'reliable' if sc.judge_reliable else 'UNRELIABLE (quality excluded)'}; rescued {sc.judge_rescued} factual cases",
-        f"- Models: agent {sc.models.get('agent_primary')} → {sc.models.get('agent_fallback')}; judge {sc.models.get('judge')}", "",
+        f"- Models: agent {sc.models.get('agent_primary')} → {sc.models.get('agent_fallback')}; judge {sc.models.get('judge')}",
+        f"- Cost: {sc.tokens_in} in / {sc.tokens_out} out tokens, ${sc.cost_usd:.4f}", "",
     ]
     lines += ["## Flipped cases", "", f"- Regressed: {', '.join(sc.flips['regressed']) or 'none'}", f"- Fixed: {', '.join(sc.flips['fixed']) or 'none'}", ""]
     if sc.failures_by_kind:

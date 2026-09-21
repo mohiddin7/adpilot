@@ -108,8 +108,10 @@ def test_model_tier_end_to_end_narrative(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr(run_module, "build_model", lambda: _scripted_agent_model())
     monkeypatch.setattr(run_module, "build_judge_model", lambda cfg: _scripted_judge_model())
+    from adpilot.core.audit import MemorySink
+
     tmp_readme = tmp_path / "README.md"
-    res = run(tier="model", families={"narrative"}, repeat=1, out_dir=tmp_path, readme=tmp_readme)
+    res = run(tier="model", families={"narrative"}, repeat=1, out_dir=tmp_path, readme=tmp_readme, audit=MemorySink())
     sc = res.scorecard
     assert sc is not None
     assert sc.families["narrative"].rate == 1.0
@@ -130,9 +132,96 @@ def test_model_tier_badge_updates_readme_with_relative_out_dir(monkeypatch, tmp_
     monkeypatch.setattr(run_module, "MODEL_REPORTS", reports_dir)
     tmp_readme = tmp_path / "README.md"
     tmp_readme.write_text("before\n![evals](https://img.shields.io/badge/evals-pending-lightgrey)\nafter\n")
+    from adpilot.core.audit import MemorySink
+
     rel_out_dir = os.path.relpath(reports_dir)
-    res = run(tier="model", families={"narrative"}, repeat=1, out_dir=rel_out_dir, readme=tmp_readme)
+    res = run(tier="model", families={"narrative"}, repeat=1, out_dir=rel_out_dir, readme=tmp_readme, audit=MemorySink())
     assert res.scorecard is not None
     text = tmp_readme.read_text()
     assert "evals-pending-lightgrey" not in text
     assert Path(rel_out_dir).resolve() == reports_dir.resolve()
+
+
+def test_model_tier_writes_calls_scores_and_run_to_the_sink(monkeypatch, tmp_path):
+    from adpilot.core.audit import MemorySink
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(run_module, "build_model", lambda: _scripted_agent_model())
+    monkeypatch.setattr(run_module, "build_judge_model", lambda cfg: _scripted_judge_model())
+    sink = MemorySink()
+    res = run(tier="model", families={"narrative"}, repeat=1, out_dir=tmp_path, readme=tmp_path / "R.md", audit=sink)
+    sc = res.scorecard
+    assert res.run_id and res.run_id.startswith("run_") and sc.run_id == res.run_id and res.audit is not None and res.audit.ok
+    agent_rows = [r for r in sink.calls if r.source == "eval"]
+    judge_rows = [r for r in sink.calls if r.source == "judge"]
+    assert len(agent_rows) == 10 and all(r.run_id == res.run_id and r.family == "narrative" and r.case_name for r in agent_rows)
+    assert len(judge_rows) == 10 + 10  # one per narrative case + the 10 calibration entries
+    assert all(r.run_id == res.run_id and r.case_name and r.family in ("narrative", "calibration") for r in judge_rows)
+    assert {s.name for s in sink.scores} >= {"judge", "judge_pass", "safe_sql", "calls_ok"}
+    judge_scores = [s for s in sink.scores if s.name == "judge"]
+    assert judge_scores and all(s.source == "judge" and s.grader and s.passed is True for s in judge_scores)
+    assert {s.trace_id for s in sink.scores} == {r.trace_id for r in agent_rows}
+    assert len(sink.runs) == 1 and sink.runs[0].run_id == res.run_id and sink.runs[0].overall == sc.overall
+    assert sc.calls_used == sum(r.requests for r in sink.calls) and sc.calls_used > 0
+    assert sink.flushed == {"agent_calls": 30, "scores": len(sink.scores), "eval_runs": 1}  # 10 agent + 20 judge
+
+
+def test_deterministic_tier_uses_memory_sink_and_stamps_run_id(tmp_path):
+    res = run(tier="deterministic", families={"scope"}, limit=2, out_dir=tmp_path, readme=tmp_path / "R.md")
+    assert res.run_id and res.scorecard.run_id == res.run_id and res.audit is not None and res.audit.written["agent_calls"] == 2
+
+
+def test_model_tier_audit_unavailable_is_a_harness_error(monkeypatch, tmp_path):
+    from adpilot.core.audit import AuditUnavailable
+
+    class Broken:
+        def preflight(self):
+            raise AuditUnavailable("credentials", "no creds")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(run_module, "build_model", lambda: _scripted_agent_model())
+    res = run(tier="model", families={"scope"}, limit=1, out_dir=tmp_path, readme=tmp_path / "R.md", audit=Broken())
+    assert not res.ok and res.scorecard is None and res.problems == ["audit unavailable (credentials): no creds"]
+
+
+def test_unflushed_rows_fail_the_run_but_reports_are_written(monkeypatch, tmp_path):
+    from adpilot.core.audit import FlushReport, MemorySink
+
+    class Flaky(MemorySink):
+        reports_existed_at_flush: bool | None = None
+
+        def flush(self):
+            self.reports_existed_at_flush = (tmp_path / "latest.json").exists()
+            super().flush()
+            return FlushReport(written={}, failed={"agent_calls": 2}, errors=["agent_calls: 503"])
+
+    sink = Flaky()
+    res = run(tier="deterministic", families={"scope"}, limit=2, out_dir=tmp_path, readme=tmp_path / "R.md", audit=sink)
+    assert not res.ok and res.audit.pending == 2 and (tmp_path / "latest.json").exists() and res.scorecard is not None
+    assert sink.reports_existed_at_flush is True  # flush must run after write_reports, not before
+
+
+def test_scores_from_report_warns_when_a_raised_case_has_no_trace_id(caplog):
+    """A case whose task raised has output is None, so it has no agent_calls row to key scores on —
+    dropping it is correct, but it must not vanish with zero trace. Fake report/case: scores_from_report
+    only touches .cases[].{output,name,assertions,scores,evaluator_failures} via getattr/duck typing."""
+    from types import SimpleNamespace
+
+    from evals.run import scores_from_report
+
+    raised_case = SimpleNamespace(name="rt_drop_table", output=None, assertions={}, scores={}, evaluator_failures=[])
+    ok_case = SimpleNamespace(
+        name="sc_weather",
+        output=SimpleNamespace(trace_id="t1"),
+        assertions={"factual": SimpleNamespace(value=True, reason=None)},
+        scores={},
+        evaluator_failures=[],
+    )
+    report = SimpleNamespace(cases=[raised_case, ok_case])
+
+    with caplog.at_level("WARNING", logger="evals.run"):
+        rows = scores_from_report(report, "run_1", None)
+
+    assert [r.trace_id for r in rows] == ["t1"]  # the raised case contributed nothing
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("rt_drop_table" in m for m in warnings)

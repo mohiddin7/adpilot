@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import anyio
@@ -15,6 +17,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext
 
+from adpilot.core.audit import AuditSink, RunContextInfo, build_record, new_trace_id, primary_model_name
 from adpilot.core.models import RateLimited
 from evals.cases import ACCURACY_FAMILIES, Expected, reference_rows
 from evals.evaluators import Factual
@@ -25,8 +28,6 @@ DEFAULT_JUDGE_FALLBACK = "inclusionai/ling-3.0-flash-vl:free"
 DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1"
 JUDGE_RELIABLE_MIN = 0.8
 JUDGE_PASS_MIN = 0.75
-
-CALLS = {"n": 0}
 
 
 @dataclass
@@ -94,14 +95,37 @@ Return a verdict with four booleans:
 Also apply the case-specific rubric. Be strict: a wrong figure or a wrong winner fails grounded and no_invented_numbers."""
 
 
-def judge_answer(model: Model, question: str, rubric: str, data_rows: list[dict], answer_md: str) -> JudgeVerdict:
+def judge_answer(
+    model: Model,
+    question: str,
+    rubric: str,
+    data_rows: list[dict],
+    answer_md: str,
+    *,
+    audit: AuditSink | None = None,
+    context: RunContextInfo | None = None,
+    pack_name: str = "ads",
+) -> JudgeVerdict:
     agent: Agent[None, JudgeVerdict] = Agent(model, output_type=JudgeVerdict, instructions=_JUDGE_INSTRUCTIONS, retries=1, name="adpilot-judge")
     prompt = f"Question: {question}\n\nRubric: {rubric}\n\nData rows (max 30): {data_rows[:30]}\n\nAnswer to grade:\n{answer_md}"
+    started, t0 = datetime.now(UTC), time.perf_counter()
+    messages, usage, caveats = [], None, []
     try:
-        CALLS["n"] += 1
-        return agent.run_sync(prompt).output
+        result = agent.run_sync(prompt)
+        verdict = result.output
+        messages, usage = result.new_messages(), (result.usage() if callable(result.usage) else result.usage)
     except Exception as exc:  # noqa: BLE001 — a judge outage must not crash the run
-        return JudgeVerdict(grounded=False, answers_question=False, honest_caveats=False, no_invented_numbers=False, reason=f"judge_error: {exc}"[:200])
+        verdict = JudgeVerdict(grounded=False, answers_question=False, honest_caveats=False, no_invented_numbers=False, reason=f"judge_error: {exc}"[:200])
+        caveats = [f"JudgeError: {verdict.reason}"]
+    if audit is not None:
+        ctx = (context or RunContextInfo()).model_copy(update={"source": "judge"})
+        audit.record(build_record(
+            trace_id=new_trace_id(), ts=started, latency_s=time.perf_counter() - t0, question=question, answer_md=verdict.model_dump_json(),
+            sql=None, refused=False, confidence=verdict.score, caveats=caveats, messages=messages, usage=usage,
+            model_requested=primary_model_name(model), context=ctx, pack_name=pack_name, prompt_hash=None,
+            extra_attributes={"rubric": rubric},
+        ))
+    return verdict
 
 
 @dataclass
@@ -109,6 +133,8 @@ class CalibratedJudge(Evaluator[Any, Trace, dict]):
     model: Model | None
     connector: Any
     pack: Any
+    audit: Any = None
+    run_id: str | None = None
 
     def evaluate(self, ctx: EvaluatorContext) -> dict:
         if self.model is None:
@@ -119,7 +145,10 @@ class CalibratedJudge(Evaluator[Any, Trace, dict]):
         question = ctx.inputs.final_question
         if family == "narrative":
             rows = reference_rows(self.connector, self.pack, exp) if exp.sql else (trace.answer.data or [])
-            v = judge_answer(self.model, question, exp.rubric or "", rows, trace.answer.answer_md)
+            v = judge_answer(
+                self.model, question, exp.rubric or "", rows, trace.answer.answer_md,
+                audit=self.audit, context=RunContextInfo(source="judge", run_id=self.run_id, case_name=ctx.name, family=family), pack_name=self.pack.name,
+            )
             out: dict = {"judge": v.score, "judge_pass": v.score >= JUDGE_PASS_MIN}
             if v.reason.startswith("judge_error"):
                 out["judge_error"] = True
@@ -129,7 +158,10 @@ class CalibratedJudge(Evaluator[Any, Trace, dict]):
                 return {}
             rows = reference_rows(self.connector, self.pack, exp)
             rubric = "The answer states the same figures (and the same winner/ranking, if any) as the reference rows."
-            v = judge_answer(self.model, question, rubric, rows, trace.answer.answer_md)
+            v = judge_answer(
+                self.model, question, rubric, rows, trace.answer.answer_md,
+                audit=self.audit, context=RunContextInfo(source="judge", run_id=self.run_id, case_name=ctx.name, family=family), pack_name=self.pack.name,
+            )
             out = {"judge_rescued": v.grounded and v.no_invented_numbers and v.answers_question}
             if v.reason.startswith("judge_error"):
                 out["judge_error"] = True
@@ -153,11 +185,14 @@ class CalibrationResult:
         return self.n > 0 and self.agreement >= JUDGE_RELIABLE_MIN
 
 
-def run_calibration(model: Model, pack: Any) -> CalibrationResult:
+def run_calibration(model: Model, pack: Any, audit: AuditSink | None = None, run_id: str | None = None) -> CalibrationResult:
     entries = yaml.safe_load((pack.root / "judge_calibration.yaml").read_text())["entries"]
     mismatches: list[str] = []
     for e in entries:
-        v = judge_answer(model, e["question"], "Answer must be correct, grounded and honest.", e["data"], e["answer"])
+        v = judge_answer(
+            model, e["question"], "Answer must be correct, grounded and honest.", e["data"], e["answer"],
+            audit=audit, context=RunContextInfo(source="judge", run_id=run_id, case_name=e["name"], family="calibration"), pack_name=pack.name,
+        )
         if (v.score >= JUDGE_PASS_MIN) != (e["verdict"] == "pass"):
             mismatches.append(e["name"])
     n = len(entries)

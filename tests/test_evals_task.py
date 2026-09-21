@@ -31,6 +31,7 @@ def test_trace_records_sql_and_calls(eval_deps_factory):
     task = make_task(build_agent(), eval_deps_factory, model_for=lambda i: FunctionModel(fn))
     trace = task(EvalInputs(name="t", question="spend by platform"))
     assert isinstance(trace, Trace)
+    assert trace.trace_id
     assert trace.tool_calls == ["run_sql"]
     assert trace.sql_attempted == [GOOD]
     assert trace.sql_executed[0].startswith("SELECT platform") and trace.sql_executed[0].endswith("LIMIT 100")

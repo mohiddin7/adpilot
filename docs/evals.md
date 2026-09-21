@@ -51,3 +51,11 @@ run; the bot cannot change the baseline or anything outside `evals/reports/` and
 
 Append to `packs/ads/evals.yaml`, then run `adpilot eval --check-cases` (verifies the reference value on the
 DuckDB sample) and `adpilot eval` (deterministic tier). Expected values never appear in prompts.
+
+## Audit trail
+
+Every case (and every judge call) in a model-tier run is written to BigQuery: the call in `agent_calls`, each
+grade in `scores`, and the run's scorecard in `eval_runs`, all under the run's `run_id` (printed at the end and
+stored in `latest.json`). The deterministic tier uses an in-memory sink — it is a harness self-test, not agent
+behaviour. See [docs/observability.md](observability.md) for setup, the schema and example queries;
+`adpilot audit export --run <run_id>` gives the per-sample dump.
