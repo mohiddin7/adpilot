@@ -147,6 +147,6 @@ def test_build_record_without_model_result():
 
     rec = build_record(
         trace_id="t", ts=datetime.now(UTC), latency_s=0.0, question="q", answer_md="blocked", sql=None, refused=True, confidence=0.0,
-        caveats=["SqlPolicy"], messages=[], usage=None, model_requested="primary", context=RunContextInfo(), pack_name="ads", prompt_hash="abc",
+        caveats=["InputPolicy"], messages=[], usage=None, model_requested="primary", context=RunContextInfo(), pack_name="ads", prompt_hash="abc",
     )
-    assert rec.model_used is None and rec.fell_back is False and rec.tokens_in == 0 and rec.messages_json == "[]" and rec.error_kind == "SqlPolicy"
+    assert rec.model_used is None and rec.fell_back is False and rec.tokens_in == 0 and rec.messages_json == "[]" and rec.error_kind == "InputPolicy"

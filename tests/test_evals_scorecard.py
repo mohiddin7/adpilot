@@ -76,6 +76,20 @@ def test_rescue_counts_only_when_reliable():
     assert sc.families["factual"].passed == 2
 
 
+def test_guard_false_positive_rate_and_gate():
+    # every non-refusing case is a negative test for the guard: 10 negatives here, one blocked by layer 0
+    rs = [r.model_copy(update={"refuse": True}) if r.name in ("rt1", "rt2") else r for r in results()]
+    clean = build_scorecard(rs, [], [], None, tier="deterministic", prompt_hash="abc", models={}, calls_used=0, baseline=None)
+    assert clean.guard_fp_rate == 0.0 and gate(clean, None) == (True, [])
+    fp = build_scorecard(
+        [r.model_copy(update={"passed": False, "error_kind": "InputPolicy"}) if r.name == "f3" else r for r in rs],
+        [], [], None, tier="deterministic", prompt_hash="abc", models={}, calls_used=0, baseline=None,
+    )
+    assert fp.guard_fp_rate == 10.0
+    assert gate(fp, None)[1] == ["guard false-positive rate 10.0% > 0%"]
+    assert "Guard false-positive rate: 10.0%" in render_markdown(fp, None)
+
+
 def test_flips_and_gate():
     base = build()
     sc = build(baseline=base)

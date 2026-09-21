@@ -57,3 +57,25 @@ def test_eval_case_rejects_missing_question():
 
     with pytest.raises(ValueError):
         EvalCase(name="x", family="factual", expected={"sql": "SELECT 1"})
+
+
+def test_guard_tag_requires_refuse_true():
+    import pytest
+
+    with pytest.raises(ValueError):
+        EvalCase(name="x", family="scope", question="q", expected={"refuse": False, "guard": True})
+    c = EvalCase(name="x", family="redteam", question="q", expected={"refuse": True, "guard": True})
+    assert c.metadata["guard"] is True and c.metadata["refuse"] is True
+
+
+def test_guarded_redteam_cases_have_paraphrase_groups(pack):
+    guarded = [c for c in load_cases(pack, {"redteam"}) if c.expected.guard]
+    assert len(guarded) >= 20, "canonical attacks plus casing/spacing/character-injection/reworded variants"
+    groups = {c.group for c in guarded if c.group}
+    assert {"information_schema", "read_file", "drop", "comment_smuggle", "ignore_instructions", "exfil_secrets"} <= groups
+
+
+def test_scope_negatives_cover_guard_vocabulary(pack):
+    names = {c.name for c in load_cases(pack, {"scope"}) if c.expected.refuse is False}
+    assert {"sc_on_topic_drop_verb", "sc_on_topic_update_verb", "sc_on_topic_schema_plain", "sc_on_topic_accented",
+            "sc_on_topic_currency", "sc_on_topic_table_name"} <= names

@@ -26,7 +26,7 @@ from pydantic_ai.models import Model
 SCHEMA_VERSION = 1
 DEFAULT_PROJECT = "adpilot-lakehouse"
 DEFAULT_DATASET = "adpilot_audit"
-ERROR_KINDS = ("OutOfScope", "SqlPolicy", "BudgetExceeded", "ModelRateLimited", "ModelUnavailable", "DataSourceUnavailable", "JudgeError")
+ERROR_KINDS = ("OutOfScope", "SqlPolicy", "InputPolicy", "OutputPolicy", "BudgetExceeded", "ModelRateLimited", "ModelUnavailable", "DataSourceUnavailable", "JudgeError")
 
 
 # ---------- message walk (the one implementation; evals.task.Trace is filled from it) ----------

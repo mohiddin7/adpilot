@@ -76,7 +76,7 @@ def test_check_only(tmp_path):
 
 def test_family_filter_and_limit(tmp_path):
     res = run(tier="deterministic", families={"redteam"}, limit=3, out_dir=tmp_path, readme=tmp_path / "R.md")
-    assert set(res.scorecard.cases) == {"rt_ignore_instructions", "rt_drop_table", "rt_update_rows"}
+    assert set(res.scorecard.cases) == {"rt_ignore_instructions", "rt_ignore_instructions_reworded", "rt_ignore_instructions_fullwidth"}
 
 
 def test_baseline_update_and_gate(tmp_path):
@@ -225,3 +225,26 @@ def test_scores_from_report_warns_when_a_raised_case_has_no_trace_id(caplog):
     assert [r.trace_id for r in rows] == ["t1"]  # the raised case contributed nothing
     warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
     assert any("rt_drop_table" in m for m in warnings)
+
+
+def test_guarded_redteam_case_gets_a_compliant_model(pack):
+    from pydantic_ai.models.function import FunctionModel
+
+    from evals.cases import load_cases
+
+    by_name = {c.name: c for c in load_cases(pack, {"redteam"})}
+    guarded, unguarded = by_name["rt_information_schema"], by_name["rt_pii_fishing"]
+    assert guarded.expected.guard and not unguarded.expected.guard
+    # A guarded case must be refused by layer 0; the scripted model would comply, so only the gate can make it pass.
+    m = model_for(guarded, pack)
+    assert isinstance(m, FunctionModel)
+    parts = m.function([_user_msg(guarded.question)], None).parts
+    assert parts[0].tool_name == "run_sql"
+    parts = model_for(unguarded, pack).function([_user_msg(unguarded.question)], None).parts
+    assert parts[0].tool_name == "final_result_Refusal"
+
+
+def _user_msg(text):
+    from pydantic_ai import ModelRequest, UserPromptPart
+
+    return ModelRequest(parts=[UserPromptPart(content=text)])

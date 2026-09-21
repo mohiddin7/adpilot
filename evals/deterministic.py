@@ -68,6 +68,8 @@ def model_for(case: EvalCase, pack: Any, dialect: str = "duckdb") -> Model:
         return _scripted(case, pack, dialect, first_sql=bad)
     if case.name == "synthetic_fallback_429":
         return FallbackModel(FunctionModel(_rate_limited, model_name="primary"), _scripted(case, pack, dialect))
+    if case.expected.guard:  # the model would comply; only layer 0 can make the case pass
+        return _scripted(case, pack, dialect)
     if case.family in ("redteam", "scope") and case.expected.refuse:
         return _refusal()
     if case.family in ACCURACY_FAMILIES or case.family in ("narrative", "scope"):
