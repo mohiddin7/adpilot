@@ -322,6 +322,13 @@ def generate(start: date, end: date, as_of: date, *, today: date | None = None) 
     return _simulate(start, end, as_of, today)[0]
 
 
+def planted(start: date, end: date, *, today: date | None = None) -> pd.DataFrame:
+    """Ground truth: every anomaly that took effect in start … end (date, platform, campaign_id, direction, factor).
+    Uses an as_of past full maturity so every plant has already landed at its final factor; that as_of must still
+    be ≤ today, same guard as _simulate."""
+    return _simulate(start, end, end + timedelta(days=len(MATURITY) + 1), today)[1]
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--levels", action="store_true", help="rebuild calibration/levels.json from data/raw (offline)")
