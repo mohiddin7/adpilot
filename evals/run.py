@@ -37,7 +37,7 @@ from evals import deterministic
 from evals.cases import check_cases, load_cases, to_dataset
 from evals.evaluators import Factual, Refuses, SafeSql, Trajectory
 from evals.invariants import evaluate_invariants
-from evals.judge import JUDGE_PASS_MIN, CalibratedJudge, build_judge_model, judge_config, run_calibration
+from evals.judge import CalibratedJudge, build_judge_model, judge_config, run_calibration
 from evals.scorecard import (
     Scorecard,
     build_scorecard,
@@ -92,7 +92,7 @@ def scores_from_report(report: Any, run_id: str, judge_name: str | None) -> list
             if isinstance(val, bool):
                 value, passed = float(val), val
             elif isinstance(val, int | float):
-                value, passed = float(val), (val >= JUDGE_PASS_MIN if name == "judge" else None)
+                value, passed = float(val), (bool(c.assertions["judge_pass"].value) if name == "judge" and "judge_pass" in c.assertions else None)
             else:
                 value, passed = None, None
             rows.append(ScoreRow(trace_id=tid, run_id=run_id, name=name, value=value, passed=passed, source="judge" if is_judge else "code",
@@ -127,6 +127,11 @@ def run(
     connector = get_connector("duckdb", pack)
     load_fixtures(connector, pack)
     cases = load_cases(pack, families, limit)
+    if tier != "model" or not os.environ.get("ADPILOT_INPUT_CLASSIFIER"):
+        skipped = [c.name for c in cases if c.expected.classifier]
+        if skipped:  # skipped, never counted as passed: a run without layer 1 cannot prove layer 1
+            log.warning("skipping %d classifier cases (model tier with ADPILOT_INPUT_CLASSIFIER only): %s", len(skipped), ", ".join(skipped))
+            cases = [c for c in cases if not c.expected.classifier]
     problems = check_cases(connector, pack, cases)
     if check_only:
         return RunResult(None, not problems, problems=problems)

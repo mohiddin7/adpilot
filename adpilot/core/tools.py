@@ -25,6 +25,7 @@ class AgentDeps:
     audit: AuditSink
     budget: Budget = field(default_factory=Budget)
     last_result: pd.DataFrame | None = None
+    results: list[SqlResult] = field(default_factory=list)  # every successful query this turn, in order — the judge grades against all of them
     run_context: RunContextInfo | None = None
 
 
@@ -60,13 +61,15 @@ def execute(deps: AgentDeps, sql: str) -> SqlResult | SqlError:
             return SqlError(kind=exc.kind, message=exc.message, hint=exc.hint, columns=cols)
         deps.last_result = df
     rows = df.head(pack.max_result_rows)
-    return SqlResult(
+    result = SqlResult(
         sql=clean,
         columns=list(df.columns),
         rows=records(rows),
         row_count=len(df),
         truncated=len(df) > len(rows),
     )
+    deps.results.append(result)
+    return result
 
 
 def records(df: pd.DataFrame) -> list[dict]:

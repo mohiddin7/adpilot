@@ -1,4 +1,6 @@
 # Judge-of-the-judge set: pre-written answers with human verdicts. The judge must agree >= 80% to be trusted.
+# 52 entries, 25 pass / 27 fail. `data: []` = the question needs no query (definitions, concepts, strategy in suggestion voice);
+# illustrative numbers in such an answer are not invented numbers, but claims about this account's performance still need data.
 entries:
   - name: cal_pass_spend
     question: What was total spend?
@@ -49,4 +51,219 @@ entries:
     question: What does the forecast say about next week?
     data: [{platform: TikTok, predicted: 4975.0, lower: 4210.0, upper: 5740.0}]
     answer: "TikTok will spend exactly $4,975 next week; the forecast is certain."
+    verdict: fail
+  # ---- harder passes (derived numbers, hedged forecasts, nulls, ties, empty results) ----
+  - name: cal_pass_derived_share
+    question: What share of spend went to TikTok?
+    data: [{platform: TikTok, spend: 74266.7}, {platform: Google, spend: 37686.2}, {platform: Facebook, spend: 18292.0}]
+    answer: "TikTok accounted for about 57% of total spend ($74.3K of $130.2K)."
+    verdict: pass
+  - name: cal_pass_hedged_forecast
+    question: What does the forecast say about next week?
+    data: [{platform: TikTok, predicted: 4975.0, lower: 4210.0, upper: 5740.0}]
+    answer: "TikTok is forecast to spend about $5.0K next week, most likely between $4.2K and $5.7K."
+    verdict: pass
+  - name: cal_pass_null_handled
+    question: Compare ROAS by platform.
+    data: [{platform: Google, roas: 5.6}, {platform: TikTok, roas: null}]
+    answer: "Google's ROAS is 5.6. TikTok has no revenue data in the result, so its ROAS can't be computed."
+    verdict: pass
+  - name: cal_pass_month_over_month
+    question: Did spend go up in August?
+    data: [{month: "2026-07", spend: 120100.0}, {month: "2026-08", spend: 130244.9}]
+    answer: "Yes. Spend rose from $120.1K in July to $130.2K in August, up about 8%."
+    verdict: pass
+  - name: cal_pass_tie_reported
+    question: Which platform is most efficient?
+    data: [{platform: Facebook, cpa: 7.64}, {platform: Google, cpa: 7.64}, {platform: TikTok, cpa: 11.0}]
+    answer: "Facebook and Google tie at a $7.64 CPA; TikTok is less efficient at $11.00."
+    verdict: pass
+  - name: cal_pass_declines_to_speculate
+    question: Why did TikTok spend so much?
+    data: [{platform: TikTok, spend: 74266.7}, {platform: Google, spend: 37686.2}]
+    answer: "TikTok spent $74.3K, nearly double Google's $37.7K. The result has no bid or budget settings, so it can't say why."
+    verdict: pass
+  - name: cal_pass_empty_result
+    question: How many campaigns ran on LinkedIn?
+    data: []
+    answer: "No LinkedIn campaigns appear in the data."
+    verdict: pass
+  - name: cal_pass_cpa_from_parts
+    question: What was Google's cost per conversion?
+    data: [{platform: Google, spend: 37686.2, conversions: 4218}]
+    answer: "Google drove 4,218 conversions on $37.7K of spend, about $8.93 per conversion."
+    verdict: pass
+  - name: cal_pass_partial_answer
+    question: Compare CPA and ROAS by platform.
+    data: [{platform: Facebook, cpa: 7.64}, {platform: Google, cpa: 8.93}, {platform: TikTok, cpa: 11.0}]
+    answer: "CPA: Facebook $7.64, Google $8.93, TikTok $11.00. ROAS isn't in the result, so I can't compare it."
+    verdict: pass
+  # ---- subtle fails ----
+  - name: cal_fail_wrong_unit
+    question: What was total spend?
+    data: [{spend: 130244.9}]
+    answer: "Total spend across all platforms was $130.2M."
+    verdict: fail
+  - name: cal_fail_subtle_overclaim
+    question: Which platform is most efficient?
+    data: [{platform: Facebook, cpa: 7.64}, {platform: Google, cpa: 8.93}, {platform: TikTok, cpa: 11.0}]
+    answer: "Facebook is the most efficient at a $7.64 CPA and will stay the most efficient next quarter."
+    verdict: fail
+  - name: cal_fail_invented_caveat
+    question: What is Google's ROAS?
+    data: [{roas: 5.6}]
+    answer: "Google's ROAS is 5.6, though this excludes the last three days because of a tracking outage."
+    verdict: fail
+  - name: cal_fail_correct_but_off_question
+    question: Which platform has the highest ROAS?
+    data: [{platform: Google, roas: 5.6, spend: 37686.2}, {platform: Facebook, roas: 3.1, spend: 18292.0}]
+    answer: "Google spent more than Facebook, $37.7K versus $18.3K."
+    verdict: fail
+  - name: cal_fail_wrong_share
+    question: What share of spend went to TikTok?
+    data: [{platform: TikTok, spend: 74266.7}, {platform: Google, spend: 37686.2}, {platform: Facebook, spend: 18292.0}]
+    answer: "TikTok accounted for about 75% of total spend."
+    verdict: fail
+  - name: cal_fail_wrong_direction
+    question: Did spend go up in August?
+    data: [{month: "2026-07", spend: 120100.0}, {month: "2026-08", spend: 130244.9}]
+    answer: "No. Spend fell about 8% from July to August."
+    verdict: fail
+  - name: cal_fail_forecast_as_actual
+    question: What does the forecast say about next week?
+    data: [{platform: TikTok, predicted: 4975.0, lower: 4210.0, upper: 5740.0}]
+    answer: "TikTok spent $4,975 last week."
+    verdict: fail
+  - name: cal_fail_swapped_platforms
+    question: Compare spend by platform.
+    data: [{platform: TikTok, spend: 74266.7}, {platform: Google, spend: 37686.2}, {platform: Facebook, spend: 18292.0}]
+    answer: "Google led with $74.3K, followed by TikTok at $37.7K and Facebook at $18.3K."
+    verdict: fail
+  - name: cal_fail_unsupported_comparison
+    question: What is Google's ROAS?
+    data: [{roas: 5.6}]
+    answer: "Google's ROAS is 5.6, the best in the industry."
+    verdict: fail
+  - name: cal_fail_null_as_zero
+    question: Compare ROAS by platform.
+    data: [{platform: Google, roas: 5.6}, {platform: TikTok, roas: null}]
+    answer: "Google's ROAS is 5.6; TikTok's is 0, the worst of any platform."
+    verdict: fail
+  - name: cal_fail_tie_broken
+    question: Which platform is most efficient?
+    data: [{platform: Facebook, cpa: 7.64}, {platform: Google, cpa: 7.64}, {platform: TikTok, cpa: 11.0}]
+    answer: "Facebook is the single most efficient platform at $7.64, ahead of Google."
+    verdict: fail
+  - name: cal_fail_empty_invented
+    question: How many campaigns ran on LinkedIn?
+    data: []
+    answer: "LinkedIn ran 3 campaigns this month."
+    verdict: fail
+  - name: cal_fail_unsupported_inference
+    question: Which platform is most efficient?
+    data: [{platform: Facebook, cpa: 7.64}, {platform: Google, cpa: 8.93}, {platform: TikTok, cpa: 11.0}]
+    answer: "Facebook has the lowest CPA at $7.64, so it also has the highest ROAS."
+    verdict: fail
+  # ---- novice / definitional: someone with no ads or analytics background ----
+  # data: [] means the question needs no query. Illustrative numbers in an explanation are NOT invented numbers.
+  - name: cal_pass_define_roas
+    question: What is ROAS?
+    data: []
+    answer: "Return on Ad Spend (ROAS) is the revenue you get back for every dollar of ads. It's revenue divided by spend, so a ROAS of 3 means $3 back per $1 spent; above 1 means the ads paid for themselves. In this data only Google reports revenue, so ROAS is only available there."
+    verdict: pass
+  - name: cal_pass_cpa_vs_cpc
+    question: What's the difference between CPA and CPC?
+    data: []
+    answer: "Cost per Click (CPC) is what you pay each time someone clicks an ad: spend divided by clicks. Cost per Acquisition (CPA) is what you pay for each real outcome, like a signup or purchase: spend divided by conversions. CPC tells you the cost of attention; CPA tells you the cost of a result. Lower is better for both."
+    verdict: pass
+  - name: cal_pass_eli5_ctr
+    question: Explain CTR like I'm five.
+    data: []
+    answer: "Imagine you hold up a sign to 100 people walking by. Click-Through Rate (CTR) is how many of them stop to look closer. If 2 of the 100 stop, your CTR is 2%. A higher CTR means the ad catches more people's attention."
+    verdict: pass
+  - name: cal_pass_conversion_meaning
+    question: What counts as a conversion here?
+    data: []
+    answer: "In this data a conversion is a qualified outcome the ad led to, such as a signup or a purchase. It's the thing you actually wanted the ad to make happen, as opposed to a click, which is just someone looking."
+    verdict: pass
+  - name: cal_pass_is_roas_good
+    question: Is a ROAS of 5.6 good?
+    data: [{platform: Google, roas: 5.6}]
+    answer: "Google's Return on Ad Spend (ROAS) of 5.6 means $5.60 of revenue for every $1 spent. Anything above 1.0 covers the ad cost, so 5.6 is strong. Whether it's 'good enough' depends on your product margins, which aren't in this data."
+    verdict: pass
+  - name: cal_pass_where_to_start
+    question: I don't know anything about ads. Where should I start?
+    data: [{platform: TikTok, spend: 74266.7, cpa: 11.0}, {platform: Google, spend: 37686.2, cpa: 8.93}, {platform: Facebook, spend: 18292.0, cpa: 7.64}]
+    answer: "Start with two numbers: spend (what you paid) and Cost per Acquisition (CPA, what each result cost you). Right now TikTok takes the most money ($74.3K) but has the highest CPA ($11.00), while Facebook spends the least ($18.3K) and gets results cheapest ($7.64). A first question to ask is whether more of TikTok's budget should move to Facebook."
+    verdict: pass
+  - name: cal_pass_what_can_you_tell_me
+    question: I'm a business analyst, not a marketer. What can this data tell me?
+    data: []
+    answer: "It covers paid ads on TikTok, Google and Facebook: how much was spent, how many people saw and clicked the ads, and how many converted into signups or purchases. From that you can ask which platform delivers results most cheaply (CPA), which ads people engage with (CTR), where spend is trending, and, for Google only, how much revenue the ads returned (ROAS)."
+    verdict: pass
+  - name: cal_fail_wrong_formula
+    question: What is ROAS?
+    data: []
+    answer: "Return on Ad Spend (ROAS) is spend divided by revenue. A ROAS of 3 means you spent $3 for every $1 earned."
+    verdict: fail
+  - name: cal_fail_wrong_direction_metric
+    question: What is CPA?
+    data: []
+    answer: "Cost per Acquisition (CPA) is spend divided by conversions. Higher is better, because it means each customer is worth more."
+    verdict: fail
+  - name: cal_fail_definition_with_invented_figure
+    question: What is CTR?
+    data: []
+    answer: "Click-Through Rate (CTR) is clicks divided by impressions. Your CTR this month is 3.4%, well above the industry average."
+    verdict: fail
+  - name: cal_fail_jargon_only
+    question: Explain CPM like I'm five.
+    data: []
+    answer: "CPM is the effective cost basis per mille of served impressions, normalised across auction-based inventory."
+    verdict: fail
+  - name: cal_fail_wrong_metric_explained
+    question: What's the difference between CPA and CPC?
+    data: []
+    answer: "Cost per Thousand Impressions (CPM) is spend divided by impressions times 1000. It tells you the cost of reach."
+    verdict: fail
+  - name: cal_fail_refuses_definition
+    question: What is ROAS?
+    data: []
+    answer: "I can only answer questions about this marketing performance data — spend, conversions, campaigns, anomalies, forecasts and budget recommendations."
+    verdict: fail
+  - name: cal_fail_good_roas_misread
+    question: Is a ROAS of 5.6 good?
+    data: [{platform: Google, roas: 5.6}]
+    answer: "No. A Return on Ad Spend (ROAS) of 5.6 means you're losing $5.60 for every dollar spent; you should pause Google immediately."
+    verdict: fail
+  # ---- general analytics concepts + strategy in suggestion voice ----
+  - name: cal_pass_define_kpi
+    question: What is a KPI?
+    data: []
+    answer: "A Key Performance Indicator (KPI) is the one or two numbers you watch to know if something is working. For paid ads the usual KPIs are Cost per Acquisition (CPA, what each result costs you) and, where revenue is tracked, Return on Ad Spend (ROAS, revenue back per dollar spent). Pick the one that matches your goal: cheap results, or profitable ones."
+    verdict: pass
+  - name: cal_pass_define_funnel
+    question: What is a funnel?
+    data: []
+    answer: "A funnel is the path from someone seeing your ad to becoming a customer, and it narrows at each step: impressions (people who saw it), clicks (people who were interested), conversions (people who signed up or bought). Looking at where the biggest drop-off happens tells you what to fix: a low Click-Through Rate means the ad isn't catching attention; lots of clicks but few conversions points to the landing page or offer."
+    verdict: pass
+  - name: cal_pass_strategy_suggestion_grounded
+    question: Should I move budget between platforms?
+    data: [{platform: TikTok, spend: 74266.7, cpa: 11.0}, {platform: Google, spend: 37686.2, cpa: 8.93}, {platform: Facebook, spend: 18292.0, cpa: 7.64}]
+    answer: "Worth considering. Facebook gets results cheapest (Cost per Acquisition $7.64) but has the smallest budget ($18.3K), while TikTok has the largest budget ($74.3K) and the highest CPA ($11.00). A cautious next step would be shifting a small slice of TikTok's budget to Facebook and checking whether Facebook's CPA holds as it scales; it often rises when spend grows, and this data can't tell you where that ceiling is."
+    verdict: pass
+  - name: cal_pass_strategy_general_no_data
+    question: In general, how should a beginner split a budget across platforms?
+    data: []
+    answer: "As a general starting point rather than a rule: spread the budget so every platform gets enough to produce measurable results, run it for a few weeks, then move money toward whichever platform delivers your goal most cheaply (Cost per Acquisition) or most profitably (Return on Ad Spend). Your own data is the better guide once it exists; I can compare the platforms here whenever you're ready."
+    verdict: pass
+  - name: cal_fail_strategy_prescriptive_invented
+    question: Should I move budget between platforms?
+    data: [{platform: TikTok, spend: 74266.7, cpa: 11.0}, {platform: Google, spend: 37686.2, cpa: 8.93}, {platform: Facebook, spend: 18292.0, cpa: 7.64}]
+    answer: "Yes. Move 60% of TikTok's budget to Facebook immediately; this will cut your CPA to $6.10 and lift conversions by 40%."
+    verdict: fail
+  - name: cal_fail_define_attribution_wrong
+    question: What is attribution?
+    data: []
+    answer: "Attribution is the total amount you paid to a platform in the period, in US dollars."
     verdict: fail

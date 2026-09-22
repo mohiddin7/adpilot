@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import yaml
 from pydantic_ai import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
@@ -9,15 +10,11 @@ from evals.cases import load_cases
 from evals.deterministic import SYNTHETIC, model_for
 from evals.run import run
 
-# Answers that the judge-calibration set (packs/ads/judge_calibration.yaml) labels "fail" — a substring
-# unique to each bad answer. A judge that flags these and passes everything else agrees 100% with the
-# calibration labels, so the judge is reported reliable and its quality score can be exercised end to end.
-_CALIBRATION_FAIL_MARKERS = (
-    "$98.4K",
-    "TikTok is the most efficient",
-    "roughly balanced",
-    "4,218 conversions",
-    "will spend exactly $4,975",
+# Answers that the judge-calibration set (packs/ads/judge_calibration.yaml) labels "fail". A judge that flags
+# exactly these and passes everything else agrees 100% with the calibration labels, so the judge is reported
+# reliable and its quality score can be exercised end to end. The judge prompt quotes the answer verbatim.
+_CALIBRATION_FAIL_MARKERS = tuple(
+    e["answer"] for e in yaml.safe_load(Path("packs/ads/judge_calibration.yaml").read_text())["entries"] if e["verdict"] == "fail"
 )
 
 
@@ -142,7 +139,7 @@ def test_model_tier_badge_updates_readme_with_relative_out_dir(monkeypatch, tmp_
     assert Path(rel_out_dir).resolve() == reports_dir.resolve()
 
 
-def test_model_tier_writes_calls_scores_and_run_to_the_sink(monkeypatch, tmp_path):
+def test_model_tier_writes_calls_scores_and_run_to_the_sink(monkeypatch, tmp_path, pack):
     from adpilot.core.audit import MemorySink
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
@@ -154,8 +151,9 @@ def test_model_tier_writes_calls_scores_and_run_to_the_sink(monkeypatch, tmp_pat
     assert res.run_id and res.run_id.startswith("run_") and sc.run_id == res.run_id and res.audit is not None and res.audit.ok
     agent_rows = [r for r in sink.calls if r.source == "eval"]
     judge_rows = [r for r in sink.calls if r.source == "judge"]
-    assert len(agent_rows) == 10 and all(r.run_id == res.run_id and r.family == "narrative" and r.case_name for r in agent_rows)
-    assert len(judge_rows) == 10 + 10  # one per narrative case + the 10 calibration entries
+    n_narr = len(load_cases(pack, {"narrative"}))
+    assert len(agent_rows) == n_narr and all(r.run_id == res.run_id and r.family == "narrative" and r.case_name for r in agent_rows)
+    assert len(judge_rows) == n_narr + 52  # one per narrative case + the 52 calibration entries
     assert all(r.run_id == res.run_id and r.case_name and r.family in ("narrative", "calibration") for r in judge_rows)
     assert {s.name for s in sink.scores} >= {"judge", "judge_pass", "safe_sql", "calls_ok"}
     judge_scores = [s for s in sink.scores if s.name == "judge"]
@@ -163,7 +161,7 @@ def test_model_tier_writes_calls_scores_and_run_to_the_sink(monkeypatch, tmp_pat
     assert {s.trace_id for s in sink.scores} == {r.trace_id for r in agent_rows}
     assert len(sink.runs) == 1 and sink.runs[0].run_id == res.run_id and sink.runs[0].overall == sc.overall
     assert sc.calls_used == sum(r.requests for r in sink.calls) and sc.calls_used > 0
-    assert sink.flushed == {"agent_calls": 30, "scores": len(sink.scores), "eval_runs": 1}  # 10 agent + 20 judge
+    assert sink.flushed == {"agent_calls": n_narr + n_narr + 52, "scores": len(sink.scores), "eval_runs": 1}  # agent + judge rows
 
 
 def test_deterministic_tier_uses_memory_sink_and_stamps_run_id(tmp_path):
@@ -248,3 +246,11 @@ def _user_msg(text):
     from pydantic_ai import ModelRequest, UserPromptPart
 
     return ModelRequest(parts=[UserPromptPart(content=text)])
+
+
+def test_classifier_cases_are_skipped_unless_the_model_tier_has_the_flag(eval_duck, pack, monkeypatch, caplog):
+    monkeypatch.delenv("ADPILOT_INPUT_CLASSIFIER", raising=False)
+    res = run(tier="deterministic", families={"redteam"})
+    assert res.scorecard is not None
+    assert not any("_l1" in name for name in res.scorecard.cases), "classifier cases must not run (or count) without layer 1"
+    assert "skipping" in caplog.text and "classifier" in caplog.text
