@@ -104,3 +104,42 @@ def test_upload_writes_the_manifest_last():
     path = main.upload_batch(bucket, _batch())
     assert path == "landing/2026-09-24/_manifest.json" and bucket.order[-1] == path
     assert sorted(bucket.order[:-1]) == [f"landing/2026-09-24/{n}" for n in CSVS]
+
+
+class _FakeQueryJob:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def result(self):
+        return self.rows
+
+
+class _FakeBQClient:
+    def __init__(self, rows_or_exception):
+        self.rows_or_exception = rows_or_exception
+
+    def query(self, sql):
+        if isinstance(self.rows_or_exception, Exception):
+            raise self.rows_or_exception
+        return _FakeQueryJob(self.rows_or_exception)
+
+
+def test_gold_max_date_handles_not_found(monkeypatch):
+    from google.api_core.exceptions import NotFound
+
+    monkeypatch.setattr(common, "bq_client", lambda: _FakeBQClient(NotFound("no table")))
+    assert main.gold_max_date() is None
+
+
+def test_gold_max_date_propagates_other_errors(monkeypatch):
+    monkeypatch.setattr(common, "bq_client", lambda: _FakeBQClient(PermissionError("no access")))
+    with pytest.raises(PermissionError):
+        main.gold_max_date()
+
+
+def test_gold_max_date_handles_null_result(monkeypatch):
+    class _Row:
+        d = None
+
+    monkeypatch.setattr(common, "bq_client", lambda: _FakeBQClient([_Row()]))
+    assert main.gold_max_date() is None

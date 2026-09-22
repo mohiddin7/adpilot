@@ -99,9 +99,14 @@ def upload_batch(bucket, files: dict[str, bytes]) -> str:
 
 
 def gold_max_date() -> date | None:
+    from google.api_core.exceptions import NotFound
+
     gold = f"{common.PROJECT}.{common.PRODUCTION_DS}.fct_unified_marketing_performance"
-    rows = list(common.bq_client().query(f"SELECT MAX(date) AS d FROM `{gold}`").result())
-    return rows[0].d if rows else None
+    try:
+        rows = list(common.bq_client().query(f"SELECT MAX(date) AS d FROM `{gold}`").result())
+        return rows[0].d if rows else None
+    except NotFound:
+        return None
 
 
 @http
