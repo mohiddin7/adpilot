@@ -8,8 +8,9 @@ from adpilot.cli import main
 @pytest.fixture
 def no_api_key(monkeypatch):
     # Empty strings survive load_dotenv (it never overrides existing vars) and read as "unset".
-    monkeypatch.setenv("OPENROUTER_API_KEY", "")
-    monkeypatch.setenv("LLM_BEARER_TOKEN", "")
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "")
+    for legacy in ("OPENROUTER_API_KEY", "LLM_BEARER_TOKEN"):
+        monkeypatch.delenv(legacy, raising=False)
 
 
 def test_schema_command():

@@ -18,13 +18,15 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext
 
 from adpilot.core.audit import AuditSink, RunContextInfo, build_record, new_trace_id, primary_model_name
-from adpilot.core.models import RateLimited
+from adpilot.core.models import RateLimited, renamed_env
 from evals.cases import ACCURACY_FAMILIES, Expected, reference_rows
 from evals.evaluators import Factual
 from evals.task import Trace
 
-DEFAULT_JUDGE_PRIMARY = "google/gemma-4-26b-a4b-it:free"
-DEFAULT_JUDGE_FALLBACK = "inclusionai/ling-3.0-flash-vl:free"
+# Agreement with the human-labelled calibration set, measured 2026-09-21: nex 10/10, dots 10/10,
+# gemma 5/10 (429 on every call). Neither default is the agent's model: a judge must not grade itself.
+DEFAULT_JUDGE_PRIMARY = "nex-agi/nex-n2.5-pro:free"
+DEFAULT_JUDGE_FALLBACK = "dots-studio/dots-3-note-preview:free"
 DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1"
 JUDGE_RELIABLE_MIN = 0.8
 JUDGE_PASS_MIN = 0.75
@@ -40,15 +42,17 @@ class JudgeConfig:
 
 def judge_config(env: Mapping[str, str] | None = None) -> JudgeConfig:
     env = os.environ if env is None else env
-    endpoint = env.get("LLM_JUDGE_ENDPOINT_URL") or env.get("LLM_ENDPOINT_URL") or DEFAULT_ENDPOINT
-    endpoint = endpoint.rstrip("/")
+    endpoint = (renamed_env("JUDGE_LLM_ENDPOINT_URL", "LLM_JUDGE_ENDPOINT_URL", "LLM_ENDPOINT_URL", env=env) or DEFAULT_ENDPOINT).rstrip("/")
     if endpoint.endswith("/chat/completions"):
         endpoint = endpoint[: -len("/chat/completions")]
-    fallback = env.get("LLM_JUDGE_FALLBACK_MODEL")
+    fallback = renamed_env("JUDGE_LLM_FALLBACK_MODEL", "LLM_JUDGE_FALLBACK_MODEL", env=env)
     return JudgeConfig(
         endpoint=endpoint,
-        api_key=env.get("LLM_JUDGE_BEARER_TOKEN") or env.get("OPENROUTER_API_KEY") or env.get("LLM_BEARER_TOKEN") or None,
-        primary=env.get("LLM_JUDGE_TARGET_MODEL") or DEFAULT_JUDGE_PRIMARY,
+        # the judge may borrow the agent's key, but never the agent's model
+        api_key=renamed_env("JUDGE_LLM_BEARER_TOKEN", "LLM_JUDGE_BEARER_TOKEN", env=env)
+        or renamed_env("AGENT_LLM_BEARER_TOKEN", "OPENROUTER_API_KEY", "LLM_BEARER_TOKEN", env=env)
+        or None,
+        primary=renamed_env("JUDGE_LLM_TARGET_MODEL", "LLM_JUDGE_TARGET_MODEL", env=env) or DEFAULT_JUDGE_PRIMARY,
         fallback=(DEFAULT_JUDGE_FALLBACK if fallback is None else (fallback or None)),
     )
 

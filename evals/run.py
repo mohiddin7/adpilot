@@ -30,7 +30,7 @@ from adpilot.core.audit import (
     environment,
     git_sha,
 )
-from adpilot.core.models import DEFAULT_FALLBACK, DEFAULT_PRIMARY, build_model
+from adpilot.core.models import agent_fallback_from_env, agent_primary_from_env, build_model
 from adpilot.core.tools import AgentDeps
 from adpilot.packs.loader import REPO_ROOT, load_pack
 from evals import deterministic
@@ -156,7 +156,7 @@ def run(
     else:
         model = build_model()
         if model is None:
-            return RunResult(None, False, problems=["no model API key configured (OPENROUTER_API_KEY or LLM_BEARER_TOKEN)"], run_id=run_id)
+            return RunResult(None, False, problems=["no model API key configured (AGENT_LLM_BEARER_TOKEN)"], run_id=run_id)
         sink = audit or build_sink(audit_config())
         try:
             sink.preflight()  # strict: never spend model calls on a run that cannot be recorded
@@ -164,7 +164,7 @@ def run(
             return RunResult(None, False, problems=[f"audit unavailable ({exc.kind}): {exc.hint}"], run_id=run_id)
         agent = build_agent(model)
         model_for = None
-        models.update(agent_primary=os.environ.get("LLM_TARGET_MODEL", DEFAULT_PRIMARY), agent_fallback=os.environ.get("LLM_FALLBACK_MODEL", DEFAULT_FALLBACK))
+        models.update(agent_primary=agent_primary_from_env(), agent_fallback=agent_fallback_from_env())
         if not no_judge:
             cfg = judge_config()
             judge_model = build_judge_model(cfg)
@@ -224,9 +224,14 @@ def run(
         judge_reliable = bool(calibration and calibration.reliable)
         results = collect(report, judge_reliable)
         repeats = collect(repeat_report, judge_reliable) if repeat_report else []
-        sink.add_scores(scores_from_report(report, run_id, models["judge"]) + scores_from_report(repeat_report, run_id, models["judge"]))
-
         recs = [r for r in sink.pending_calls() if r.run_id == run_id]
+        # Which judge *answered*, not which one was asked for: a rate-limited primary falls back
+        # silently, and a scorecard naming the model that never ran hides the agent grading itself.
+        judge_used = sorted({r.model_used for r in recs if r.source == "judge" and r.model_used})
+        models["judge_used"] = ", ".join(judge_used) or None
+        grader = models["judge_used"] or models["judge"]
+        sink.add_scores(scores_from_report(report, run_id, grader) + scores_from_report(repeat_report, run_id, grader))
+
         calls = sum(r.requests for r in recs)
         tokens_in, tokens_out, cost = sum(r.tokens_in for r in recs), sum(r.tokens_out for r in recs), round(sum(r.cost_usd for r in recs), 6)
 

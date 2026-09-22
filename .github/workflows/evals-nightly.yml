@@ -30,8 +30,8 @@ jobs:
       - name: Run model-tier evals
         id: evals
         env:
-          LLM_BEARER_TOKEN: ${{ secrets.LLM_BEARER_TOKEN }}
-          LLM_JUDGE_BEARER_TOKEN: ${{ secrets.LLM_JUDGE_BEARER_TOKEN }}
+          AGENT_LLM_BEARER_TOKEN: ${{ secrets.AGENT_LLM_BEARER_TOKEN }}
+          JUDGE_LLM_BEARER_TOKEN: ${{ secrets.JUDGE_LLM_BEARER_TOKEN }}
           JEV_API_KEY: ${{ secrets.JEV_API_KEY }}
           ADPILOT_INPUT_CLASSIFIER: ${{ secrets.JEV_API_KEY != '' && 'jev' || '' }}  # layer 1 on when the key exists; its cases are skipped otherwise
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}

@@ -84,10 +84,10 @@ def test_baseline_update_and_gate(tmp_path):
 
 
 def test_model_tier_without_key_is_harness_error(monkeypatch, tmp_path):
-    for k in ("OPENROUTER_API_KEY", "LLM_BEARER_TOKEN", "LLM_JUDGE_BEARER_TOKEN"):
+    for k in ("AGENT_LLM_BEARER_TOKEN", "JUDGE_LLM_BEARER_TOKEN", "OPENROUTER_API_KEY", "LLM_BEARER_TOKEN", "LLM_JUDGE_BEARER_TOKEN"):
         monkeypatch.delenv(k, raising=False)
     res = run(tier="model", out_dir=tmp_path, readme=tmp_path / "R.md")
-    assert not res.ok and res.problems == ["no model API key configured (OPENROUTER_API_KEY or LLM_BEARER_TOKEN)"]
+    assert not res.ok and res.problems == ["no model API key configured (AGENT_LLM_BEARER_TOKEN)"]
 
 
 def test_run_result_carries_the_baseline_it_gated_against(tmp_path):
@@ -102,7 +102,7 @@ def test_model_tier_end_to_end_narrative(monkeypatch, tmp_path):
     used to blow up with 'this event loop is already running' on every real dataset run, turning
     every narrative case into a judge_error verdict (quality 0). Before evals/judge.py grew
     `evaluate_async` (anyio.to_thread.run_sync), this test fails; after, it passes."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "test-key")
     monkeypatch.setattr(run_module, "build_model", lambda: _scripted_agent_model())
     monkeypatch.setattr(run_module, "build_judge_model", lambda cfg: _scripted_judge_model())
     from adpilot.core.audit import MemorySink
@@ -122,7 +122,7 @@ def test_model_tier_badge_updates_readme_with_relative_out_dir(monkeypatch, tmp_
     """Regression test for the badge-path fix: `out_dir == MODEL_REPORTS` compared a relative Path
     (what the nightly workflow and README pass via --out) to an absolute path, so the badge never
     updated. Patch MODEL_REPORTS to a temp dir and pass a *relative* out_dir that resolves to it."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "test-key")
     monkeypatch.setattr(run_module, "build_model", lambda: _scripted_agent_model())
     monkeypatch.setattr(run_module, "build_judge_model", lambda cfg: _scripted_judge_model())
     reports_dir = tmp_path / "reports"
@@ -142,7 +142,7 @@ def test_model_tier_badge_updates_readme_with_relative_out_dir(monkeypatch, tmp_
 def test_model_tier_writes_calls_scores_and_run_to_the_sink(monkeypatch, tmp_path, pack):
     from adpilot.core.audit import MemorySink
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "test-key")
     monkeypatch.setattr(run_module, "build_model", lambda: _scripted_agent_model())
     monkeypatch.setattr(run_module, "build_judge_model", lambda cfg: _scripted_judge_model())
     sink = MemorySink()
@@ -176,7 +176,7 @@ def test_model_tier_audit_unavailable_is_a_harness_error(monkeypatch, tmp_path):
         def preflight(self):
             raise AuditUnavailable("credentials", "no creds")
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "test-key")
     monkeypatch.setattr(run_module, "build_model", lambda: _scripted_agent_model())
     res = run(tier="model", families={"scope"}, limit=1, out_dir=tmp_path, readme=tmp_path / "R.md", audit=Broken())
     assert not res.ok and res.scorecard is None and res.problems == ["audit unavailable (credentials): no creds"]
@@ -254,3 +254,25 @@ def test_classifier_cases_are_skipped_unless_the_model_tier_has_the_flag(eval_du
     assert res.scorecard is not None
     assert not any("_l1" in name for name in res.scorecard.cases), "classifier cases must not run (or count) without layer 1"
     assert "skipping" in caplog.text and "classifier" in caplog.text
+
+
+def test_grader_records_the_judge_that_actually_ran(monkeypatch, tmp_path):
+    """The A/B on 2026-09-21 compared two runs whose scorecards named different judges, but the
+    'current' run's judge served 0 of 30 calls and silently fell back to the agent's own model:
+    `scores.grader` and `models["judge"]` both recorded the *requested* judge, so the self-grading
+    was invisible. Both must name the model that answered."""
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "test-key")
+    monkeypatch.setenv("JUDGE_LLM_TARGET_MODEL", "vendor/requested-judge")
+    monkeypatch.setattr(run_module, "build_model", lambda: _scripted_agent_model())
+    monkeypatch.setattr(run_module, "build_judge_model", lambda cfg: _scripted_judge_model())
+    from adpilot.core.audit import MemorySink
+
+    sink = MemorySink()
+    res = run(tier="model", families={"narrative"}, repeat=1, out_dir=tmp_path, readme=tmp_path / "README.md", audit=sink)
+
+    used = {r.model_used for r in sink.calls if r.source == "judge" and r.model_used}
+    assert used and "vendor/requested-judge" not in used
+    graders = {s.grader for s in sink.scores if s.source == "judge"}
+    assert graders == used, f"grader should name the model that answered, got {graders}"
+    assert res.scorecard.models["judge_used"] == ", ".join(sorted(used))
+    assert res.scorecard.models["judge"] == "vendor/requested-judge"

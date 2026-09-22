@@ -30,7 +30,7 @@ def render(latest: Scorecard, baseline: Scorecard | None, calls_limit: int = 400
         "| Family | Baseline | This run |", "|---|---|---|", *rows, "",
         f"- Regressed: {', '.join(latest.flips['regressed']) or 'none'}",
         f"- Fixed: {', '.join(latest.flips['fixed']) or 'none'}",
-        f"- Models: agent `{latest.models.get('agent_primary')}` → `{latest.models.get('agent_fallback')}`, judge `{latest.models.get('judge')}`",
+        f"- Models: agent `{latest.models.get('agent_primary')}` → `{latest.models.get('agent_fallback')}`, judge `{latest.models.get('judge_used') or latest.models.get('judge')}`",
         f"- Prompt hash: `{latest.prompt_hash}`" + (f" (baseline `{baseline.prompt_hash}`)" if baseline else ""),
         f"- Run: `{latest.run_id or 'n/a'}` · cost {latest.tokens_in} in / {latest.tokens_out} out tokens, ${latest.cost_usd:.4f}",
         f"- Judge agreement with calibration set: {latest.judge_agreement if latest.judge_agreement is None else f'{latest.judge_agreement * 100:.0f}%'} → {'reliable' if latest.judge_reliable else 'unreliable, quality excluded'}", "",

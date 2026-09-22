@@ -158,3 +158,11 @@ def test_scorecard_carries_run_id_and_cost_and_renders_them():
     md = render_markdown(sc, None)
     assert "run `run_x`" in md and "100 in / 20 out" in md and "$0.0123" in md
     assert build_scorecard(results(), [], [], None, tier="model", prompt_hash="h", models={}, calls_used=0, baseline=None).run_id is None
+
+
+def test_markdown_names_the_judge_that_answered_when_it_differs():
+    sc = build()
+    sc.models = {"agent_primary": "p", "agent_fallback": "f", "judge": "asked", "judge_used": "answered"}
+    assert "judge asked (answered: answered)" in render_markdown(sc, None)
+    sc.models["judge_used"] = "asked"
+    assert "judge asked" in render_markdown(sc, None) and "answered:" not in render_markdown(sc, None)

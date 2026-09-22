@@ -134,7 +134,7 @@ def cmd_chat(args, out) -> int:
     model = build_model()
     agent = build_agent(model)
     if model is None:
-        print("No OPENROUTER_API_KEY set — answering from pre-defined queries only.\n", file=out)
+        print("No AGENT_LLM_BEARER_TOKEN set — answering from pre-defined queries only.\n", file=out)
     history = sink.load_session(args.session) if args.session else []
     unflushed = 0
 
