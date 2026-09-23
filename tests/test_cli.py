@@ -68,11 +68,12 @@ def memory_audit(monkeypatch):
 
 
 def test_chat_prints_memory_audit_notice_and_records(no_api_key, memory_audit, monkeypatch):
-    import adpilot.cli as cli
     from adpilot.core.audit import MemorySink
 
     sink = MemorySink()
-    monkeypatch.setattr(cli, "build_sink", lambda cfg: sink)
+    import adpilot.core.runtime as runtime
+
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: sink)
     out = io.StringIO()
     assert main(["--connector", "duckdb", "chat", "-q", "What was spend by platform?", "--session", "s1"], out=out) == 0
     assert "audit: memory" in out.getvalue()
@@ -80,7 +81,6 @@ def test_chat_prints_memory_audit_notice_and_records(no_api_key, memory_audit, m
 
 
 def test_chat_exits_2_when_audit_unavailable(no_api_key, monkeypatch):
-    import adpilot.cli as cli
     from adpilot.core.audit import AuditUnavailable
 
     class Broken:
@@ -88,14 +88,15 @@ def test_chat_exits_2_when_audit_unavailable(no_api_key, monkeypatch):
             raise AuditUnavailable("permissions", "grant roles")
 
     monkeypatch.delenv("ADPILOT_AUDIT", raising=False)
-    monkeypatch.setattr(cli, "build_sink", lambda cfg: Broken())
+    import adpilot.core.runtime as runtime
+
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: Broken())
     out = io.StringIO()
     assert main(["--connector", "duckdb", "chat", "-q", "spend by platform"], out=out) == 2
     assert "audit unavailable (permissions): grant roles" in out.getvalue()
 
 
 def test_chat_warns_when_turn_not_persisted(no_api_key, memory_audit, monkeypatch):
-    import adpilot.cli as cli
     from adpilot.core.audit import FlushReport, MemorySink
 
     class Flaky(MemorySink):
@@ -103,7 +104,9 @@ def test_chat_warns_when_turn_not_persisted(no_api_key, memory_audit, monkeypatc
             super().flush()
             return FlushReport(failed={"agent_calls": 1}, errors=["agent_calls: 503"])
 
-    monkeypatch.setattr(cli, "build_sink", lambda cfg: Flaky())
+    import adpilot.core.runtime as runtime
+
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: Flaky())
     out = io.StringIO()
     assert main(["--connector", "duckdb", "chat", "-q", "spend by platform"], out=out) == 1
     assert "TikTok" in out.getvalue() and "audit: 1 row(s) not persisted" in out.getvalue()
@@ -116,7 +119,9 @@ def test_chat_flushes_the_turn_even_when_printing_the_answer_raises(no_api_key, 
     from adpilot.core.audit import MemorySink
 
     sink = MemorySink()
-    monkeypatch.setattr(cli, "build_sink", lambda cfg: sink)
+    import adpilot.core.runtime as runtime
+
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: sink)
 
     def boom(answer, out):
         raise ValueError("bad answer.data")
@@ -138,6 +143,11 @@ def test_audit_subcommands_against_memory_sink(memory_audit, monkeypatch):
     sink.add_scores([ScoreRow(trace_id="t1", run_id="run_1", name="factual", value=1.0, passed=True, ts=datetime.now(UTC))])
     sink.add_run(RunRow(run_id="run_1", ts=datetime.now(UTC), environment="local", tier="model", pack="ads", overall=88.0, gate_ok=True))
     sink.flush()
+    import adpilot.core.runtime as runtime
+
+    # cmd_audit's "runs"/"export" paths call build_sink directly (cli's own import); "preflight" goes
+    # through open_sink, which resolves build_sink in runtime's namespace. Both need the same sink.
+    monkeypatch.setattr(runtime, "build_sink", lambda cfg: sink)
     monkeypatch.setattr(cli, "build_sink", lambda cfg: sink)
 
     out = io.StringIO()

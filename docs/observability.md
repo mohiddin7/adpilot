@@ -10,7 +10,7 @@ Dataset `adpilot_audit` (name from `BQ_AUDIT_DATASET`), three tables, all partit
 
 | table | one row per | key columns |
 |---|---|---|
-| `agent_calls` | agent or judge call | `trace_id`, `ts`, `source` (chat/eval/judge), `session_id`, `run_id`, `case_name`, `question`, `answer_md`, `sql`, `model_requested`, `model_used`, `fell_back`, `tokens_in/out`, `cost_usd`, `latency_s`, `refused`, `error_kind`, `messages_json` |
+| `agent_calls` | agent or judge call | `trace_id`, `ts`, `source` (chat/eval/judge/api; `mcp` and `brief` are coming), `session_id`, `run_id`, `case_name`, `question`, `answer_md`, `sql`, `model_requested`, `model_used`, `fell_back`, `tokens_in/out`, `cost_usd`, `latency_s`, `refused`, `error_kind`, `messages_json` |
 | `scores` | grade on a call | `trace_id`, `run_id`, `name` (`factual`, `safe_sql`, `judge`, …), `value`, `passed`, `source` (code/judge/human), `grader`, `reason` |
 | `eval_runs` | `adpilot eval` run | `run_id`, `tier`, `overall`, `gate_ok`, `gate_reasons`, `scorecard_json`, `calls_used`, `tokens_in/out`, `cost_usd` |
 

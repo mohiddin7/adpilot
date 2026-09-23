@@ -150,3 +150,31 @@ def test_build_record_without_model_result():
         caveats=["InputPolicy"], messages=[], usage=None, model_requested="primary", context=RunContextInfo(), pack_name="ads", prompt_hash="abc",
     )
     assert rec.model_used is None and rec.fell_back is False and rec.tokens_in == 0 and rec.messages_json == "[]" and rec.error_kind == "InputPolicy"
+
+
+def test_load_session_spans_the_conversational_surfaces():
+    """A session started in the CLI is continuable over HTTP or MCP; eval/judge rows are never history."""
+    from pydantic_ai import ModelMessagesTypeAdapter
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from adpilot.core.audit import AuditRecord, MemorySink
+
+    def one_message(text):
+        return ModelMessagesTypeAdapter.dump_json([ModelRequest(parts=[UserPromptPart(content=text)])]).decode()
+
+    sink = MemorySink()
+    for i, source in enumerate(("chat", "api", "mcp", "eval", "judge")):
+        sink.record(AuditRecord(
+            trace_id=f"t{i}", ts=datetime(2026, 8, 11, 9, i, tzinfo=UTC), environment="local", source=source,
+            session_id="s1", pack="ads", question="q", answer_md="a", messages_json=one_message(source),
+        ))
+    sink.record(AuditRecord(
+        trace_id="other", ts=datetime(2026, 8, 11, 10, 0, tzinfo=UTC), environment="local", source="api",
+        session_id="s2", pack="ads", question="q", answer_md="a", messages_json=one_message("other session"),
+    ))
+
+    history = sink.load_session("s1", turns=10)
+    said = [p.content for m in history for p in m.parts]
+    assert said == ["chat", "api", "mcp"]          # three surfaces, in time order
+    assert "eval" not in said and "judge" not in said  # grading rows are not conversation
+    assert "other session" not in said              # and sessions do not bleed into each other

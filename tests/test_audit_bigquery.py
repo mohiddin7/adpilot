@@ -229,3 +229,52 @@ def test_flush_does_not_retry_permission_errors():
     sink.record(_rec())
     rep = sink.flush()
     assert not rep.ok and sleeps == [] and rep.failed == {"agent_calls": 1}
+
+
+def test_load_session_query_covers_chat_api_and_mcp():
+    """The stored query must not silently drop a surface: a session is continuable wherever it started."""
+    client = FakeClient()
+    captured = {}
+
+    class Rows(FakeJob):
+        def result(self, timeout=None):
+            return []
+
+    def query(sql, job_config=None):
+        captured["sql"] = sql
+        return Rows()
+
+    client.query = query
+    assert BigQuerySink(CFG, client=client).load_session("s1") == []
+    assert "source IN ('chat','api','mcp')" in captured["sql"]
+    assert "source = 'chat'" not in captured["sql"]
+
+
+def test_two_concurrent_flushes_send_every_row_exactly_once():
+    """The load job runs outside `_lock`, so without `_flush_lock` two flushes snapshot the same rows (sent
+    twice) and both delete by count (dropping rows that were never sent)."""
+    import threading
+    import time as _time
+
+    client = FakeClient()
+    inner = client.load_table_from_file
+
+    def slow_load(fh, ref, job_config=None):
+        job = inner(fh, ref, job_config=job_config)
+        _time.sleep(0.05)  # widen the window between the snapshot and the delete
+        return job
+
+    client.load_table_from_file = slow_load
+    sink = BigQuerySink(CFG, client=client)
+    for i in range(6):
+        sink.record(_rec(i))
+
+    threads = [threading.Thread(target=sink.flush) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    sent = [row["trace_id"] for name, rows in client.loads if name == "agent_calls" for row in rows]
+    assert sorted(sent) == [f"t{i}" for i in range(6)]  # every row once: no duplicate, none lost
+    assert sink._buffers["agent_calls"] == [] and sink.pending_calls() == []

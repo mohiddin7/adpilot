@@ -244,15 +244,34 @@ class RateLimiter:
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def acquire(self) -> None:
+        """Sleeps *outside* the lock and re-checks the window afterwards: holding it across the sleep makes
+        N waiters wait N times over instead of sharing one window, and appending without re-pruning lets the
+        window transiently hold per_minute + 1."""
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                while self._stamps and now - self._stamps[0] >= 60:
+                    self._stamps.popleft()
+                if len(self._stamps) < self.per_minute:
+                    self._stamps.append(now)
+                    return
+                wait = (60 - (now - self._stamps[0])) if self._stamps else 60.0  # per_minute=0: always wait
+            time.sleep(wait)
+
+    def try_acquire(self) -> float:
+        """Non-blocking: 0.0 when a slot was taken, else the seconds until one frees.
+
+        One method rather than a try/peek pair so the Retry-After hint cannot race the check that produced it.
+        """
         with self._lock:
             now = time.monotonic()
             while self._stamps and now - self._stamps[0] >= 60:
                 self._stamps.popleft()
             if len(self._stamps) >= self.per_minute:
-                wait = 60 - (now - self._stamps[0])
-                time.sleep(wait)
-                now = time.monotonic()
+                # `if self._stamps` matters: per_minute=0 means "always shed", and an empty deque has no [0].
+                return (60 - (now - self._stamps[0])) if self._stamps else 60.0
             self._stamps.append(now)
+            return 0.0
 
 
 # ponytail: one process-wide limiter; per-key buckets if the API ever serves several accounts
