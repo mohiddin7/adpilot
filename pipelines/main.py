@@ -12,7 +12,12 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
+import tempfile
+import time
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -124,3 +129,209 @@ def backfill(bucket_name: str | None = None) -> str:
     finalises its two restating days."""
     today = utc_today()
     return upload_batch(_bucket(bucket_name), build_batch(gen.HISTORY_START, today - timedelta(days=1), as_of=today))
+
+
+STEP_NAMES = ("01_ingest", "02_transform", "03_anomalies", "04_budget", "05_forecast", "07_qa")
+_MANIFEST_NAME = re.compile(rf"{LANDING}[^/]+/{re.escape(MANIFEST)}")
+
+
+@dataclass
+class StepResult:
+    step: str
+    started_at: str
+    seconds: float
+    ok: bool
+    rows: int = 0
+    error: str = ""
+
+
+def is_batch_manifest(name: str) -> bool:
+    return bool(_MANIFEST_NAME.fullmatch(name))
+
+
+# Heavy modules (scipy, statsmodels) load inside the step that needs them, which keeps cold starts short.
+def _ingest(batch_dir: Path, manifest: dict) -> int:
+    pipe = common.load_script("01_validate_and_ingest").IngestionPipeline()
+    rows = 0
+    for f in manifest["files"]:
+        result = pipe.run(str(batch_dir / f["name"]))
+        if not result.success:
+            raise RuntimeError(f"{f['name']}: {result.error_stage}: {result.error_message}")
+        rows += result.rows_accepted
+    return rows
+
+
+def _transform(batch_dir: Path, manifest: dict) -> int:
+    t = common.load_script("02_run_transformations")
+    t.GoldTransformer(common.bq_client(), t.setup_logging(Path("02_run_transformations.log")),
+                      (manifest["start"], manifest["end"])).run()
+    return 0
+
+
+def _anomalies(batch_dir: Path, manifest: dict) -> int:
+    common.load_script("03_anomaly_detection").AnomalyDetectionPipeline().run()
+    return 0
+
+
+def _budget(batch_dir: Path, manifest: dict) -> int:
+    common.load_script("04_budget_optimizer").BudgetOptimizerPipeline().run()
+    return 0
+
+
+def _forecast(batch_dir: Path, manifest: dict) -> int:
+    common.load_script("05_forecast").ForecastPipeline().run()
+    return 0
+
+
+def _qa(batch_dir: Path, manifest: dict) -> int:
+    if common.load_script("07_qa_validation").QAValidationRunner().run() != 0:
+        raise RuntimeError("QA found critical failures (see the 07_qa step log)")
+    return 0
+
+
+STEPS: tuple[tuple[str, Callable[[Path, dict], int]], ...] = tuple(
+    zip(STEP_NAMES, (_ingest, _transform, _anomalies, _budget, _forecast, _qa)))
+
+
+def run_batch(read: Callable[[str], bytes], write: Callable[[str, bytes], None], manifest_name: str, *,
+              steps=STEPS, record=None, now: datetime | None = None) -> list[StepResult]:
+    """Verify the batch, then run each step in order and stop at the first failure. Always writes _status.json (and
+    the metrics, when `record` is given). Re-raises the failure so the event shows as failed."""
+    prefix = manifest_name.rsplit("/", 1)[0] + "/"
+    run_id = f"r{(now or datetime.now(timezone.utc)):%Y%m%dt%H%M%S}-{prefix.split('/')[-2]}"
+    results: list[StepResult] = []
+    manifest, error = None, ""
+    try:
+        manifest = json.loads(read(manifest_name))
+        files = {f["name"]: read(prefix + f["name"]) for f in manifest["files"]}
+        verify_batch(manifest, files)
+        with tempfile.TemporaryDirectory() as tmp:
+            batch_dir = Path(tmp)
+            for name, body in files.items():
+                (batch_dir / name).write_bytes(body)
+            for name, fn in steps:
+                os.environ["PIPELINE_RUN_ID"], os.environ["PIPELINE_STEP"] = run_id, name
+                started, t0 = datetime.now(timezone.utc).isoformat(), time.perf_counter()
+                try:
+                    rows = fn(batch_dir, manifest)
+                except Exception as exc:
+                    results.append(StepResult(name, started, round(time.perf_counter() - t0, 3), False,
+                                              error=f"{type(exc).__name__}: {exc}"[:1000]))
+                    raise
+                results.append(StepResult(name, started, round(time.perf_counter() - t0, 3), True, int(rows or 0)))
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"[:1000]
+        raise
+    finally:
+        status = {"ok": not error, "run_id": run_id, "batch": prefix, "steps": [asdict(r) for r in results], "error": error}
+        if record:
+            try:
+                status |= record(run_id, prefix, manifest, results)
+            except Exception as exc:  # metrics must never mask the pipeline's own outcome
+                status["metrics_error"] = f"{type(exc).__name__}: {exc}"[:500]
+                common.get_logger("run_pipeline").error("metrics failed: %s", status["metrics_error"])
+        write(prefix + STATUS, json.dumps(status, indent=1).encode())
+    return results
+
+
+_USAGE_SQL = """
+SELECT (SELECT value FROM UNNEST(labels) WHERE key = 'step') AS step, COUNT(*) AS jobs,
+       SUM(IFNULL(total_bytes_billed, 0)) AS bytes_billed, SUM(IFNULL(total_slot_ms, 0)) AS slot_ms
+FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_USER
+WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
+  AND EXISTS (SELECT 1 FROM UNNEST(labels) WHERE key = 'pipeline_run' AND value = @run)
+GROUP BY step"""
+RUNS_SCHEMA = (("run_id", "STRING"), ("batch", "STRING"), ("step", "STRING"), ("started_at", "TIMESTAMP"),
+               ("seconds", "FLOAT64"), ("ok", "BOOL"), ("rows", "INT64"), ("error", "STRING"),
+               ("jobs", "INT64"), ("bytes_billed", "INT64"), ("slot_ms", "INT64"))
+
+
+def metrics_rows(run_id: str, batch: str, results: list[StepResult], usage: dict[str, dict]) -> list[dict]:
+    zero = {"jobs": 0, "bytes_billed": 0, "slot_ms": 0}
+    return [{"run_id": run_id, "batch": batch, **asdict(r), **usage.get(common._label(r.step), zero)} for r in results]
+
+
+def job_usage(client, run_id: str) -> dict[str, dict]:
+    from google.cloud import bigquery
+
+    cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("run", "STRING", common._label(run_id))])
+    return {r.step: {"jobs": r.jobs, "bytes_billed": r.bytes_billed, "slot_ms": r.slot_ms}
+            for r in client.query(_USAGE_SQL, job_config=cfg).result()}
+
+
+def append_runs(client, rows: list[dict]) -> None:
+    """One row per step into tbl_pipeline_runs (DAY-partitioned on started_at, created on first use)."""
+    if not rows:
+        return
+    import pandas as pd
+    from google.cloud import bigquery
+
+    ref = f"{common.PROJECT}.{common.STAGING_DS}.tbl_pipeline_runs"
+    table = bigquery.Table(ref, schema=[bigquery.SchemaField(n, t) for n, t in RUNS_SCHEMA])
+    table.time_partitioning = bigquery.TimePartitioning(field="started_at")
+    client.create_table(table, exists_ok=True)
+    df = pd.DataFrame(rows, columns=[n for n, _ in RUNS_SCHEMA]).assign(started_at=lambda d: pd.to_datetime(d.started_at, utc=True))
+    client.load_table_from_dataframe(df, ref, job_config=common.parquet_load_config(
+        schema=table.schema, write_disposition="WRITE_APPEND")).result()
+
+
+def detector_window(manifest: dict) -> tuple[date, date] | None:
+    """Dates that 03 scored as mature for the first time in this run (it scores ≤ gold max − RESTATING_DAYS, 90 days back)."""
+    end = date.fromisoformat(manifest["end"]) - timedelta(days=common.RESTATING_DAYS)
+    start = max(date.fromisoformat(manifest["start"]), end - timedelta(days=89))
+    return (start, end) if start <= end else None
+
+
+def detector_check(client, manifest: dict) -> dict:
+    """Live ground truth: of the anomalies planted in the newly scored dates, how many did 03 flag, same direction."""
+    window = detector_window(manifest)
+    if window is None:
+        return {}
+    truth = gen.planted(*window).assign(date=lambda t: t["date"].astype(str))
+    flags = f"{common.PROJECT}.{common.STAGING_DS}.fct_anomaly_flags"
+    flagged = client.query(
+        f"SELECT CAST(date AS STRING) AS date, campaign_id, anomaly_direction AS direction FROM `{flags}` "
+        f"WHERE is_anomaly = 1 AND date BETWEEN '{window[0]}' AND '{window[1]}'").to_dataframe()
+    hits = truth.merge(flagged, on=["date", "campaign_id", "direction"])
+    return {"detector_window": [w.isoformat() for w in window], "planted": len(truth),
+            "planted_flagged": len(hits), "flagged": len(flagged)}
+
+
+def record(run_id: str, batch: str, manifest: dict | None, results: list[StepResult]) -> dict:
+    os.environ["PIPELINE_STEP"] = "metrics"
+    client = common.bq_client()
+    complete = manifest is not None and len(results) == len(STEPS) and all(r.ok for r in results)
+    extra = detector_check(client, manifest) if complete else {}
+    rows = metrics_rows(run_id, batch, results, job_usage(client, run_id))
+    append_runs(client, rows)
+    return extra | {"bytes_billed": sum(r["bytes_billed"] for r in rows)}
+
+
+@cloud_event
+def run_pipeline(event) -> None:
+    name = event.data["name"]
+    if not is_batch_manifest(name):
+        return                                   # CSVs, _status.json and anything outside landing/ are ignored
+    bucket = _bucket(event.data["bucket"])
+    run_batch(lambda n: bucket.blob(n).download_as_bytes(),
+              lambda n, b: bucket.blob(n).upload_from_string(b, content_type="application/json"),
+              name, record=record)
+
+
+def _cli(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("backfill").add_argument("--bucket", help="default: $RAW_BUCKET")
+    sub.add_parser("run").add_argument("manifest", help="gs://BUCKET/landing/<as_of>/_manifest.json")
+    args = ap.parse_args(argv)
+    if args.cmd == "backfill":
+        print(backfill(args.bucket))
+        return
+    bucket_name, name = args.manifest.removeprefix("gs://").split("/", 1)
+    bucket = _bucket(bucket_name)
+    run_batch(lambda n: bucket.blob(n).download_as_bytes(),
+              lambda n, b: bucket.blob(n).upload_from_string(b, content_type="application/json"), name, record=record)
+
+
+if __name__ == "__main__":
+    _cli()
