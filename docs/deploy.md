@@ -240,6 +240,17 @@ Batches are never moved or deleted, so a replay is always available:
 
 Both are safe: the MERGEs are idempotent, so a duplicate delivery of the same manifest is a no-op.
 
+**`_status.json` is overwritten, not appended.** A replay writes a fresh `run_id`, `steps` and `error` to
+`landing/<as_of>/_status.json`, so replaying after a failure destroys that failed run's record at this path.
+If you need it, copy it first:
+
+```bash
+gcloud storage cp gs://$RAW_BUCKET/landing/<as_of>/_status.json ./status-<as_of>-before-replay.json
+```
+
+`tbl_pipeline_runs` is append-only and keeps every run's rows, failed or not, so the history survives there
+regardless.
+
 ### Status
 
 ```bash
