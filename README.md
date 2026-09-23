@@ -11,7 +11,7 @@
 - **Agent** (`adpilot/`): one Pydantic AI agent with typed tools (`run_sql`, `get_anomalies`, `get_forecast`, `get_budget_plan`, `render_chart`) over any SQL source. Model-written SQL goes through a defense-in-depth validator; data-source errors are returned to the model as structured hints so it repairs its own query (max 3 executions, 4 model calls per question). Primary → fallback model chain on 429s, then a deterministic rule-based answer so the user never sees a stack trace.
 - **Packs** (`packs/ads/`): everything domain-specific — table allowlist, column descriptions, glossary, system prompt, canned fallback queries and a DuckDB bootstrap. Swap the directory to point the same agent at different data.
 - **Connectors**: BigQuery (bytes-billed cap) and DuckDB over the raw CSVs, so the agent and tests run with zero credentials.
-- **Pipeline** (`pipelines/`): validate → Bronze MERGE → Gold MERGE (30-column contract) → anomaly flags (MAD z-score) → budget optimizer (LP) → 14-day forecast (Holt-Winters) → QA reconciliation. Idempotent, audited, cost-capped.
+- **Pipeline** (`pipelines/`, daily at 02:00 UTC on Cloud Run functions — see docs/deploy.md): calibrated synthetic source → validate → Bronze MERGE → Gold MERGE (30-column contract) → anomaly flags (MAD z-score) → budget optimizer (LP) → 14-day forecast (Holt-Winters) → QA reconciliation. Idempotent, audited, cost-capped.
 - **Dashboard** (`streamlit_app/`): performance overview, per-channel deep dives, AI insight cards and chat. Being replaced by a pack-driven dashboard in Phase 4.
 
 ## Roadmap

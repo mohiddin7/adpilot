@@ -28,3 +28,14 @@ def test_no_script_writes_log_files_itself(stem):
     # Cloud Run functions: only /tmp is writable. Logging goes through common.log_handlers, which skips the file.
     src = _src(stem)
     assert "FileHandler(" not in src and "makedirs(" not in src and ".mkdir(parents=True" not in src
+
+
+def test_function_source_is_self_contained():
+    # The functions deploy from --source pipelines: everything they import or read must live under pipelines/.
+    reqs = (PIPELINES / "requirements.txt").read_text()
+    for pkg in ("functions-framework", "google-cloud-bigquery", "google-cloud-storage", "db-dtypes", "pandas",
+                "numpy", "pyarrow", "scipy", "statsmodels", "python-dotenv"):
+        assert pkg in reqs, pkg
+    ignore = (PIPELINES / ".gcloudignore").read_text().split()
+    assert "tests/" in ignore and "logs/" in ignore
+    assert (PIPELINES / "calibration" / "levels.json").exists() and (PIPELINES / "calibration" / "seasonality.json").exists()
