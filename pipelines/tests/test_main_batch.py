@@ -69,6 +69,14 @@ def test_verify_refuses_a_tampered_batch(tamper):
         main.verify_batch(manifest, files)
 
 
+@pytest.mark.parametrize("name", ["../evil.csv", "/abs.csv"])
+def test_verify_refuses_a_manifest_name_that_escapes_the_batch_dir(name):
+    body = b"x\n"
+    manifest = {"files": [{"name": name, "rows": 0, "sha256": hashlib.sha256(body).hexdigest()}]}
+    with pytest.raises(RuntimeError):
+        main.verify_batch(manifest, {name: body})
+
+
 def test_empty_platform_file_still_verifies():
     body = b"date,campaign_id\n"
     main.verify_batch({"files": [{"name": "google_ads.csv", "rows": 0, "sha256": hashlib.sha256(body).hexdigest()}]},

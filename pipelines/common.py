@@ -67,6 +67,7 @@ def get_logger(name: str) -> logging.Logger:
     log = logging.getLogger(name)
     if not log.handlers:
         log.setLevel(logging.DEBUG)
+        log.propagate = False  # otherwise 01's root basicConfig duplicates every 02-05 line on stdout and into its own log
         for h in log_handlers(name):
             log.addHandler(h)
     return log

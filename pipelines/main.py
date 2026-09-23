@@ -77,6 +77,10 @@ def build_batch(start: date, end: date, as_of: date, *, today: date | None = Non
 
 def verify_batch(manifest: dict, files: dict[str, bytes]) -> None:
     """Fail closed before any BigQuery work: a partial or corrupt upload never reaches bronze."""
+    for f in manifest["files"]:
+        name = f["name"]
+        if Path(name).name != name or name.startswith("."):
+            raise RuntimeError(f"{name}: not a plain file name")
     listed = {f["name"] for f in manifest["files"]}
     if listed != set(files):
         raise RuntimeError(f"batch files {sorted(files)} != manifest {sorted(listed)}")
@@ -199,6 +203,8 @@ def run_batch(read: Callable[[str], bytes], write: Callable[[str, bytes], None],
     the metrics, when `record` is given). Re-raises the failure so the event shows as failed."""
     prefix = manifest_name.rsplit("/", 1)[0] + "/"
     run_id = f"r{(now or datetime.now(timezone.utc)):%Y%m%dt%H%M%S}-{prefix.split('/')[-2]}"
+    prev_run_id, prev_step = os.environ.get("PIPELINE_RUN_ID"), os.environ.get("PIPELINE_STEP")
+    os.environ["PIPELINE_RUN_ID"] = run_id  # set before verification too, so a failed run's own metrics query is still labelled
     results: list[StepResult] = []
     manifest, error = None, ""
     try:
@@ -210,7 +216,7 @@ def run_batch(read: Callable[[str], bytes], write: Callable[[str, bytes], None],
             for name, body in files.items():
                 (batch_dir / name).write_bytes(body)
             for name, fn in steps:
-                os.environ["PIPELINE_RUN_ID"], os.environ["PIPELINE_STEP"] = run_id, name
+                os.environ["PIPELINE_STEP"] = name
                 started, t0 = datetime.now(timezone.utc).isoformat(), time.perf_counter()
                 try:
                     rows = fn(batch_dir, manifest)
@@ -226,28 +232,35 @@ def run_batch(read: Callable[[str], bytes], write: Callable[[str, bytes], None],
         status = {"ok": not error, "run_id": run_id, "batch": prefix, "steps": [asdict(r) for r in results], "error": error}
         if record:
             try:
-                status |= record(run_id, prefix, manifest, results)
+                status |= record(run_id, prefix, manifest, results)  # may replace status["steps"] with the richer metrics rows
             except Exception as exc:  # metrics must never mask the pipeline's own outcome
                 status["metrics_error"] = f"{type(exc).__name__}: {exc}"[:500]
                 common.get_logger("run_pipeline").error("metrics failed: %s", status["metrics_error"])
         write(prefix + STATUS, json.dumps(status, indent=1).encode())
+        for var, prev in (("PIPELINE_RUN_ID", prev_run_id), ("PIPELINE_STEP", prev_step)):
+            if prev is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = prev
     return results
 
 
 _USAGE_SQL = """
 SELECT (SELECT value FROM UNNEST(labels) WHERE key = 'step') AS step, COUNT(*) AS jobs,
-       SUM(IFNULL(total_bytes_billed, 0)) AS bytes_billed, SUM(IFNULL(total_slot_ms, 0)) AS slot_ms
+       SUM(IFNULL(total_bytes_billed, 0)) AS bytes_billed, SUM(IFNULL(total_slot_ms, 0)) AS slot_ms,
+       COUNTIF(cache_hit) AS cache_hits
 FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_USER
 WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
+  AND parent_job_id IS NULL
   AND EXISTS (SELECT 1 FROM UNNEST(labels) WHERE key = 'pipeline_run' AND value = @run)
 GROUP BY step"""
 RUNS_SCHEMA = (("run_id", "STRING"), ("batch", "STRING"), ("step", "STRING"), ("started_at", "TIMESTAMP"),
                ("seconds", "FLOAT64"), ("ok", "BOOL"), ("rows", "INT64"), ("error", "STRING"),
-               ("jobs", "INT64"), ("bytes_billed", "INT64"), ("slot_ms", "INT64"))
+               ("jobs", "INT64"), ("bytes_billed", "INT64"), ("slot_ms", "INT64"), ("cache_hits", "INT64"))
 
 
 def metrics_rows(run_id: str, batch: str, results: list[StepResult], usage: dict[str, dict]) -> list[dict]:
-    zero = {"jobs": 0, "bytes_billed": 0, "slot_ms": 0}
+    zero = {"jobs": 0, "bytes_billed": 0, "slot_ms": 0, "cache_hits": 0}
     return [{"run_id": run_id, "batch": batch, **asdict(r), **usage.get(common._label(r.step), zero)} for r in results]
 
 
@@ -255,7 +268,7 @@ def job_usage(client, run_id: str) -> dict[str, dict]:
     from google.cloud import bigquery
 
     cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("run", "STRING", common._label(run_id))])
-    return {r.step: {"jobs": r.jobs, "bytes_billed": r.bytes_billed, "slot_ms": r.slot_ms}
+    return {r.step: {"jobs": r.jobs, "bytes_billed": r.bytes_billed, "slot_ms": r.slot_ms, "cache_hits": r.cache_hits}
             for r in client.query(_USAGE_SQL, job_config=cfg).result()}
 
 
@@ -298,13 +311,15 @@ def detector_check(client, manifest: dict) -> dict:
 
 
 def record(run_id: str, batch: str, manifest: dict | None, results: list[StepResult]) -> dict:
+    """Metrics rows are a superset of StepResult (jobs/bytes_billed/slot_ms/cache_hits added), so `run_batch`
+    merges them straight into `status["steps"]` — the same numbers land in _status.json and tbl_pipeline_runs."""
     os.environ["PIPELINE_STEP"] = "metrics"
     client = common.bq_client()
     complete = manifest is not None and len(results) == len(STEPS) and all(r.ok for r in results)
     extra = detector_check(client, manifest) if complete else {}
     rows = metrics_rows(run_id, batch, results, job_usage(client, run_id))
     append_runs(client, rows)
-    return extra | {"bytes_billed": sum(r["bytes_billed"] for r in rows)}
+    return extra | {"steps": rows, "bytes_billed": sum(r["bytes_billed"] for r in rows)}
 
 
 @cloud_event

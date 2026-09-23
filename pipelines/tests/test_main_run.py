@@ -107,9 +107,88 @@ def test_metrics_rows_zero_fill_steps_without_jobs():
     r = main.StepResult("01_ingest", "2026-09-24T02:00:01+00:00", 1.5, True, 10)
     rows = main.metrics_rows("r1", "landing/2026-09-24/", [r], {})
     assert rows == [{"run_id": "r1", "batch": "landing/2026-09-24/", "step": "01_ingest", "started_at": "2026-09-24T02:00:01+00:00",
-                     "seconds": 1.5, "ok": True, "rows": 10, "error": "", "jobs": 0, "bytes_billed": 0, "slot_ms": 0}]
+                     "seconds": 1.5, "ok": True, "rows": 10, "error": "", "jobs": 0, "bytes_billed": 0, "slot_ms": 0, "cache_hits": 0}]
 
 
 def test_detector_window_daily_and_backfill():
     assert main.detector_window({"start": "2026-09-21", "end": "2026-09-23"}) == (date(2026, 9, 21), date(2026, 9, 21))
     assert main.detector_window({"start": "2024-01-31", "end": "2026-09-23"}) == (date(2026, 6, 24), date(2026, 9, 21))
+
+
+def test_status_steps_carries_the_richer_metrics_fields_when_record_returns_them():
+    store = _store()
+
+    def rec(run_id, batch, manifest, results):
+        rows = main.metrics_rows(run_id, batch, results, {})   # zero-filled jobs/bytes_billed/slot_ms/cache_hits
+        return {"steps": rows, "bytes_billed": 123}
+
+    main.run_batch(store.__getitem__, store.write, MANIFEST, steps=[("01_ingest", lambda d, m: 5)], record=rec, now=NOW)
+    status = _status(store)
+    assert status["bytes_billed"] == 123
+    assert status["steps"] == [{"run_id": "r20260924t020001-2026-09-24", "batch": "landing/2026-09-24/", "step": "01_ingest",
+                                "started_at": status["steps"][0]["started_at"], "seconds": status["steps"][0]["seconds"],
+                                "ok": True, "rows": 5, "error": "", "jobs": 0, "bytes_billed": 0, "slot_ms": 0, "cache_hits": 0}]
+
+
+class _FakeQueryResult:
+    def __init__(self, rows=()):
+        self._rows = rows
+
+    def result(self):
+        return self._rows
+
+    def to_dataframe(self):
+        raise AssertionError("detector_check must not query fct_anomaly_flags on an incomplete/failed run")
+
+
+class _FakeBQClient:
+    def __init__(self):
+        self.queries, self.created, self.loaded = [], [], []
+
+    def query(self, sql, job_config=None):
+        self.queries.append(sql)
+        return _FakeQueryResult(())
+
+    def create_table(self, table, exists_ok=True):
+        self.created.append(table)
+
+    def load_table_from_dataframe(self, df, ref, job_config=None):
+        self.loaded.append((df, ref))
+
+        class _Job:
+            def result(self_inner):
+                return None
+
+        return _Job()
+
+
+def test_record_writes_one_row_per_step_including_the_failed_one_and_skips_the_detector_on_failure(monkeypatch):
+    fake = _FakeBQClient()
+    monkeypatch.setattr(common, "bq_client", lambda: fake)
+    manifest = {"start": "2026-09-21", "end": "2026-09-23"}
+    results = [main.StepResult("01_ingest", "2026-09-24T02:00:01+00:00", 1.0, True, 5),
+               main.StepResult("02_transform", "2026-09-24T02:00:02+00:00", 1.0, False, error="boom")]
+
+    extra = main.record("r1", "landing/2026-09-24/", manifest, results)
+
+    assert [r["step"] for r in extra["steps"]] == ["01_ingest", "02_transform"]
+    assert extra["steps"][1]["ok"] is False and extra["steps"][1]["error"] == "boom"
+    assert fake.created and len(fake.loaded) == 1 and len(fake.loaded[0][0]) == 2
+    assert all("JOBS_BY_USER" in q for q in fake.queries)         # only job_usage's query ran
+    assert "detector_window" not in extra                        # no detector check on a failed/incomplete run
+
+
+def test_run_batch_restores_pipeline_env_vars_afterward(monkeypatch):
+    store = _store()
+    monkeypatch.delenv("PIPELINE_RUN_ID", raising=False)
+    monkeypatch.setenv("PIPELINE_STEP", "before")
+
+    main.run_batch(store.__getitem__, store.write, MANIFEST, steps=[("01_ingest", lambda d, m: 0)], now=NOW)
+
+    assert os.environ["PIPELINE_STEP"] == "before"
+    assert "PIPELINE_RUN_ID" not in os.environ
+
+
+def test_usage_sql_excludes_script_parent_jobs_and_reports_cache_hits():
+    assert "parent_job_id IS NULL" in main._USAGE_SQL
+    assert "cache_hit" in main._USAGE_SQL

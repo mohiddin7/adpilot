@@ -107,3 +107,7 @@ def test_load_script_imports_digit_prefixed_scripts_once():
     common = _fresh_common()
     mod = common.load_script("03_anomaly_detection")
     assert hasattr(mod, "AnomalyDetectionEngine") and common.load_script("03_anomaly_detection") is mod
+
+
+def test_get_logger_does_not_propagate_to_the_root_logger():
+    assert _fresh_common().get_logger("x-prop").propagate is False
