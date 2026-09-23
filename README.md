@@ -4,7 +4,7 @@
 
 **An agentic analytics platform for marketing data.** Unifies multi-channel ad performance in a BigQuery lakehouse, enriches it with anomaly detection, forecasting and budget optimization, and puts an AI analyst on top that answers questions in plain English — with guardrails, self-healing SQL and an evaluation harness.
 
-> Status: active rebuild. The agent core now runs on Pydantic AI with a data-agnostic "pack" system. Next up: a FastAPI service, a proactive briefing agent and an MCP server. See the roadmap below.
+> Status: active rebuild. The agent core now runs on Pydantic AI with a data-agnostic "pack" system. The FastAPI service and the daily brief are live; next up is an MCP server. See the roadmap below.
 
 ## What it does today
 
@@ -21,7 +21,7 @@
 | 0 | Repo hygiene, env-driven config, CI ✅ |
 | 1 | Data-agnostic agent core (Pydantic AI), typed tools, guardrails, `adpilot chat` CLI ✅ |
 | 2 | Eval harness: golden cases, red-team, self-heal rate, LLM judge, scorecard ✅ |
-| 3 | Three surfaces over the same agent: FastAPI service ✅ · proactive briefing agent · MCP server |
+| 3 | Three surfaces over the same agent: FastAPI service ✅ · daily brief ✅ · MCP server |
 | 4 | Pack-driven dashboard + human-in-the-loop budget approvals |
 | 5 | Production rollout: Docker ✅, tracing ✅, deployed Cloud Run service |
 
@@ -102,6 +102,18 @@ adpilot audit runs                 # recent eval runs from the BigQuery audit tr
 ```
 
 See [docs/evals.md](docs/evals.md) for how scoring works and what the nightly PR means, and [docs/security.md](docs/security.md) for the guardrail layers and what each one can and cannot catch. Every agent call is recorded in BigQuery (tokens, cost, latency, model used); see [docs/observability.md](docs/observability.md).
+
+## Daily brief
+
+```bash
+adpilot brief --out brief.md
+```
+
+The agent answers the pack's `briefing.questions` (`packs/ads/pack.yaml`) exactly as it answers a chat question. Then one tool-less model call turns the answers into **what changed**, **so what** and **what to do**, citing the question and trace behind each finding. Answers that refused or fell back to a canned query are listed as *Unavailable*, never presented as findings. Any number in the brief that doesn't appear in the answers is flagged `BriefUngrounded`. If synthesis fails you get the raw answers instead. Without a model key, every question is listed as *Unavailable* with the reason. The brief is redacted before it's published, just like every chat answer.
+
+`.github/workflows/brief-daily.yml` runs it every day at 12:00 UTC and opens a GitHub issue titled `Daily brief YYYY-MM-DD`. Every question and the synthesis are in the audit trail under one run id: `adpilot audit export --run <id>`.
+
+The bundled data set covers January 2024, so until the data refreshes the brief reports the same period each day.
 
 ## Configuration
 

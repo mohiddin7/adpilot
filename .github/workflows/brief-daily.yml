@@ -1,0 +1,55 @@
+name: brief-daily
+on:
+  schedule:
+    - cron: "0 12 * * *"  # 9 h after evals-nightly (03:00), which shares the free-tier model quota
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  PYDANTIC_AI_NO_BANNER: "1"
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e .
+      - name: Audit preflight
+        env:
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          BQ_PROJECT_ID: ${{ secrets.BQ_PROJECT_ID }}
+        run: adpilot audit preflight
+      - name: Write the brief
+        id: brief
+        env:
+          AGENT_LLM_BEARER_TOKEN: ${{ secrets.AGENT_LLM_BEARER_TOKEN }}
+          JEV_API_KEY: ${{ secrets.JEV_API_KEY }}
+          ADPILOT_INPUT_CLASSIFIER: ${{ secrets.JEV_API_KEY != '' && 'jev' || '' }}
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          BQ_PROJECT_ID: ${{ secrets.BQ_PROJECT_ID }}
+        run: |
+          set +e
+          adpilot brief --out brief.md
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('brief.md') != ''
+        with:
+          name: brief-${{ github.run_id }}
+          path: brief.md
+          retention-days: 90
+      - name: Open the issue
+        if: hashFiles('brief.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue create --title "Daily brief $(date -u +%F)" --body-file brief.md
+      - name: Fail the job on a partial or unrecorded brief
+        if: steps.brief.outputs.code != '0'
+        run: exit 1

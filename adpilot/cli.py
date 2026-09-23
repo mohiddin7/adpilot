@@ -1,4 +1,4 @@
-"""adpilot CLI: `adpilot chat [-q QUESTION]`, `adpilot schema`, `adpilot eval` and `adpilot audit`."""
+"""adpilot CLI: `adpilot chat [-q QUESTION]`, `adpilot schema`, `adpilot brief`, `adpilot eval` and `adpilot audit`."""
 
 from __future__ import annotations
 
@@ -126,6 +126,37 @@ def cmd_chat(args, out) -> int:
             one(q)
 
 
+def cmd_brief(args, out) -> int:
+    """Markdown on `out` (or --out); every status line on stderr so `adpilot brief > brief.md` stays clean."""
+    from adpilot.core.brief import questions, run_brief
+
+    err = sys.stderr
+    sink = open_sink(err)
+    if sink is None:
+        return 2
+    deps = _deps(args, sink)
+    if not questions(deps.pack):
+        print(f"pack {deps.pack.name} defines no briefing questions (pack.yaml: briefing.questions)", file=err)
+        return 2
+    model = build_model()
+    if model is None:
+        print("No AGENT_LLM_BEARER_TOKEN set — every question falls back and there is no synthesis.", file=err)
+    try:
+        brief = run_brief(deps, build_agent(model), model)
+        if args.out:
+            Path(args.out).write_text(brief.markdown)
+        else:
+            print(brief.markdown, file=out)
+    finally:
+        # Every question's record is already buffered; flush even if writing the brief raised (as cmd_chat does).
+        rep = sink.flush()
+        if not rep.ok:
+            print(f"audit: {rep.pending} row(s) not persisted — {'; '.join(rep.errors)}", file=err)
+    if not rep.ok:
+        return 2
+    return 1 if brief.unavailable or brief.summary is None else 0
+
+
 def cmd_audit(args, out) -> int:
     if args.audit_cmd == "preflight":
         return 0 if open_sink(out) is not None else 2
@@ -170,6 +201,8 @@ def main(argv: list[str] | None = None, out=None) -> int:
     chat.add_argument("-q", "--question")
     chat.add_argument("--session", help="session id; keeps the last 3 turns as context")
     sub.add_parser("schema", help="print the tables the agent can query")
+    br = sub.add_parser("brief", help="write the daily brief as markdown")
+    br.add_argument("--out", help="write the brief to FILE instead of stdout")
     ev = sub.add_parser("eval", help="run the eval harness")
     ev.add_argument("--tier", choices=["deterministic", "model"], default="deterministic")
     ev.add_argument("--family", action="append", help="restrict to a family (repeatable)")
@@ -189,7 +222,8 @@ def main(argv: list[str] | None = None, out=None) -> int:
     ex.add_argument("--run", required=True)
     ex.add_argument("--csv", action="store_true")
     args = p.parse_args(argv)
-    return {"chat": cmd_chat, "schema": cmd_schema, "eval": cmd_eval, "audit": cmd_audit}[args.cmd](args, out)
+    commands = {"chat": cmd_chat, "schema": cmd_schema, "brief": cmd_brief, "eval": cmd_eval, "audit": cmd_audit}
+    return commands[args.cmd](args, out)
 
 
 if __name__ == "__main__":
