@@ -27,6 +27,9 @@ jobs:
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
           BQ_PROJECT_ID: ${{ secrets.BQ_PROJECT_ID }}
         run: adpilot audit preflight
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
       - name: Write the brief
         id: brief
         env:
@@ -36,6 +39,9 @@ jobs:
           ADPILOT_INPUT_CLASSIFIER: ${{ secrets.JEV_API_KEY != '' && 'jev' || '' }}
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
           BQ_PROJECT_ID: ${{ secrets.BQ_PROJECT_ID }}
+          ADPILOT_CONNECTOR: bigquery
+          BQ_STAGING_DATASET: ${{ secrets.BQ_STAGING_DATASET }}
+          BQ_PRODUCTION_DATASET: ${{ secrets.BQ_PRODUCTION_DATASET }}
         run: |
           set +e
           adpilot brief --out brief.md
@@ -54,3 +60,18 @@ jobs:
       - name: Fail the job on a partial or unrecorded brief
         if: steps.brief.outputs.code != '0'
         run: exit 1
+      - name: Data freshness gate
+        if: always()
+        env:
+          BQ_PROJECT_ID: ${{ secrets.BQ_PROJECT_ID }}
+          BQ_PRODUCTION_DATASET: ${{ secrets.BQ_PRODUCTION_DATASET }}
+        run: |
+          python - <<'EOF'
+          import datetime as dt, os
+          from google.cloud import bigquery
+          table = f"{os.environ['BQ_PROJECT_ID']}.{os.environ['BQ_PRODUCTION_DATASET']}.fct_unified_marketing_performance"
+          latest = next(iter(bigquery.Client(project=os.environ["BQ_PROJECT_ID"]).query(f"SELECT MAX(date) AS d FROM `{table}`").result())).d
+          want = dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=1)
+          print(f"gold is complete through {latest}; the SLO wants {want}")
+          raise SystemExit(0 if latest and latest >= want else 1)
+          EOF
