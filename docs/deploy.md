@@ -238,8 +238,9 @@ python pipelines/main.py backfill
 ```
 
 Run it from an environment with the same `numpy` and `pandas` versions that `pipelines/requirements.txt` pins
-(check with `pip show numpy pandas`). The deployed function regenerates the restating days from the same seeds,
-and its output must match the backfill's byte for byte.
+(check with `pip show numpy pandas`, or `uv pip show numpy pandas` in this repo's uv-managed `.venv`). The
+deployed function regenerates the restating days from the same seeds, and its output must match the backfill's
+byte for byte.
 
 ### Replay a batch
 

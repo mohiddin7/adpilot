@@ -45,7 +45,7 @@ Backward compatibility:
 
 Data source : fct_unified_marketing_performance  (gold mart)
 Output      : fct_anomaly_flags                  (WRITE_TRUNCATE, Tier-2)
-Lookback    : anchored to MAX(date) in gold — NOT CURRENT_DATE.
+Lookback    : anchored to the mature cutoff, MAX(date) − RESTATING_DAYS in gold — NOT CURRENT_DATE.
 
 Execution:
   python pipelines/03_anomaly_detection.py

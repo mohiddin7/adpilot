@@ -1,3 +1,4 @@
+import re
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -106,3 +107,14 @@ def test_refuses_an_as_of_after_today():
 def test_creative_fatigue_resets_are_staggered_across_campaigns():
     real = [c for p in gen.PLATFORMS for c in gen.roster(p, date(2024, 12, 31)) if c.start == gen.HISTORY_START]
     assert len({gen._creative_phase(c.campaign_id) for c in real}) > 1
+
+
+def test_every_row_passes_each_platforms_extra_gold_filter():
+    # 02's gold_where_extra (frequency/reach, quality_score/search_impression_share, the TikTok video funnel), read
+    # from where 02 defines it and evaluated as pandas: a row failing it would silently never reach gold.
+    specs = common.load_script("02_run_transformations").SqlBuilder._PLATFORM_CONFIG
+    for p, df in _gen(date(2024, 1, 31), date(2024, 12, 31)).items():
+        sql = specs[gen.PLATFORMS[p]["label"]]["gold_where_extra"]
+        expr = re.sub(r"\bOR\b", "or", re.sub(r"\bAND\b", "and", re.sub(r"(?<![<>!])=", "==", sql)))
+        bad = df[~df.eval(expr)]
+        assert bad.empty, (p, sql, bad.head(3).to_dict("records"))
