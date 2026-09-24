@@ -30,7 +30,7 @@ try:
     import functions_framework
 
     http, cloud_event = functions_framework.http, functions_framework.cloud_event
-except ImportError:  # tests and local runs
+except ModuleNotFoundError:  # tests and local runs
     def http(f):
         return f
 
@@ -198,9 +198,14 @@ STEPS: tuple[tuple[str, Callable[[Path, dict], int]], ...] = tuple(
 
 
 def run_batch(read: Callable[[str], bytes], write: Callable[[str, bytes], None], manifest_name: str, *,
-              steps=STEPS, record=None, now: datetime | None = None) -> list[StepResult]:
+              steps=STEPS, record=None, gold_max: Callable[[], date | None] | None = None,
+              now: datetime | None = None) -> list[StepResult]:
     """Verify the batch, then run each step in order and stop at the first failure. Always writes _status.json (and
-    the metrics, when `record` is given). Re-raises the failure so the event shows as failed."""
+    the metrics, when `record` is given). Re-raises the failure so the event shows as failed.
+
+    With `gold_max`, a batch ending before gold's newest date is refused: no later window carries its restating
+    dates again, so replaying it would leave them at 85–95 % maturity for good."""
+    t_start = time.perf_counter()
     prefix = manifest_name.rsplit("/", 1)[0] + "/"
     run_id = f"r{(now or datetime.now(timezone.utc)):%Y%m%dt%H%M%S}-{prefix.split('/')[-2]}"
     prev_run_id, prev_step = os.environ.get("PIPELINE_RUN_ID"), os.environ.get("PIPELINE_STEP")
@@ -211,6 +216,12 @@ def run_batch(read: Callable[[str], bytes], write: Callable[[str, bytes], None],
         manifest = json.loads(read(manifest_name))
         files = {f["name"]: read(prefix + f["name"]) for f in manifest["files"]}
         verify_batch(manifest, files)
+        if gold_max and os.environ.get("PIPELINE_ALLOW_OLD_BATCH") != "1":
+            os.environ["PIPELINE_STEP"] = "verify"
+            newest = gold_max()
+            if newest and date.fromisoformat(manifest["end"]) < newest:
+                raise RuntimeError(f"batch ends {manifest['end']} but gold already reaches {newest}: replaying it would "
+                                   "regress restated conversions; set PIPELINE_ALLOW_OLD_BATCH=1 for a deliberate rebuild")
         with tempfile.TemporaryDirectory() as tmp:
             batch_dir = Path(tmp)
             for name, body in files.items():
@@ -234,14 +245,22 @@ def run_batch(read: Callable[[str], bytes], write: Callable[[str, bytes], None],
             try:
                 status |= record(run_id, prefix, manifest, results)  # may replace status["steps"] with the richer metrics rows
             except Exception as exc:  # metrics must never mask the pipeline's own outcome
+                status |= getattr(exc, "partial_status", {})  # what record() gathered before the append failed
                 status["metrics_error"] = f"{type(exc).__name__}: {exc}"[:500]
                 common.get_logger("run_pipeline").error("metrics failed: %s", status["metrics_error"])
-        write(prefix + STATUS, json.dumps(status, indent=1).encode())
-        for var, prev in (("PIPELINE_RUN_ID", prev_run_id), ("PIPELINE_STEP", prev_step)):
-            if prev is None:
-                os.environ.pop(var, None)
-            else:
-                os.environ[var] = prev
+        status["seconds"] = round(time.perf_counter() - t_start, 3)
+        try:
+            write(prefix + STATUS, json.dumps(status, indent=1).encode())
+        except Exception as exc:
+            common.get_logger("run_pipeline").error("status write failed: %s: %s", type(exc).__name__, exc)
+            if not error:
+                raise  # a failed run's own exception is the one that propagates
+        finally:
+            for var, prev in (("PIPELINE_RUN_ID", prev_run_id), ("PIPELINE_STEP", prev_step)):
+                if prev is None:
+                    os.environ.pop(var, None)
+                else:
+                    os.environ[var] = prev
     return results
 
 
@@ -312,14 +331,32 @@ def detector_check(client, manifest: dict) -> dict:
 
 def record(run_id: str, batch: str, manifest: dict | None, results: list[StepResult]) -> dict:
     """Metrics rows are a superset of StepResult (jobs/bytes_billed/slot_ms/cache_hits added), so `run_batch`
-    merges them straight into `status["steps"]` — the same numbers land in _status.json and tbl_pipeline_runs."""
+    merges them straight into `status["steps"]` — the same numbers land in _status.json and tbl_pipeline_runs.
+    Usage and the detector check fail soft (`usage_error`, `detector_error`), so the rows are always appended. An
+    append failure re-raises with the gathered fields on `exc.partial_status`, which run_batch keeps."""
     os.environ["PIPELINE_STEP"] = "metrics"
+    log = common.get_logger("run_pipeline")
     client = common.bq_client()
-    complete = manifest is not None and len(results) == len(STEPS) and all(r.ok for r in results)
-    extra = detector_check(client, manifest) if complete else {}
-    rows = metrics_rows(run_id, batch, results, job_usage(client, run_id))
-    append_runs(client, rows)
-    return extra | {"steps": rows, "bytes_billed": sum(r["bytes_billed"] for r in rows)}
+    out: dict = {}
+    try:
+        usage = job_usage(client, run_id)
+    except Exception as exc:  # JOBS_BY_USER needs bigquery.jobs.list: without it the steps are zero-filled
+        usage, out["usage_error"] = {}, f"{type(exc).__name__}: {exc}"[:500]
+        log.error("job usage failed: %s", out["usage_error"])
+    if manifest is not None and len(results) == len(STEPS) and all(r.ok for r in results):
+        try:
+            out |= detector_check(client, manifest)
+        except Exception as exc:
+            out["detector_error"] = f"{type(exc).__name__}: {exc}"[:500]
+            log.error("detector check failed: %s", out["detector_error"])
+    rows = metrics_rows(run_id, batch, results, usage)
+    out |= {"steps": rows, "bytes_billed": sum(r["bytes_billed"] for r in rows)}
+    try:
+        append_runs(client, rows)
+    except Exception as exc:
+        exc.partial_status = out  # not `.status`: HTTP client errors often carry an int there
+        raise
+    return out
 
 
 @cloud_event
@@ -330,7 +367,7 @@ def run_pipeline(event) -> None:
     bucket = _bucket(event.data["bucket"])
     run_batch(lambda n: bucket.blob(n).download_as_bytes(),
               lambda n, b: bucket.blob(n).upload_from_string(b, content_type="application/json"),
-              name, record=record)
+              name, record=record, gold_max=gold_max_date)
 
 
 def _cli(argv: list[str] | None = None) -> None:
@@ -345,7 +382,8 @@ def _cli(argv: list[str] | None = None) -> None:
     bucket_name, name = args.manifest.removeprefix("gs://").split("/", 1)
     bucket = _bucket(bucket_name)
     run_batch(lambda n: bucket.blob(n).download_as_bytes(),
-              lambda n, b: bucket.blob(n).upload_from_string(b, content_type="application/json"), name, record=record)
+              lambda n, b: bucket.blob(n).upload_from_string(b, content_type="application/json"), name,
+              record=record, gold_max=gold_max_date)
 
 
 if __name__ == "__main__":

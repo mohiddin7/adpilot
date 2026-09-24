@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -192,3 +193,158 @@ def test_run_batch_restores_pipeline_env_vars_afterward(monkeypatch):
 def test_usage_sql_excludes_script_parent_jobs_and_reports_cache_hits():
     assert "parent_job_id IS NULL" in main._USAGE_SQL
     assert "cache_hit" in main._USAGE_SQL
+
+
+class _FailingBQClient(_FakeBQClient):
+    """Raises on the query whose SQL contains `fail_on` (JOBS_BY_USER for job_usage, fct_anomaly_flags for the
+    detector check), or on the load when `fail_load` is set."""
+
+    def __init__(self, fail_on="", fail_load=False):
+        super().__init__()
+        self.fail_on, self.fail_load = fail_on, fail_load
+
+    def query(self, sql, job_config=None):
+        if self.fail_on and self.fail_on in sql:
+            self.queries.append(sql)
+            raise PermissionError(f"403 Access Denied: {self.fail_on}")
+        return super().query(sql, job_config)
+
+    def load_table_from_dataframe(self, df, ref, job_config=None):
+        if self.fail_load:
+            raise ConnectionError("load failed")
+        return super().load_table_from_dataframe(df, ref, job_config)
+
+
+def _complete_results():
+    return [main.StepResult(n, "2026-09-24T02:00:01+00:00", 1.0, True, 1) for n in main.STEP_NAMES]
+
+
+def test_record_still_appends_zero_filled_rows_when_job_usage_is_denied(monkeypatch):
+    fake = _FailingBQClient(fail_on="JOBS_BY_USER")    # roles/bigquery.jobUser lacks bigquery.jobs.list
+    monkeypatch.setattr(common, "bq_client", lambda: fake)
+    results = [main.StepResult("01_ingest", "2026-09-24T02:00:01+00:00", 1.0, False, error="boom")]
+
+    extra = main.record("r1", "landing/2026-09-24/", {"start": "2026-09-21", "end": "2026-09-23"}, results)
+
+    assert "403" in extra["usage_error"]
+    assert len(fake.loaded) == 1 and len(fake.loaded[0][0]) == 1
+    assert extra["steps"][0] | {"jobs": 0, "bytes_billed": 0, "slot_ms": 0, "cache_hits": 0} == extra["steps"][0]
+    assert extra["bytes_billed"] == 0
+
+
+def test_record_still_appends_rows_when_the_detector_check_fails_on_a_complete_run(monkeypatch):
+    fake = _FailingBQClient(fail_on="fct_anomaly_flags")
+    monkeypatch.setattr(common, "bq_client", lambda: fake)
+
+    extra = main.record("r1", "landing/2026-09-24/", {"start": "2026-09-21", "end": "2026-09-23"}, _complete_results())
+
+    assert any("fct_anomaly_flags" in q for q in fake.queries)   # the check did run, and failed
+    assert "403" in extra["detector_error"] and "usage_error" not in extra
+    assert len(fake.loaded) == 1 and len(fake.loaded[0][0]) == 6
+    assert [r["step"] for r in extra["steps"]] == list(main.STEP_NAMES)
+
+
+def test_append_failure_becomes_metrics_error_but_keeps_the_other_fields(monkeypatch):
+    fake = _FailingBQClient(fail_on="JOBS_BY_USER", fail_load=True)
+    monkeypatch.setattr(common, "bq_client", lambda: fake)
+    store = _store()
+
+    main.run_batch(store.__getitem__, store.write, MANIFEST, steps=[("01_ingest", lambda d, m: 7)],
+                   record=main.record, now=NOW)
+
+    status = _status(store)
+    assert status["ok"] and "load failed" in status["metrics_error"] and "403" in status["usage_error"]
+    assert status["steps"][0]["rows"] == 7 and status["steps"][0]["jobs"] == 0 and status["bytes_billed"] == 0
+
+
+def test_record_reraises_the_append_error(monkeypatch):
+    monkeypatch.setattr(common, "bq_client", lambda: _FailingBQClient(fail_load=True))
+    with pytest.raises(ConnectionError, match="load failed"):
+        main.record("r1", "landing/2026-09-24/", None, [main.StepResult("01_ingest", "2026-09-24T02:00:01+00:00", 1.0, True)])
+
+
+def test_refuses_a_batch_older_than_gold_and_runs_no_step(monkeypatch):
+    monkeypatch.delenv("PIPELINE_ALLOW_OLD_BATCH", raising=False)
+    store = _store()                                      # the batch ends 2026-09-23
+    with pytest.raises(RuntimeError, match="PIPELINE_ALLOW_OLD_BATCH"):
+        main.run_batch(store.__getitem__, store.write, MANIFEST, steps=[("01_ingest", pytest.fail)],
+                       gold_max=lambda: date(2026, 9, 24), now=NOW)
+    status = _status(store)
+    assert not status["ok"] and status["steps"] == []
+    assert "2026-09-23" in status["error"] and "2026-09-24" in status["error"]
+
+
+@pytest.mark.parametrize("gold, override", [
+    (date(2026, 9, 23), None),       # a duplicate of the newest batch
+    (None, None),                    # gold empty: the first batch
+    (date(2026, 9, 24), "1"),        # a deliberate rebuild
+])
+def test_runs_a_batch_that_is_not_older_than_gold_or_is_overridden(monkeypatch, gold, override):
+    if override:
+        monkeypatch.setenv("PIPELINE_ALLOW_OLD_BATCH", override)
+    else:
+        monkeypatch.delenv("PIPELINE_ALLOW_OLD_BATCH", raising=False)
+    store, ran = _store(), []
+    main.run_batch(store.__getitem__, store.write, MANIFEST, steps=[("01_ingest", lambda d, m: ran.append(1))],
+                   gold_max=lambda: gold, now=NOW)
+    assert ran == [1] and _status(store)["ok"]
+
+
+def test_the_function_and_the_run_cli_guard_against_old_batches(monkeypatch):
+    seen = []
+    monkeypatch.setattr(main, "_bucket", lambda name=None: None)
+    monkeypatch.setattr(main, "run_batch", lambda *a, **kw: seen.append(kw.get("gold_max")))
+
+    class Event:
+        data = {"name": MANIFEST, "bucket": "b"}
+
+    main.run_pipeline(Event())
+    main._cli(["run", f"gs://b/{MANIFEST}"])
+    assert seen == [main.gold_max_date, main.gold_max_date]
+
+
+def test_status_records_the_total_seconds():
+    store = _store()
+
+    def slow(batch_dir, manifest):
+        time.sleep(0.01)
+        return 0
+
+    main.run_batch(store.__getitem__, store.write, MANIFEST, steps=[("01_ingest", slow), ("02_transform", slow)], now=NOW)
+    status = _status(store)
+    assert status["seconds"] >= sum(s["seconds"] for s in status["steps"]) >= 0.02
+    assert status["seconds"] == round(status["seconds"], 3)
+
+
+class _Log:
+    def __init__(self):
+        self.errors = []
+
+    def error(self, msg, *args):
+        self.errors.append(msg % args)
+
+
+def _failing_write(name, body):
+    raise OSError("gcs down")
+
+
+def test_status_write_failure_after_a_good_run_is_raised_and_env_restored(monkeypatch):
+    log = _Log()
+    monkeypatch.setattr(common, "get_logger", lambda name: log)
+    monkeypatch.setenv("PIPELINE_STEP", "before")
+    with pytest.raises(OSError, match="gcs down"):
+        main.run_batch(_store().__getitem__, _failing_write, MANIFEST, steps=[("01_ingest", lambda d, m: 0)], now=NOW)
+    assert os.environ["PIPELINE_STEP"] == "before" and any("gcs down" in e for e in log.errors)
+
+
+def test_status_write_failure_after_a_failed_run_keeps_the_original_error(monkeypatch):
+    log = _Log()
+    monkeypatch.setattr(common, "get_logger", lambda name: log)
+    monkeypatch.setenv("PIPELINE_STEP", "before")
+
+    def boom(batch_dir, manifest):
+        raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        main.run_batch(_store().__getitem__, _failing_write, MANIFEST, steps=[("01_ingest", boom)], now=NOW)
+    assert os.environ["PIPELINE_STEP"] == "before" and any("gcs down" in e for e in log.errors)
