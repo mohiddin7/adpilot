@@ -34,7 +34,8 @@ from adpilot.core.tools import AgentDeps
 from adpilot.packs.loader import Pack
 
 RAW_ROWS = 10  # rows per answer in the raw view; keeps an issue body far below GitHub's 65 536 chars
-_NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# Not a digit glued to a letter ("Q3" is a citation), and a comma only as a thousands separator ("3," is punctuation).
+_NUM = re.compile(r"(?<![A-Za-z_\d])\d+(?:,\d{3})*(?:\.\d+)?")
 
 SYNTH_INSTRUCTIONS = """\
 You turn analyst answers into a short daily brief for the person who owns the ad budget.
