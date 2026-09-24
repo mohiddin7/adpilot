@@ -169,6 +169,18 @@ def test_deterministic_tier_uses_memory_sink_and_stamps_run_id(tmp_path):
     assert res.run_id and res.scorecard.run_id == res.run_id and res.audit is not None and res.audit.written["agent_calls"] == 2
 
 
+def test_model_tier_refuses_a_judge_that_shares_the_agents_model(monkeypatch, tmp_path):
+    """Fail closed: a judge chain that includes an agent model would grade its own answers, so no case runs."""
+    from adpilot.core.audit import MemorySink
+
+    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "test-key")
+    monkeypatch.setenv("AGENT_LLM_MODELS", "vendor/shared:free")
+    monkeypatch.setenv("JUDGE_LLM_MODELS", "vendor/shared:free")
+    monkeypatch.setattr(run_module, "build_model", lambda: _scripted_agent_model())
+    res = run(tier="model", families={"scope"}, limit=1, out_dir=tmp_path, readme=tmp_path / "R.md", audit=MemorySink())
+    assert not res.ok and res.scorecard is None and "shares vendor/shared" in res.problems[0]
+
+
 def test_model_tier_audit_unavailable_is_a_harness_error(monkeypatch, tmp_path):
     from adpilot.core.audit import AuditUnavailable
 
@@ -262,7 +274,7 @@ def test_grader_records_the_judge_that_actually_ran(monkeypatch, tmp_path):
     `scores.grader` and `models["judge"]` both recorded the *requested* judge, so the self-grading
     was invisible. Both must name the model that answered."""
     monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "test-key")
-    monkeypatch.setenv("JUDGE_LLM_TARGET_MODEL", "vendor/requested-judge")
+    monkeypatch.setenv("JUDGE_LLM_MODELS", "vendor/requested-judge")
     monkeypatch.setattr(run_module, "build_model", lambda: _scripted_agent_model())
     monkeypatch.setattr(run_module, "build_judge_model", lambda cfg: _scripted_judge_model())
     from adpilot.core.audit import MemorySink

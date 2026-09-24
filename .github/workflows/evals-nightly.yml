@@ -32,6 +32,8 @@ jobs:
         env:
           AGENT_LLM_BEARER_TOKEN: ${{ secrets.AGENT_LLM_BEARER_TOKEN }}
           JUDGE_LLM_BEARER_TOKEN: ${{ secrets.JUDGE_LLM_BEARER_TOKEN }}
+          AGENT_LLM_MODELS: ${{ vars.AGENT_LLM_MODELS }}  # repository variables; unset = the chains in code
+          JUDGE_LLM_MODELS: ${{ vars.JUDGE_LLM_MODELS }}
           JEV_API_KEY: ${{ secrets.JEV_API_KEY }}
           ADPILOT_INPUT_CLASSIFIER: ${{ secrets.JEV_API_KEY != '' && 'jev' || '' }}  # layer 1 on when the key exists; its cases are skipped otherwise
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}

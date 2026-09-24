@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -14,19 +14,40 @@ import yaml
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
-from pydantic_ai.models.fallback import FallbackModel
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext
 
-from adpilot.core.audit import AuditSink, RunContextInfo, build_record, new_trace_id, primary_model_name
-from adpilot.core.models import RateLimited, renamed_env
+from adpilot.core.audit import (
+    AuditSink,
+    RunContextInfo,
+    build_record,
+    new_trace_id,
+    primary_model_name,
+    summarize_messages,
+)
+from adpilot.core.models import (
+    ROUTER,
+    NoNullSchemas,
+    agent_chain_from_env,
+    build_chain,
+    chain_from,
+    openrouter_factory,
+    renamed_env,
+    same_model,
+)
 from evals.cases import ACCURACY_FAMILIES, Expected, reference_rows
 from evals.evaluators import Factual
 from evals.task import Trace
 
-# Agreement with the human-labelled calibration set, measured 2026-09-21: nex 10/10, dots 10/10,
-# gemma 5/10 (429 on every call). Neither default is the agent's model: a judge must not grade itself.
-DEFAULT_JUDGE_PRIMARY = "nex-agi/nex-n2.5-pro:free"
-DEFAULT_JUDGE_FALLBACK = "dots-studio/dots-3-note-preview:free"
+# Live probe of every tool-capable free model, 2026-09-23 (docs/models.md): 3/3 calibration agreement, fastest first.
+# None is in the agent's chain (judge_config enforces it). openrouter/free is in both: a verdict it routes to an agent
+# model is discarded in judge_answer.
+DEFAULT_JUDGE_CHAIN = (
+    "nex-agi/nex-n2.5-mini:free",
+    "dots-studio/dots-3-note-preview:free",
+    "cohere/north-mini-code:free",
+    "qwen/qwen3.8-27b:free",
+    ROUTER,
+)
 DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1"
 JUDGE_RELIABLE_MIN = 0.8
 JUDGE_PASS_MIN = 0.75
@@ -36,24 +57,32 @@ JUDGE_PASS_MIN = 0.75
 class JudgeConfig:
     endpoint: str
     api_key: str | None
-    primary: str
-    fallback: str | None
+    models: list[str]
+    agent_models: list[str]  # the agent's chain: a verdict answered by one of these is discarded
 
 
 def judge_config(env: Mapping[str, str] | None = None) -> JudgeConfig:
+    """Raises ValueError when the judge and agent chains share a model other than openrouter/free (fail closed)."""
     env = os.environ if env is None else env
     endpoint = (renamed_env("JUDGE_LLM_ENDPOINT_URL", "LLM_JUDGE_ENDPOINT_URL", "LLM_ENDPOINT_URL", env=env) or DEFAULT_ENDPOINT).rstrip("/")
     if endpoint.endswith("/chat/completions"):
         endpoint = endpoint[: -len("/chat/completions")]
-    fallback = renamed_env("JUDGE_LLM_FALLBACK_MODEL", "LLM_JUDGE_FALLBACK_MODEL", env=env)
+    # JUDGE_LLM_MODELS overrides DEFAULT_JUDGE_CHAIN; the old split names are ignored, with a warning
+    models = chain_from(renamed_env(
+        "JUDGE_LLM_MODELS", "JUDGE_LLM_TARGET_MODEL", "JUDGE_LLM_FALLBACK_MODEL", "LLM_JUDGE_TARGET_MODEL", "LLM_JUDGE_FALLBACK_MODEL", env=env
+    ), DEFAULT_JUDGE_CHAIN)
+    agent_models = agent_chain_from_env(env)
+    base = lambda names: {n.removesuffix(":free") for n in names} - {ROUTER}  # noqa: E731
+    if shared := sorted(base(models) & base(agent_models)):
+        raise ValueError(f"the judge chain shares {', '.join(shared)} with the agent chain: a model must not grade its own answers")
     return JudgeConfig(
         endpoint=endpoint,
         # the judge may borrow the agent's key, but never the agent's model
         api_key=renamed_env("JUDGE_LLM_BEARER_TOKEN", "LLM_JUDGE_BEARER_TOKEN", env=env)
         or renamed_env("AGENT_LLM_BEARER_TOKEN", "OPENROUTER_API_KEY", "LLM_BEARER_TOKEN", env=env)
         or None,
-        primary=renamed_env("JUDGE_LLM_TARGET_MODEL", "LLM_JUDGE_TARGET_MODEL", env=env) or DEFAULT_JUDGE_PRIMARY,
-        fallback=(DEFAULT_JUDGE_FALLBACK if fallback is None else (fallback or None)),
+        models=models,
+        agent_models=agent_models,
     )
 
 
@@ -61,21 +90,15 @@ def build_judge_model(cfg: JudgeConfig) -> Model | None:
     if not cfg.api_key:
         return None
     if "openrouter.ai" in cfg.endpoint:
-        from pydantic_ai.models.openrouter import OpenRouterModel
-        from pydantic_ai.providers.openrouter import OpenRouterProvider
-
-        provider = OpenRouterProvider(api_key=cfg.api_key)
-        make = lambda name: OpenRouterModel(name, provider=provider)  # noqa: E731
+        make = openrouter_factory(cfg.api_key)
     else:
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
 
         provider = OpenAIProvider(base_url=cfg.endpoint, api_key=cfg.api_key)
+        provider.client.max_retries = 0  # Retrying is the only retry layer
         make = lambda name: OpenAIChatModel(name, provider=provider)  # noqa: E731
-    chain = [RateLimited(make(cfg.primary))]
-    if cfg.fallback:
-        chain.append(RateLimited(make(cfg.fallback)))
-    return FallbackModel(*chain) if len(chain) > 1 else chain[0]
+    return build_chain(cfg.models, make)
 
 
 class JudgeVerdict(BaseModel):
@@ -118,8 +141,9 @@ def judge_answer(
     audit: AuditSink | None = None,
     context: RunContextInfo | None = None,
     pack_name: str = "ads",
+    agent_models: Sequence[str] = (),
 ) -> JudgeVerdict:
-    agent: Agent[None, JudgeVerdict] = Agent(model, output_type=JudgeVerdict, instructions=_JUDGE_INSTRUCTIONS, retries=1, name="adpilot-judge")
+    agent: Agent[None, JudgeVerdict] = Agent(model, output_type=JudgeVerdict, instructions=_JUDGE_INSTRUCTIONS, retries=1, name="adpilot-judge", capabilities=[NoNullSchemas()])
     prompt = f"Question: {question}\n\nRubric: {rubric}\n\nData rows the answer was based on: {data_rows}\n\n"
     if reference_rows:
         prompt += f"Reference rows, what a correct query returns (max 30): {reference_rows[:30]}\n\n"
@@ -128,12 +152,19 @@ def judge_answer(
     prompt += f"Answer to grade:\n{answer_md}"
     started, t0 = datetime.now(UTC), time.perf_counter()
     messages, usage, caveats = [], None, []
+    def void(reason: str) -> JudgeVerdict:
+        return JudgeVerdict(grounded=False, answers_question=False, honest_caveats=False, no_invented_numbers=False, reason=reason[:200])
+
     try:
         result = agent.run_sync(prompt)
         verdict = result.output
         messages, usage = result.new_messages(), (result.usage() if callable(result.usage) else result.usage)
+        used = summarize_messages(messages).model_used
+        if any(same_model(a, used) for a in agent_models):
+            verdict = void(f"judge_error: self-judged by {used}")  # excluded like an outage, never counted
     except Exception as exc:  # noqa: BLE001 — a judge outage must not crash the run
-        verdict = JudgeVerdict(grounded=False, answers_question=False, honest_caveats=False, no_invented_numbers=False, reason=f"judge_error: {exc}"[:200])
+        verdict = void(f"judge_error: {exc}")
+    if verdict.reason.startswith("judge_error"):
         caveats = [f"JudgeError: {verdict.reason}"]
     if audit is not None:
         ctx = (context or RunContextInfo()).model_copy(update={"source": "judge"})
@@ -153,6 +184,7 @@ class CalibratedJudge(Evaluator[Any, Trace, dict]):
     pack: Any
     audit: Any = None
     run_id: str | None = None
+    agent_models: Sequence[str] = ()
 
     def evaluate(self, ctx: EvaluatorContext) -> dict:
         if self.model is None:
@@ -167,6 +199,7 @@ class CalibratedJudge(Evaluator[Any, Trace, dict]):
             v = judge_answer(
                 self.model, question, exp.rubric or "", trace.rows_seen or trace.answer.data or [], trace.answer.answer_md,
                 reference_rows=ref, glossary=self.pack.glossary, audit=self.audit, context=RunContextInfo(source="judge", run_id=self.run_id, case_name=ctx.name, family=family), pack_name=self.pack.name,
+                agent_models=self.agent_models,
             )
             out: dict = {"judge": v.score, "judge_pass": v.passed}
             if v.reason.startswith("judge_error"):
@@ -180,6 +213,7 @@ class CalibratedJudge(Evaluator[Any, Trace, dict]):
             v = judge_answer(
                 self.model, question, rubric, rows, trace.answer.answer_md,
                 audit=self.audit, context=RunContextInfo(source="judge", run_id=self.run_id, case_name=ctx.name, family=family), pack_name=self.pack.name,
+                agent_models=self.agent_models,
             )
             out = {"judge_rescued": v.grounded and v.no_invented_numbers and v.answers_question}
             if v.reason.startswith("judge_error"):
@@ -204,13 +238,16 @@ class CalibrationResult:
         return self.n > 0 and self.agreement >= JUDGE_RELIABLE_MIN
 
 
-def run_calibration(model: Model, pack: Any, audit: AuditSink | None = None, run_id: str | None = None) -> CalibrationResult:
+def run_calibration(
+    model: Model, pack: Any, audit: AuditSink | None = None, run_id: str | None = None, agent_models: Sequence[str] = ()
+) -> CalibrationResult:
     entries = yaml.safe_load((pack.root / "judge_calibration.yaml").read_text())["entries"]
     mismatches: list[str] = []
     for e in entries:
         v = judge_answer(
             model, e["question"], "Answer must be correct, grounded and honest.", e["data"], e["answer"], glossary=pack.glossary,
             audit=audit, context=RunContextInfo(source="judge", run_id=run_id, case_name=e["name"], family="calibration"), pack_name=pack.name,
+            agent_models=agent_models,
         )
         if v.passed != (e["verdict"] == "pass"):
             mismatches.append(e["name"])
