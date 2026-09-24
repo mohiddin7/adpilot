@@ -64,14 +64,36 @@ jobs:
         if: always()
         env:
           BQ_PROJECT_ID: ${{ secrets.BQ_PROJECT_ID }}
+          BQ_STAGING_DATASET: ${{ secrets.BQ_STAGING_DATASET }}
           BQ_PRODUCTION_DATASET: ${{ secrets.BQ_PRODUCTION_DATASET }}
         run: |
           python - <<'EOF'
           import datetime as dt, os
+          from google.api_core.exceptions import NotFound
           from google.cloud import bigquery
-          table = f"{os.environ['BQ_PROJECT_ID']}.{os.environ['BQ_PRODUCTION_DATASET']}.fct_unified_marketing_performance"
-          latest = next(iter(bigquery.Client(project=os.environ["BQ_PROJECT_ID"]).query(f"SELECT MAX(date) AS d FROM `{table}`").result())).d
-          want = dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=1)
+          project = os.environ["BQ_PROJECT_ID"]
+          bq = bigquery.Client(project=project)
+          today = dt.datetime.now(dt.timezone.utc).date()
+          gold = f"{project}.{os.environ['BQ_PRODUCTION_DATASET']}.fct_unified_marketing_performance"
+          latest = next(iter(bq.query(f"SELECT MAX(date) AS d FROM `{gold}`").result())).d
+          want = today - dt.timedelta(days=1)
           print(f"gold is complete through {latest}; the SLO wants {want}")
-          raise SystemExit(0 if latest and latest >= want else 1)
+          # 02 commits gold before 03-07 run, so also require today's newest run to have passed all 6 steps.
+          runs, batch = f"{project}.{os.environ['BQ_STAGING_DATASET']}.tbl_pipeline_runs", f"landing/{today.isoformat()}/"
+          cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("batch", "STRING", batch)])
+          sql = (f"SELECT step, ok FROM `{runs}` WHERE batch = @batch AND run_id = (SELECT run_id FROM `{runs}` "
+                 "WHERE batch = @batch GROUP BY run_id ORDER BY MAX(started_at) DESC LIMIT 1)")
+          try:
+              steps = list(bq.query(sql, job_config=cfg).result())
+          except NotFound:
+              steps = []
+          problems = [] if latest and latest >= want else [f"gold is stale: it ends {latest}, the SLO wants {want}"]
+          if not steps:
+              problems.append(f"no pipeline run recorded for {batch}")
+          elif len(steps) < 6:
+              problems.append(f"{batch}: the newest run has {len(steps)} of 6 steps")
+          elif failed := [r.step for r in steps if not r.ok]:
+              problems.append(f"{batch}: steps not ok: {', '.join(failed)}")
+          print("\n".join(problems) or f"{batch}: newest run passed all 6 steps")
+          raise SystemExit(1 if problems else 0)
           EOF
