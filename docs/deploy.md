@@ -110,7 +110,7 @@ Cloud Scheduler "0 2 * * *" Etc/UTC ──OIDC──▶ generate_daily   (HTTP, 
 run_pipeline (event fn, max-instances 1, timeout 540 s)
    ignore unless name starts "landing/" and ends "_manifest.json"
    download the listed CSVs to /tmp → 01 ×3 → 02 → 03 → 04 → 05 → 07
-   write landing/<as_of>/_status.json {ok, run_id, steps, planted, flagged, error}
+   write landing/<as_of>/_status.json {ok, run_id, steps, seconds, planted, flagged, error}
 ```
 
 Both entry points live in `pipelines/main.py`, deployed twice from `--source pipelines` with
@@ -152,6 +152,10 @@ modifier and silently corrupts the argument. This matters below wherever a `bq` 
    ```bash
    gcloud iam service-accounts create adpilot-pipeline --display-name "AdPilot daily data" --project "$BQ_PROJECT_ID"
    gcloud projects add-iam-policy-binding "$BQ_PROJECT_ID" --member "serviceAccount:${SA}" --role roles/bigquery.jobUser
+   gcloud iam roles create adpilotJobsLister --project "$BQ_PROJECT_ID" --title "AdPilot list own BigQuery jobs" \
+     --permissions bigquery.jobs.list
+   gcloud projects add-iam-policy-binding "$BQ_PROJECT_ID" --member "serviceAccount:${SA}" \
+     --role "projects/${BQ_PROJECT_ID}/roles/adpilotJobsLister"
    gcloud projects add-iam-policy-binding "$BQ_PROJECT_ID" --member "serviceAccount:${SA}" --role roles/eventarc.eventReceiver
    for DS in "$BQ_BRONZE_DATASET" "$BQ_STAGING_DATASET" "$BQ_PRODUCTION_DATASET"; do
      bq query --use_legacy_sql=false --project_id "$BQ_PROJECT_ID" \
@@ -161,6 +165,10 @@ modifier and silently corrupts the argument. This matters below wherever a `bq` 
    GCS_AGENT=$(gcloud storage service-agent --project "$BQ_PROJECT_ID")
    gcloud projects add-iam-policy-binding "$BQ_PROJECT_ID" --member "serviceAccount:${GCS_AGENT}" --role roles/pubsub.publisher
    ```
+
+   The one-permission custom role exists because the per-step metrics read `INFORMATION_SCHEMA.JOBS_BY_USER`,
+   which needs `bigquery.jobs.list` (not in `roles/bigquery.jobUser`); without it the metrics are zero-filled and
+   `_status.json` shows `usage_error`.
 
    Negative check: impersonating the SA, a query on `adpilot_audit` must fail with 403.
 
@@ -189,7 +197,8 @@ modifier and silently corrupts the argument. This matters below wherever a `bq` 
    done
    ```
 
-5. **Backfill and verify** (owner yes). Run `python pipelines/main.py backfill`, then wait for `_status.json`:
+5. **Backfill and verify** (owner yes). Run `python pipelines/main.py backfill` (from an environment with the
+   pinned numpy/pandas, see [Backfill](#backfill)), then wait for `_status.json`:
 
    ```bash
    gcloud storage cat "gs://${RAW_BUCKET}/landing/$(date -u +%F)/_status.json"
@@ -205,7 +214,9 @@ modifier and silently corrupts the argument. This matters below wherever a `bq` 
    - `tbl_pipeline_runs` shows one row per step with non-zero `jobs`;
    - `JOBS_BY_USER` labels show the `02_transform` MERGE jobs.
 
-6. **Schedule** (owner yes):
+6. **Schedule** (owner yes). Create the job only after the backfill's UTC day has ended: a scheduled run on
+   that same UTC date would overwrite `landing/<today>/` and its `_status.json`, which holds the timeout
+   measurement from step 5.
 
    ```bash
    URL=$(gcloud functions describe generate-daily --gen2 --region "$REGION" --format='value(serviceConfig.uri)' --project "$BQ_PROJECT_ID")
@@ -226,6 +237,10 @@ with owner credentials, exactly like a daily batch:
 python pipelines/main.py backfill
 ```
 
+Run it from an environment with the same `numpy` and `pandas` versions that `pipelines/requirements.txt` pins
+(check with `pip show numpy pandas`). The deployed function regenerates the restating days from the same seeds,
+and its output must match the backfill's byte for byte.
+
 ### Replay a batch
 
 Batches are never moved or deleted, so a replay is always available:
@@ -239,6 +254,14 @@ Batches are never moved or deleted, so a replay is always available:
   ```
 
 Both are safe: the MERGEs are idempotent, so a duplicate delivery of the same manifest is a no-op.
+
+**Replay only the newest batch.** A batch that ends before gold's newest date is refused (`ok: false`, nothing
+runs): no later batch carries its restating dates again, so replaying it would move them back to 85–95 %
+maturity for good. For a deliberate rebuild, run it locally with the override:
+
+```bash
+PIPELINE_ALLOW_OLD_BATCH=1 python pipelines/main.py run gs://$RAW_BUCKET/landing/<as_of>/_manifest.json
+```
 
 **`_status.json` is overwritten, not appended.** A replay writes a fresh `run_id`, `steps` and `error` to
 `landing/<as_of>/_status.json`, so replaying after a failure destroys that failed run's record at this path.
@@ -272,4 +295,5 @@ ORDER BY started_at DESC, step
 ### SLO
 
 Gold is complete through yesterday UTC by 03:00 UTC. The brief's freshness gate fails its workflow when it
-is not.
+is not, or when today's newest run in `tbl_pipeline_runs` is missing, short of six steps, or has a step that
+failed.
