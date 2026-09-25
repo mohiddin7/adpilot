@@ -1,4 +1,4 @@
-"""adpilot CLI: `adpilot chat [-q QUESTION]`, `adpilot schema`, `adpilot brief`, `adpilot eval` and `adpilot audit`."""
+"""adpilot CLI: `adpilot chat [-q QUESTION]`, `adpilot schema`, `adpilot brief`, `adpilot mcp`, `adpilot eval` and `adpilot audit`."""
 
 from __future__ import annotations
 
@@ -20,7 +20,15 @@ from adpilot.core.audit import (
     build_sink,
 )
 from adpilot.core.models import build_model
-from adpilot.core.runtime import announce_audit, build_deps, configure_tracing, open_sink
+from adpilot.core.runtime import (
+    announce_audit,
+    build_deps,
+    configure_tracing,
+    flush_audit,
+    fresh_deps,
+    mcp_installed,
+    open_sink,
+)
 from adpilot.core.tools import AgentDeps
 
 
@@ -157,6 +165,35 @@ def cmd_brief(args, out) -> int:
     return 1 if brief.unavailable or brief.summary is None else 0
 
 
+def cmd_mcp(args, out) -> int:
+    """The MCP tools over stdio. stdout IS the protocol channel, so every human-readable line goes to stderr."""
+    err = sys.stderr
+    if not mcp_installed():
+        print("the MCP server needs the mcp extra: pip install 'adpilot[mcp]'", file=err)
+        return 2
+    from adpilot.mcp_server import build_mcp
+
+    sink = open_sink(err)
+    if sink is None:
+        return 2
+    template = _deps(args, sink)
+    model = build_model()
+    if model is None:
+        print("No AGENT_LLM_BEARER_TOKEN set — answering from pre-defined queries only.", file=err)
+    server = build_mcp(build_agent(model), lambda: fresh_deps(template), sink)
+    # While serving, the SDK points fd 1 at stderr, but a block-buffered sys.stdout would hold a stray print (or a
+    # stdout logger's line — Logfire's console output, say) until exit, after fd 1 is the wire again. Line
+    # buffering writes each line while the diversion is in place.
+    sys.stdout.reconfigure(line_buffering=True)
+    try:
+        server.run("stdio")  # returns when the client closes stdin
+    finally:
+        # Each tool call already flushed its own record; this catches anything a failed flush left buffered.
+        # flush_audit never raises and logs what it could not persist, to stderr.
+        persisted = flush_audit(sink)
+    return 0 if persisted else 2
+
+
 def cmd_audit(args, out) -> int:
     if args.audit_cmd == "preflight":
         return 0 if open_sink(out) is not None else 2
@@ -203,6 +240,7 @@ def main(argv: list[str] | None = None, out=None) -> int:
     sub.add_parser("schema", help="print the tables the agent can query")
     br = sub.add_parser("brief", help="write the daily brief as markdown")
     br.add_argument("--out", help="write the brief to FILE instead of stdout")
+    sub.add_parser("mcp", help="serve the ask/schema tools to an MCP client over stdio")
     ev = sub.add_parser("eval", help="run the eval harness")
     ev.add_argument("--tier", choices=["deterministic", "model"], default="deterministic")
     ev.add_argument("--family", action="append", help="restrict to a family (repeatable)")
@@ -222,7 +260,10 @@ def main(argv: list[str] | None = None, out=None) -> int:
     ex.add_argument("--run", required=True)
     ex.add_argument("--csv", action="store_true")
     args = p.parse_args(argv)
-    commands = {"chat": cmd_chat, "schema": cmd_schema, "brief": cmd_brief, "eval": cmd_eval, "audit": cmd_audit}
+    commands = {
+        "chat": cmd_chat, "schema": cmd_schema, "brief": cmd_brief, "mcp": cmd_mcp,
+        "eval": cmd_eval, "audit": cmd_audit,
+    }
     return commands[args.cmd](args, out)
 
 

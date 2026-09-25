@@ -24,8 +24,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "adpilot[api]"]
+dev = ["pytest>=8", "ruff>=0.6", "adpilot[api,mcp]"]
 api = ["fastapi>=0.115", "uvicorn>=0.53"]
+mcp = ["mcp>=2.2,<3"]
 logfire = ["logfire>=5"]
 
 [project.scripts]

@@ -7,13 +7,15 @@ recorded, exactly as the CLI shows it.
 One documented exception to "ask() owns redaction": the `detail` of a `sql` status event is the SQL the model
 *attempted*, taken from the tool-call event before ask() ever sees a result, so it is the one text a surface
 emits that has not passed redact_output — including a query the validator went on to reject.
+
+/mcp serves the same two MCP tools as `adpilot mcp` (adpilot/mcp_server.py) over streamable HTTP. It is a raw
+ASGI route, which FastAPI's Depends cannot reach, so KeyGate applies the identical key check.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import json
 import logging
 import math
@@ -25,14 +27,28 @@ import sys
 import anyio.to_thread
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.datastructures import Headers
 
 from adpilot.core.agent import ask, build_agent
-from adpilot.core.audit import AuditSink, RunContextInfo
-from adpilot.core.guardrails import Budget, RateLimiter
+from adpilot.core.audit import RunContextInfo
+from adpilot.core.guardrails import RateLimiter
 from adpilot.core.models import build_model
-from adpilot.core.runtime import AnswerBody, answer_body, build_deps, configure_tracing, open_sink
+from adpilot.core.runtime import (
+    QUESTION_MAX_CHARS,
+    SESSION_ID_MAX_CHARS,
+    SESSION_ID_PATTERN,
+    AnswerBody,
+    answer_body,
+    build_deps,
+    configure_tracing,
+    flush_audit,
+    fresh_deps,
+    mcp_installed,
+    open_sink,
+    record_schema_read,
+)
 from adpilot.core.tools import AgentDeps
 
 MIN_KEY_LEN = 24
@@ -44,32 +60,13 @@ class AskRequest(BaseModel):
     # reads is server-side configuration, never something a caller can repoint.
     model_config = {"extra": "forbid"}
 
-    question: str = Field(min_length=1, max_length=4000)  # tier 1; sanitize_question enforces 600 inside ask()
-    session_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    question: str = Field(min_length=1, max_length=QUESTION_MAX_CHARS)  # tier 1; sanitize_question enforces 600 inside ask()
+    session_id: str | None = Field(default=None, max_length=SESSION_ID_MAX_CHARS, pattern=SESSION_ID_PATTERN)
 
 
 def request_deps(app: FastAPI) -> AgentDeps:
-    """A per-request copy: the connector, pack, schema text and sink are shared; per-turn state is not.
-
-    ask() also resets budget/results, but a fresh list object per request means two concurrent requests can
-    never see each other's rows even before ask() runs.
-    """
-    return dataclasses.replace(
-        app.state.deps_template, budget=Budget(), last_result=None, results=[], run_context=None
-    )
-
-
-def flush_audit(sink: AuditSink) -> None:
-    try:
-        rep = sink.flush()
-    except Exception:  # never let a flush failure escape: on the SSE path it runs in run()'s finally,
-        log.exception("audit: flush raised, row(s) stay buffered")  # outside the try that maps run errors
-        return
-    if not rep.ok:
-        log.warning(
-            "audit: %d row(s) not persisted, retrying on the next request: %s",
-            rep.pending, "; ".join(rep.errors),
-        )
+    """A per-request copy of the shared template — see runtime.fresh_deps."""
+    return fresh_deps(app.state.deps_template)
 
 
 def status_event(ev) -> dict | None:
@@ -103,7 +100,32 @@ def _api_key() -> str:
     return key
 
 
+def key_ok(presented: str | None, expected: str) -> bool:
+    # isascii() first: Starlette decodes header bytes as latin-1, and compare_digest raises TypeError
+    # (→ 500 traceback for an unauthenticated caller) on a str with any code point above 0x7F.
+    return bool(presented) and presented.isascii() and secrets.compare_digest(presented, expected)
+
+
+class KeyGate:
+    """The require_key check for a raw ASGI app. A class, not a function: Starlette treats a plain function
+    endpoint as a request handler, not as an ASGI app."""
+
+    def __init__(self, app, api_key: str) -> None:
+        self.app = app
+        self.api_key = api_key
+
+    async def __call__(self, scope, receive, send) -> None:
+        if not key_ok(Headers(scope=scope).get("x-api-key"), self.api_key):
+            await JSONResponse({"detail": "invalid api key"}, status_code=401)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
+    # The process's logging is the app's, not a dependency's: MCPServer() calls logging.basicConfig(INFO,
+    # RichHandler), which on Cloud Run splits each record across 80-column lines and ships every library's INFO
+    # chatter. basicConfig is a no-op once the root logger has a handler, so claiming it first keeps it ours.
+    logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
     load_dotenv()
     configure_tracing()
     api_key = _api_key()
@@ -111,12 +133,18 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
     if sink is None:
         raise RuntimeError("audit store unreachable — refusing to serve (ADPILOT_AUDIT=memory to run unrecorded)")
 
+    mcp_server = None  # assigned below, before the lifespan ever runs
+
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
-        yield
-        # Cloud Run runs with --min-instances 0: a BackgroundTasks flush is not guaranteed to get CPU after
-        # the response, so the last rows would die with the instance. flush_audit logs whatever it cannot persist.
-        flush_audit(sink)
+        try:
+            async with (mcp_server.session_manager.run() if mcp_server else contextlib.nullcontext()):
+                yield
+        finally:
+            # Cloud Run runs with --min-instances 0: a BackgroundTasks flush is not guaranteed to get CPU after the
+            # response, so the last rows would die with the instance — and with them if the MCP session manager
+            # fails to stop, hence the finally. flush_audit logs whatever it cannot persist.
+            flush_audit(sink)
 
     app = FastAPI(title="AdPilot API", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     model = build_model()
@@ -128,11 +156,34 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
     # per-request deps are a copy with fresh per-turn state.
     app.state.deps_template = build_deps(pack, connector, sink)
 
+    if mcp_installed():
+        from adpilot.mcp_server import build_mcp, http_endpoint
+
+        # One rate bucket for /ask, /ask/stream and /mcp: a remote MCP client must not be a way around the limit.
+        # Looked up per call, so replacing app.state.limiter (as the tests do) applies to /mcp too.
+        mcp_server = build_mcp(
+            app.state.agent, lambda: request_deps(app), sink, limit=lambda: app.state.limiter.try_acquire()
+        )
+        # POST only. In stateless mode the SDK still answers GET with a standalone event stream that never closes,
+        # which would pin a concurrency slot per connected client; DELETE is a 405 from the SDK anyway. A 405 on GET
+        # is how a server says it offers no such stream.
+        app.add_route("/mcp", KeyGate(http_endpoint(mcp_server), api_key), methods=["POST"])
+        app.state.mcp_server = mcp_server
+    else:
+        log.warning("mcp extra not installed — /mcp is not served (pip install 'adpilot[mcp]')")
+
     def require_key(x_api_key: str | None = Header(default=None)) -> None:
-        # isascii() first: Starlette decodes header bytes as latin-1, and compare_digest raises TypeError
-        # (→ 500 traceback for an unauthenticated caller) on a str with any code point above 0x7F.
-        if not x_api_key or not x_api_key.isascii() or not secrets.compare_digest(x_api_key, api_key):
+        if not key_ok(x_api_key, api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
+
+    def shed() -> None:
+        """429 before any work: a shed request never reaches ask() or the audit trail."""
+        wait = app.state.limiter.try_acquire()
+        if wait:
+            raise HTTPException(
+                status_code=429, detail="rate limit exceeded",
+                headers={"Retry-After": str(max(1, math.ceil(wait)))},
+            )
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -140,17 +191,15 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/schema", response_class=PlainTextResponse, dependencies=[Depends(require_key)])
-    def get_schema() -> str:
+    def get_schema(background: BackgroundTasks) -> str:
+        shed()
+        record_schema_read(sink, app.state.deps_template.pack.name, "api")
+        background.add_task(flush_audit, sink)
         return app.state.deps_template.schema_text
 
     @app.post("/ask", response_model=AnswerBody, dependencies=[Depends(require_key)])
     def post_ask(req: AskRequest, background: BackgroundTasks) -> AnswerBody:
-        wait = app.state.limiter.try_acquire()
-        if wait:
-            raise HTTPException(
-                status_code=429, detail="rate limit exceeded",
-                headers={"Retry-After": str(max(1, math.ceil(wait)))},
-            )
+        shed()
         deps = request_deps(app)
         deps.run_context = RunContextInfo(source="api", session_id=req.session_id)
         history = sink.load_session(req.session_id) if req.session_id else None
@@ -162,15 +211,10 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
 
     @app.get("/ask/stream", dependencies=[Depends(require_key)])
     async def ask_stream(
-        question: str = Query(min_length=1, max_length=4000),
-        session_id: str | None = Query(default=None, max_length=64, pattern=r"^[A-Za-z0-9._-]+$"),
+        question: str = Query(min_length=1, max_length=QUESTION_MAX_CHARS),
+        session_id: str | None = Query(default=None, max_length=SESSION_ID_MAX_CHARS, pattern=SESSION_ID_PATTERN),
     ) -> StreamingResponse:
-        wait = app.state.limiter.try_acquire()
-        if wait:
-            raise HTTPException(
-                status_code=429, detail="rate limit exceeded",
-                headers={"Retry-After": str(max(1, math.ceil(wait)))},
-            )
+        shed()
         events: queue.Queue = queue.Queue()
         deps = request_deps(app)
         deps.run_context = RunContextInfo(source="api", session_id=session_id)

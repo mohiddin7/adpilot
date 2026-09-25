@@ -22,6 +22,9 @@ DuckDB mode for a demo — a deliberate size trade, not an oversight. For BigQue
 `-e ADPILOT_CONNECTOR` line and mount or inject credentials instead (`GOOGLE_APPLICATION_CREDENTIALS` or
 `GCP_SERVICE_ACCOUNT_JSON` — see [observability.md](observability.md)).
 
+The image installs `.[api,mcp]`, so the same container serves the MCP tools at `/mcp` behind the API key
+(see [mcp.md](mcp.md)); nothing else to deploy.
+
 `--workers 1` is baked into the image's `CMD` and is load-bearing, not a default to bump: see
 [api.md](api.md#one-worker) for why. Scale by running more container instances, never by raising
 `--workers`.

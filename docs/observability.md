@@ -10,7 +10,7 @@ Dataset `adpilot_audit` (name from `BQ_AUDIT_DATASET`), three tables, all partit
 
 | table | one row per | key columns |
 |---|---|---|
-| `agent_calls` | agent or judge call | `trace_id`, `ts`, `source` (chat/eval/judge/api/brief; `mcp` is coming), `session_id`, `run_id`, `case_name`, `question`, `answer_md`, `sql`, `model_requested`, `model_used`, `fell_back`, `tokens_in/out`, `cost_usd`, `latency_s`, `refused`, `error_kind`, `messages_json` |
+| `agent_calls` | agent or judge call | `trace_id`, `ts`, `source` (chat/eval/judge/api/brief/mcp), `session_id`, `run_id`, `case_name`, `question`, `answer_md`, `sql`, `model_requested`, `model_used`, `fell_back`, `tokens_in/out`, `cost_usd`, `latency_s`, `refused`, `error_kind`, `messages_json` |
 | `scores` | grade on a call | `trace_id`, `run_id`, `name` (`factual`, `safe_sql`, `judge`, …), `value`, `passed`, `source` (code/judge/human), `grader`, `reason` |
 | `eval_runs` | `adpilot eval` run | `run_id`, `tier`, `overall`, `gate_ok`, `gate_reasons`, `scorecard_json`, `calls_used`, `tokens_in/out`, `cost_usd` |
 
@@ -84,8 +84,14 @@ Fallback rate by day:
 
 ```sql
 SELECT DATE(ts) AS day, COUNTIF(fell_back) / COUNT(*) AS fallback_rate, COUNT(*) AS calls
-FROM `adpilot_audit.agent_calls` WHERE source != 'judge' GROUP BY day ORDER BY day DESC;
+FROM `adpilot_audit.agent_calls`
+WHERE source != 'judge' AND IFNULL(case_name, '') != 'schema'
+GROUP BY day ORDER BY day DESC;
 ```
+
+Schema reads over the API and MCP are recorded too, as rows with `case_name = 'schema'`, `question = '(schema)'`
+and an empty answer: they say who read the schema and when. They are not answers, so leave them out of any rate
+over answers (refusals, fallbacks), as above.
 
 The latest daily brief, question by question, then the synthesis:
 
@@ -95,6 +101,16 @@ FROM `adpilot_audit.agent_calls`
 WHERE source = 'brief'
   AND run_id = (SELECT run_id FROM `adpilot_audit.agent_calls` WHERE source = 'brief' ORDER BY ts DESC LIMIT 1)
 ORDER BY ts;
+```
+
+Calls by surface over the last 7 days:
+
+```sql
+SELECT source, COUNTIF(IFNULL(case_name, '') != 'schema') AS answers,
+       COUNTIF(case_name = 'schema') AS schema_reads, COUNTIF(refused) AS refused, COUNTIF(fell_back) AS fell_back
+FROM `adpilot_audit.agent_calls`
+WHERE ts >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND source IN ('chat', 'api', 'mcp', 'brief')
+GROUP BY source ORDER BY answers DESC;
 ```
 
 Re-grade a run later: insert new `scores` rows with the same `trace_id`, a new `grader`, and `source = 'judge'`

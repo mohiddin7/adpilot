@@ -9,23 +9,6 @@ from adpilot.core.audit import MemorySink
 KEY = "k" * 32
 
 
-@pytest.fixture
-def api(monkeypatch):
-    """A started app with a memory sink, a scripted-free agent and DuckDB. Returns (TestClient, MemorySink)."""
-    from fastapi.testclient import TestClient
-
-    import adpilot.core.runtime as runtime
-    from adpilot.api.app import create_app
-
-    sink = MemorySink()
-    monkeypatch.setenv("ADPILOT_API_KEY", KEY)
-    monkeypatch.setenv("ADPILOT_AUDIT", "memory")
-    monkeypatch.setenv("AGENT_LLM_BEARER_TOKEN", "")  # no model: ask() takes the rule-based path
-    monkeypatch.setattr(runtime, "build_sink", lambda cfg: sink)
-    app = create_app(connector="duckdb")
-    return TestClient(app), sink
-
-
 def test_healthz_needs_no_key_and_leaks_nothing(api):
     client, _ = api
     r = client.get("/healthz")
@@ -38,6 +21,24 @@ def test_schema_requires_the_key(api):
     assert client.get("/schema").status_code == 401
     r = client.get("/schema", headers={"X-API-Key": KEY})
     assert r.status_code == 200 and "fct_unified_marketing_performance  (gold)" in r.text
+
+
+def test_a_schema_read_is_recorded_as_api(api):
+    client, sink = api
+    assert client.get("/schema", headers={"X-API-Key": KEY}).status_code == 200
+    assert len(sink.calls) == 1
+    assert sink.calls[0].source == "api" and sink.calls[0].case_name == "schema"
+    assert sink.flushed["agent_calls"] == 1
+
+
+def test_schema_sheds_load_with_429_and_writes_no_row(api):
+    client, sink = api
+    from adpilot.core.guardrails import RateLimiter
+
+    client.app.state.limiter = RateLimiter(per_minute=0)
+    r = client.get("/schema", headers={"X-API-Key": KEY})
+    assert r.status_code == 429 and int(r.headers["Retry-After"]) >= 1
+    assert sink.calls == []
 
 
 def test_a_wrong_key_is_rejected_and_writes_no_audit_row(api):
@@ -317,12 +318,13 @@ def test_a_non_ascii_key_is_a_401_not_a_500(api):
     assert sink.calls == []
 
 
-@pytest.mark.parametrize("path", ["/schema", "/ask", "/ask/stream", "/openapi.json", "/docs", "/redoc"])
+@pytest.mark.parametrize("path", ["/schema", "/ask", "/ask/stream", "/mcp", "/openapi.json", "/docs", "/redoc"])
 def test_healthz_is_the_only_path_that_answers_without_a_key(api, path):
     """/openapi.json, /docs and /redoc are FastAPI's own routes: they took no dependency and enumerated every
-    route and request schema to an unauthenticated caller."""
+    route and request schema to an unauthenticated caller. /mcp is a raw ASGI route that Depends cannot reach."""
     client, _ = api
-    r = client.request("POST" if path == "/ask" else "GET", path, json={"question": "spend by platform"})
+    method = "POST" if path in ("/ask", "/mcp") else "GET"
+    r = client.request(method, path, json={"question": "spend by platform"})
     assert r.status_code in (401, 404), f"{path} answered {r.status_code} with no key"
 
 

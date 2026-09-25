@@ -14,7 +14,7 @@ COPY evals ./evals
 # The bundled CSVs stay in the image so the container also runs credential-free in DuckDB mode.
 COPY data/raw ./data/raw
 
-RUN pip install --no-cache-dir ".[api]" \
+RUN pip install --no-cache-dir ".[api,mcp]" \
     && useradd --create-home --uid 10001 adpilot \
     && chown -R adpilot:adpilot /app
 USER adpilot
