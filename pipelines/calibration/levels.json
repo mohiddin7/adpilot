@@ -1,0 +1,272 @@
+{
+ "facebook": {
+  "header": [
+   "date",
+   "campaign_id",
+   "campaign_name",
+   "ad_set_id",
+   "ad_set_name",
+   "impressions",
+   "clicks",
+   "spend",
+   "conversions",
+   "video_views",
+   "engagement_rate",
+   "reach",
+   "frequency"
+  ],
+  "campaigns": [
+   {
+    "campaign_id": "fb_1001",
+    "campaign_name": "Brand_Awareness_Q1",
+    "sub_id": "fbset_2001",
+    "sub_name": "Broad_Audience_18-35",
+    "level": {
+     "imp": 47511.966667,
+     "ctr": 0.020288,
+     "cvr": 0.014974,
+     "cpm": 2.867979,
+     "vv": 0.183553,
+     "freq": 1.19181,
+     "er": 0.02027
+    }
+   },
+   {
+    "campaign_id": "fb_1002",
+    "campaign_name": "Conversions_Retargeting",
+    "sub_id": "fbset_2002",
+    "sub_name": "Cart_Abandoners",
+    "level": {
+     "imp": 13192.25,
+     "ctr": 0.046302,
+     "cvr": 0.062562,
+     "cpm": 17.247681,
+     "vv": 0.103232,
+     "freq": 1.269885,
+     "er": 0.046214
+    }
+   },
+   {
+    "campaign_id": "fb_1003",
+    "campaign_name": "Traffic_Drive_Jan",
+    "sub_id": "fbset_2003",
+    "sub_name": "Lookalike_Purchasers",
+    "level": {
+     "imp": 36783.333333,
+     "ctr": 0.036812,
+     "cvr": 0.020268,
+     "cpm": 5.612546,
+     "vv": 0.131048,
+     "freq": 1.216605,
+     "er": 0.036767
+    }
+   },
+   {
+    "campaign_id": "fb_1004",
+    "campaign_name": "Video_Views_Campaign",
+    "sub_id": "fbset_2004",
+    "sub_name": "Video_Enthusiasts",
+    "level": {
+     "imp": 70143.28,
+     "ctr": 0.003603,
+     "cvr": 0.023896,
+     "cpm": 1.28822,
+     "vv": 0.674387,
+     "freq": 1.218617,
+     "er": 0.003604
+    }
+   }
+  ]
+ },
+ "google": {
+  "header": [
+   "date",
+   "campaign_id",
+   "campaign_name",
+   "ad_group_id",
+   "ad_group_name",
+   "impressions",
+   "clicks",
+   "cost",
+   "conversions",
+   "conversion_value",
+   "ctr",
+   "avg_cpc",
+   "quality_score",
+   "search_impression_share"
+  ],
+  "campaigns": [
+   {
+    "campaign_id": "g_5001",
+    "campaign_name": "Search_Brand_Terms",
+    "sub_id": "gad_6001",
+    "sub_name": "Brand_Exact",
+    "level": {
+     "imp": 24669.766667,
+     "ctr": 0.05216,
+     "cvr": 0.037432,
+     "cpm": 9.955641,
+     "aov": 50.0,
+     "qs": 9.0,
+     "sis": 0.914
+    }
+   },
+   {
+    "campaign_id": "g_5002",
+    "campaign_name": "Search_Generic_Terms",
+    "sub_id": "gad_6002",
+    "sub_name": "Product_Broad",
+    "level": {
+     "imp": 45008.888889,
+     "ctr": 0.019882,
+     "cvr": 0.02595,
+     "cpm": 12.794921,
+     "aov": 50.0,
+     "qs": 7.0,
+     "sis": 0.444444
+    }
+   },
+   {
+    "campaign_id": "g_5003",
+    "campaign_name": "Shopping_All_Products",
+    "sub_id": "gad_6003",
+    "sub_name": "Best_Sellers",
+    "level": {
+     "imp": 69314.259259,
+     "ctr": 0.033367,
+     "cvr": 0.028841,
+     "cpm": 6.100343,
+     "aov": 50.0,
+     "qs": 8.0,
+     "sis": 0.668889
+    }
+   },
+   {
+    "campaign_id": "g_5004",
+    "campaign_name": "Display_Remarketing",
+    "sub_id": "gad_6004",
+    "sub_name": "Cart_Abandoners",
+    "level": {
+     "imp": 130643.307692,
+     "ctr": 0.003644,
+     "cvr": 0.02787,
+     "cpm": 0.98698,
+     "aov": 50.0,
+     "qs": 7.0,
+     "sis": 0.345769
+    }
+   }
+  ]
+ },
+ "tiktok": {
+  "header": [
+   "date",
+   "campaign_id",
+   "campaign_name",
+   "adgroup_id",
+   "adgroup_name",
+   "impressions",
+   "clicks",
+   "cost",
+   "conversions",
+   "video_views",
+   "video_watch_25",
+   "video_watch_50",
+   "video_watch_75",
+   "video_watch_100",
+   "likes",
+   "shares",
+   "comments"
+  ],
+  "campaigns": [
+   {
+    "campaign_id": "tt_8001",
+    "campaign_name": "Awareness_GenZ",
+    "sub_id": "ttad_9001",
+    "sub_name": "Dance_Challenge",
+    "level": {
+     "imp": 268636.233333,
+     "ctr": 0.014709,
+     "cvr": 0.010149,
+     "cpm": 1.940666,
+     "vv": 0.826769,
+     "q": [
+      0.781932,
+      0.627638,
+      0.676728,
+      0.66826
+     ],
+     "like": 0.044213,
+     "share": 0.011812,
+     "comment": 0.002819
+    }
+   },
+   {
+    "campaign_id": "tt_8002",
+    "campaign_name": "Conversion_Focus",
+    "sub_id": "ttad_9002",
+    "sub_name": "Product_Demo",
+    "level": {
+     "imp": 147052.074074,
+     "ctr": 0.01912,
+     "cvr": 0.027149,
+     "cpm": 5.189872,
+     "vv": 0.70363,
+     "q": [
+      0.740708,
+      0.673751,
+      0.753248,
+      0.672617
+     ],
+     "like": 0.049514,
+     "share": 0.013913,
+     "comment": 0.002628
+    }
+   },
+   {
+    "campaign_id": "tt_8003",
+    "campaign_name": "Traffic_Campaign",
+    "sub_id": "ttad_9003",
+    "sub_name": "Trending_Sounds",
+    "level": {
+     "imp": 228352.814815,
+     "ctr": 0.015685,
+     "cvr": 0.008614,
+     "cpm": 1.899027,
+     "vv": 0.790852,
+     "q": [
+      0.760289,
+      0.791009,
+      0.64329,
+      0.606789
+     ],
+     "like": 0.045286,
+     "share": 0.012456,
+     "comment": 0.002976
+    }
+   },
+   {
+    "campaign_id": "tt_8004",
+    "campaign_name": "Influencer_Collab",
+    "sub_id": "ttad_9004",
+    "sub_name": "Creator_Partnership",
+    "level": {
+     "imp": 404351.846154,
+     "ctr": 0.016235,
+     "cvr": 0.015543,
+     "cpm": 2.502799,
+     "vv": 0.83608,
+     "q": [
+      0.807793,
+      0.800761,
+      0.709726,
+      0.662916
+     ],
+     "like": 0.052802,
+     "share": 0.015288,
+     "comment": 0.004184
+    }
+   }
+  ]
+ }
+}

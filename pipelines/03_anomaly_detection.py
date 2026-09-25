@@ -45,7 +45,7 @@ Backward compatibility:
 
 Data source : fct_unified_marketing_performance  (gold mart)
 Output      : fct_anomaly_flags                  (WRITE_TRUNCATE, Tier-2)
-Lookback    : anchored to MAX(date) in gold — NOT CURRENT_DATE.
+Lookback    : anchored to the mature cutoff, MAX(date) − RESTATING_DAYS in gold — NOT CURRENT_DATE.
 
 Execution:
   python pipelines/03_anomaly_detection.py
@@ -172,22 +172,7 @@ class Config:
 # =============================================================================
 
 def setup_logging(log_file: Path) -> logging.Logger:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    log = logging.getLogger("03_anomaly_detection")
-    log.setLevel(logging.DEBUG)
-    fmt = logging.Formatter(
-        "%(asctime)s %(levelname)-8s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"
-    )
-    if not log.handlers:
-        ch = logging.StreamHandler(sys.stdout)
-        ch.setLevel(logging.INFO)
-        ch.setFormatter(fmt)
-        log.addHandler(ch)
-        fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(fmt)
-        log.addHandler(fh)
-    return log
+    return common.get_logger(log_file.stem)
 
 
 # =============================================================================
@@ -471,7 +456,7 @@ class AnomalyDetectionPipeline:
 
     def __init__(self) -> None:
         self._log    = setup_logging(Config.LOGS_DIR / "03_anomaly_detection.log")
-        self._client = bigquery.Client(project=Config.PROJECT)
+        self._client = common.bq_client()
 
     def run(self) -> None:
         self._log.info("=" * 72)
@@ -521,7 +506,7 @@ class AnomalyDetectionPipeline:
         because the gold grain includes sub_group_id — we want CPA at the
         campaign level (SUM(spend) / SUM(conversions)), not per ad set.
 
-        Anchored to MAX(date) in gold so the script is data-date-agnostic.
+        Anchored to the newest mature date (MAX(date) − RESTATING_DAYS) so the script is data-date-agnostic.
         Rows with zero conversions are filtered out in the engine, not here,
         so the engine has visibility into a campaign's full history.
         """
@@ -536,7 +521,8 @@ class AnomalyDetectionPipeline:
 
         sql = f"""
         WITH bounds AS (
-            SELECT MAX(date) AS max_d FROM `{Config.gold_ref()}`
+            SELECT DATE_SUB(MAX(date), INTERVAL {common.RESTATING_DAYS} DAY) AS max_d
+            FROM `{Config.gold_ref()}`
         )
         SELECT
             date,
@@ -547,8 +533,8 @@ class AnomalyDetectionPipeline:
             SUM(conversions) AS conversions
         FROM `{Config.gold_ref()}`
         CROSS JOIN bounds
-        WHERE date >= DATE_SUB(bounds.max_d,
-                               INTERVAL {Config.LOOKBACK_WINDOW_DAYS - 1} DAY)
+        WHERE date BETWEEN DATE_SUB(bounds.max_d, INTERVAL {Config.LOOKBACK_WINDOW_DAYS - 1} DAY)
+                       AND bounds.max_d
         GROUP BY date, platform, campaign_id, campaign_name
         ORDER BY platform, campaign_id, date
         """
@@ -569,7 +555,7 @@ class AnomalyDetectionPipeline:
         # Ensure pandas-gbq can convert the date column to BQ DATE.
         df["date"] = pd.to_datetime(df["date"])
 
-        job_config = bigquery.LoadJobConfig(
+        job_config = common.parquet_load_config(
             schema=Config.OUTPUT_SCHEMA,
             write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         )

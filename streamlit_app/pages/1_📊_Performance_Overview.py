@@ -113,7 +113,7 @@ with st.container():
     with fc1:
         start_date = st.date_input(
             "Start date",
-            value=available_start,
+            value=max(available_start, available_end - pd.Timedelta(days=29)),   # last 30 days, not all of history
             min_value=available_start,
             max_value=available_end,
         ).strftime("%Y-%m-%d")

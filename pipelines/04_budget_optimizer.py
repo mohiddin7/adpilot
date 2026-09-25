@@ -133,22 +133,7 @@ class Config:
 # =============================================================================
 
 def setup_logging(log_file: Path) -> logging.Logger:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    log = logging.getLogger("04_budget_optimizer")
-    log.setLevel(logging.DEBUG)
-    fmt = logging.Formatter(
-        "%(asctime)s %(levelname)-8s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"
-    )
-    if not log.handlers:
-        ch = logging.StreamHandler(sys.stdout)
-        ch.setLevel(logging.INFO)
-        ch.setFormatter(fmt)
-        log.addHandler(ch)
-        fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(fmt)
-        log.addHandler(fh)
-    return log
+    return common.get_logger(log_file.stem)
 
 
 # =============================================================================
@@ -336,7 +321,7 @@ class BudgetOptimizerPipeline:
 
     def __init__(self) -> None:
         self._log    = setup_logging(Config.LOGS_DIR / "04_budget_optimizer.log")
-        self._client = bigquery.Client(project=Config.PROJECT)
+        self._client = common.bq_client()
 
     def run(self) -> None:
         self._log.info("=" * 72)
@@ -422,6 +407,7 @@ class BudgetOptimizerPipeline:
             )
             return pd.DataFrame()
 
+        mature = common.mature_through_sql(Config.gold_ref())
         sql = f"""
         SELECT
             platform,
@@ -431,10 +417,8 @@ class BudgetOptimizerPipeline:
             MAX(date)               AS period_end
         FROM `{Config.gold_ref()}`
         WHERE
-            date >= DATE_SUB(
-                (SELECT MAX(date) FROM `{Config.gold_ref()}`),
-                INTERVAL {Config.LOOKBACK_DAYS - 1} DAY
-            )
+            date BETWEEN DATE_SUB({mature}, INTERVAL {Config.LOOKBACK_DAYS - 1} DAY)
+                     AND {mature}
         GROUP BY platform
         HAVING SUM(conversions) > 0
            AND SUM(spend) > 0
@@ -512,7 +496,7 @@ class BudgetOptimizerPipeline:
         df["analysis_period_start"] = pd.to_datetime(df["analysis_period_start"])
         df["analysis_period_end"]   = pd.to_datetime(df["analysis_period_end"])
 
-        job_config = bigquery.LoadJobConfig(
+        job_config = common.parquet_load_config(
             schema=Config.OUTPUT_SCHEMA,
             write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         )

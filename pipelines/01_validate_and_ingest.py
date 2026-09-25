@@ -44,7 +44,7 @@ import hashlib
 import json
 import logging
 import os
-import pathlib
+import re
 import sys
 import time
 import uuid
@@ -56,17 +56,11 @@ from google.cloud import bigquery
 from google.cloud import storage
 from google.cloud.exceptions import NotFound
 
-# Logging setup
-_LOG_DIR = pathlib.Path(__file__).parent / "logs"
-_LOG_DIR.mkdir(parents=True, exist_ok=True)
+import common  # noqa: E402
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(name)-35s | %(levelname)-8s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(_LOG_DIR / "ingestion.log", mode="a", encoding="utf-8"),
-    ],
+    handlers=common.log_handlers("ingestion", fmt="%(asctime)s | %(name)-35s | %(levelname)-8s | %(message)s"),
 )
 
 # Constants
@@ -399,11 +393,13 @@ class BigQueryWriter:
                 f"Target '{target_table}' missing - creating from staging schema"
             )
             temp_obj = self._client.get_table(temp_table)
-            self._client.create_table(
-                bigquery.Table(target_table, schema=temp_obj.schema)
-            )
+            table = bigquery.Table(target_table, schema=temp_obj.schema)
+            table.clustering_fields = ["date", "campaign_id"]   # batch-bounded MERGEs prune to their dates
+            self._client.create_table(table)
 
-        merge_sql = self._build_merge_sql(target_table, temp_table, config)
+        merge_sql = self._build_merge_sql(
+            target_table, temp_table, config, list(df.columns), df["date"].min(), df["date"].max()
+        )
         self._logger.info(f"Executing MERGE into '{target_table}'")
         self._execute_query_with_retry(merge_sql)
 
@@ -414,26 +410,28 @@ class BigQueryWriter:
 
         return (len(df), target_count)
 
+    @staticmethod
     def _build_merge_sql(
-        self, target: str, source: str, config: PlatformConfig
+        target: str, source: str, config: PlatformConfig,
+        columns: list[str], date_min: str, date_max: str,
     ) -> str:
-        sub_group_id = config.sub_group_col
-        sub_group_name = sub_group_id.replace("_id", "_name")
+        """Every non-key column is updated, so restated conversion_value, reach and video columns are never dropped.
+        The target is bounded to the batch's dates, so on the date-clustered table the MERGE prunes to them."""
+        lo, hi = (datetime.date.fromisoformat(d).isoformat() for d in (date_min, date_max))
+        unsafe = [c for c in columns if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", c)]
+        if unsafe:
+            raise ValueError(f"unsafe column names in upload: {unsafe}")
+        keys = ("date", "campaign_id", config.sub_group_col)
+        update_set = ",\n            ".join(f"target.{c} = source.{c}" for c in columns if c not in keys)
         return f"""
         MERGE `{target}` AS target
         USING `{source}` AS source
         ON  target.date = source.date
         AND target.campaign_id = source.campaign_id
-        AND target.{sub_group_id} = source.{sub_group_id}
+        AND target.{config.sub_group_col} = source.{config.sub_group_col}
+        AND target.date BETWEEN '{lo}' AND '{hi}'
         WHEN MATCHED THEN UPDATE SET
-            target.impressions = source.impressions,
-            target.clicks = source.clicks,
-            target.{config.cost_col} = source.{config.cost_col},
-            target.conversions = source.conversions,
-            target.campaign_name = source.campaign_name,
-            target.{sub_group_name} = source.{sub_group_name},
-            target.ingested_at = source.ingested_at,
-            target.source_file = source.source_file
+            {update_set}
         WHEN NOT MATCHED THEN INSERT ROW
         """
 
@@ -455,12 +453,10 @@ class BigQueryWriter:
         last_exc = None
         for attempt in range(self.MAX_RETRIES):
             try:
-                # 1. Initialize config without the schema update options
-                job_config = bigquery.LoadJobConfig(
-                    write_disposition=disposition,
-                    autodetect=True,
-                )
-                
+                # 1. Initialize config without the schema update options. Parquet carries
+                # the schema, so autodetect goes.
+                job_config = common.parquet_load_config(write_disposition=disposition)
+
                 # 2. Only add schema update options if we are APPENDING data
                 if disposition in (bigquery.WriteDisposition.WRITE_APPEND, "WRITE_APPEND"):
                     job_config.schema_update_options = [
@@ -570,7 +566,7 @@ class IngestionPipeline:
     """End-to-end orchestrator for a single file ingestion."""
 
     def __init__(self) -> None:
-        self._bq_client = bigquery.Client()
+        self._bq_client = common.bq_client()
         self._writer = BigQueryWriter(self._bq_client)
         self._auditor = AuditLogger(self._bq_client)
         self._archiver = FileArchiver(GCS_BUCKET_NAME)
