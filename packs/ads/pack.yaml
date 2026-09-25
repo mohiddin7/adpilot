@@ -133,12 +133,19 @@ fallback_queries:
     title: Total spend by platform
     sql: SELECT platform, ROUND(SUM(spend), 2) AS spend FROM {gold} GROUP BY platform ORDER BY spend DESC
 
-# The daily brief (adpilot brief). Each question goes through the agent exactly like a chat question; the
-# answers that survive are synthesised into findings and actions. Anchor time to the data, never to today:
-# the bundled data set ends 2024-01-30, so "CURRENT_DATE - 7" would return nothing.
+# The daily brief (adpilot brief). Code computes every fact from the tables above; the model only words it.
+# budgets: monthly USD per platform, for month-end pacing. Demo values: August 2026 actual spend, rounded to $1K.
+# thresholds: any key left out uses the default in adpilot/brief/__init__.py (DEFAULTS); unknown keys are errors.
 briefing:
-  questions:
-    - In the latest 7 days in the data, which campaigns had the most severe cost-per-acquisition anomalies?
-    - Comparing the latest 7 days in the data with the 7 days before, how did spend and conversions move by platform?
-    - What does the 14-day forecast say about each platform's cost per acquisition?
-    - What does the budget optimizer recommend reallocating, and what is the projected conversion gain?
+  budgets:
+    Facebook: 24000
+    Google: 58000
+    TikTok: 61000
+  thresholds:
+    cost_rise_pct: 15          # a platform's weekly cost per sale rose at least this much
+    min_conversions: 30        # ...on at least this many sales in each week
+    anomaly_persist_usd: 100   # a flag that persists needs you from this much at stake
+    anomaly_any_usd: 500       # any flag needs you from this much at stake
+    tracking_drop_ratio: 0.5   # sales at or below half of normal with normal clicks = tracking or landing page
+    double_count_ratio: 3.0    # sales at 3x normal with normal clicks = double counting
+    max_items: 3

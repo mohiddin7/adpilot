@@ -120,11 +120,18 @@ See [docs/evals.md](docs/evals.md) for how scoring works and what the nightly PR
 adpilot brief --out brief.md
 ```
 
-The agent answers the pack's `briefing.questions` (`packs/ads/pack.yaml`) exactly as it answers a chat question. Then one tool-less model call turns the answers into **what changed**, **so what** and **what to do**, citing the question and trace behind each finding. Answers that refused or fell back to a canned query are listed as *Unavailable*, never presented as findings. Any number in the brief that doesn't appear in the answers is flagged `BriefUngrounded`. If synthesis fails you get the raw answers instead. Without a model key, every question is listed as *Unavailable* with the reason. The brief is redacted before it's published, just like every chat answer.
+A short list of decisions, not a wall of numbers. It opens with how many things need you today, then up to three items ranked by dollars at stake. Each item says what happened, what was checked, what to do, how sure it is, and what the next brief will check.
 
-`.github/workflows/brief-daily.yml` runs it every day at 12:00 UTC and opens a GitHub issue titled `Daily brief YYYY-MM-DD`. Every question and the synthesis are in the audit trail under one run id: `adpilot audit export --run <id>`.
+What it does that a chart doesn't:
 
-The bundled data set covers January 2024, so until the data refreshes the brief reports the same period each day.
+- **Explains cost changes.** A platform's cost per sale splits exactly into ad price, clicks per view and sales per click, so the brief names the cause (auction pressure, tired ads, or a landing-page / tracking problem) and the fix that goes with it.
+- **Sorts out anomaly noise.** It finds broken tracking (clicks normal, sales down by half or more) and double counting (sales up 3× on normal clicks) even when the detector didn't flag them, and folds small one-day flags into one line.
+- **Looks ahead.** Month-end spend against the monthly budgets in `packs/ads/pack.yaml` (`briefing.budgets`), and where the 14-day forecast says cost per sale is heading. A big optimizer move becomes a staged test with a stop rule.
+- **Follows up.** Every published item is stored in the audit dataset (`brief_items`), and the next brief reports whether it was resolved, looks done, is still open, or expired.
+
+Code computes and formats every number from four fixed read-only queries; nothing goes through the agent. One tool-less model call only words the headline, a short story and each item's title, cause and action. Each piece that cites a number not in its facts falls back to a template, so a failed or rate-limited model still gives a complete, correct brief. The newest two days are left out of cost analyses because their sales are still arriving. Thresholds live in `briefing.thresholds`; an unknown key stops the brief rather than being ignored. The brief is redacted and its campaign names escaped before it's published.
+
+`.github/workflows/brief-daily.yml` runs it every day at 12:00 UTC and opens a GitHub issue titled `Daily brief YYYY-MM-DD`. The job fails (after publishing) when an input table or the follow-up memory could not be read. The writer call is in the audit trail under the brief's run id: `adpilot audit export --run <id>`.
 
 ## Configuration
 
