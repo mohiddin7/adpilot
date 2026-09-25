@@ -161,7 +161,7 @@ def test_model_tier_writes_calls_scores_and_run_to_the_sink(monkeypatch, tmp_pat
     assert {s.trace_id for s in sink.scores} == {r.trace_id for r in agent_rows}
     assert len(sink.runs) == 1 and sink.runs[0].run_id == res.run_id and sink.runs[0].overall == sc.overall
     assert sc.calls_used == sum(r.requests for r in sink.calls) and sc.calls_used > 0
-    assert sink.flushed == {"agent_calls": n_narr + n_narr + 52, "scores": len(sink.scores), "eval_runs": 1}  # agent + judge rows
+    assert sink.flushed == {"agent_calls": n_narr + n_narr + 52, "scores": len(sink.scores), "eval_runs": 1, "brief_items": 0}  # agent + judge rows
 
 
 def test_deterministic_tier_uses_memory_sink_and_stamps_run_id(tmp_path):

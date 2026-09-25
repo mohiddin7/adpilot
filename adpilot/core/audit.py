@@ -14,7 +14,7 @@ import threading
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from functools import lru_cache
 from typing import Any, Protocol
 
@@ -186,6 +186,33 @@ class RunRow(BaseModel):
         return _json_row(self, ("attributes",))
 
 
+
+class BriefItemRow(BaseModel):
+    """One published brief item, or one re-evaluation of it. Append-only: the newest row per item_id is the truth."""
+
+    ts: datetime
+    run_id: str
+    pack: str
+    brief_date: date  # the brief that first published the item; follow-ups count days from here
+    item_id: str
+    kind: str
+    subject: str
+    advice: str
+    at_stake_usd: float
+    check_json: str = "{}"
+    status: str  # open | resolved | done | expired
+    schema_version: int = SCHEMA_VERSION
+
+    def row(self) -> dict:
+        return self.model_dump(mode="json")
+
+
+def latest_per_item(rows: Sequence[BriefItemRow]) -> list[BriefItemRow]:
+    newest: dict[str, BriefItemRow] = {}
+    for r in sorted(rows, key=lambda r: r.ts):
+        newest[r.item_id] = r
+    return list(newest.values())
+
 # ---------- sinks ----------
 
 
@@ -223,6 +250,8 @@ class AuditSink(Protocol):
     def load_session(self, session_id: str, turns: int = 3) -> list[ModelMessage]: ...
     def list_runs(self, limit: int = 20) -> list[dict]: ...
     def export_run(self, run_id: str) -> Iterator[dict]: ...
+    def record_brief_items(self, rows: Sequence[BriefItemRow]) -> None: ...
+    def recent_brief_items(self, pack: str, since: date) -> list[BriefItemRow]: ...
 
 
 class MemorySink:
@@ -232,8 +261,9 @@ class MemorySink:
         self.calls: list[AuditRecord] = []
         self.scores: list[ScoreRow] = []
         self.runs: list[RunRow] = []
-        self.flushed: dict[str, int] = {"agent_calls": 0, "scores": 0, "eval_runs": 0}
-        self._pending: dict[str, int] = {"agent_calls": 0, "scores": 0, "eval_runs": 0}
+        self.brief_items: list[BriefItemRow] = []
+        self.flushed: dict[str, int] = {"agent_calls": 0, "scores": 0, "eval_runs": 0, "brief_items": 0}
+        self._pending: dict[str, int] = {"agent_calls": 0, "scores": 0, "eval_runs": 0, "brief_items": 0}
         self._lock = threading.Lock()
 
     def preflight(self) -> None:
@@ -253,6 +283,14 @@ class MemorySink:
         with self._lock:
             self.runs.append(row)
             self._pending["eval_runs"] += 1
+
+    def record_brief_items(self, rows: Sequence[BriefItemRow]) -> None:
+        with self._lock:
+            self.brief_items.extend(rows)
+            self._pending["brief_items"] += len(rows)
+
+    def recent_brief_items(self, pack: str, since: date) -> list[BriefItemRow]:
+        return [r for r in latest_per_item([r for r in self.brief_items if r.pack == pack]) if r.brief_date >= since]
 
     def pending_calls(self) -> list[AuditRecord]:
         return self.calls[len(self.calls) - self._pending["agent_calls"]:] if self._pending["agent_calls"] else []
