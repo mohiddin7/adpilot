@@ -197,6 +197,20 @@ modifier and silently corrupts the argument. This matters below wherever a `bq` 
    done
    ```
 
+   On a project's first Eventarc trigger, `run-pipeline` can fail validation with `Permission "storage.buckets.get"
+   denied`: deploying creates the Eventarc service agent, and its role takes a few minutes to propagate. Wait and
+   re-run the deploy; if it still fails, give the agent bucket-metadata read on this bucket only:
+
+   ```bash
+   PROJECT_NUMBER=$(gcloud projects describe "$BQ_PROJECT_ID" --format='value(projectNumber)')
+   gcloud storage buckets add-iam-policy-binding "gs://${RAW_BUCKET}" \
+     --member "serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-eventarc.iam.gserviceaccount.com" \
+     --role roles/storage.legacyBucketReader
+   ```
+
+   The same propagation lag can make a grant issued right after `service-accounts create` fail with "does not
+   exist"; re-running that one grant is enough.
+
 5. **Backfill and verify** (owner yes). Run `python pipelines/main.py backfill` (from an environment with the
    pinned numpy/pandas, see [Backfill](#backfill)), then wait for `_status.json`:
 
@@ -234,8 +248,13 @@ Re-running the initial load (or recovering from a gap larger than the daily catc
 with owner credentials, exactly like a daily batch:
 
 ```bash
-python pipelines/main.py backfill
+gcloud auth application-default login                   # once, as the owner
+GOOGLE_APPLICATION_CREDENTIALS= python pipelines/main.py backfill
 ```
+
+The empty `GOOGLE_APPLICATION_CREDENTIALS=` matters when `.env` points it at an app key (for example the
+dashboard's read-only account): that key cannot write to the bucket, and the upload fails with 403. An empty
+value makes the client fall back to your application-default login.
 
 Run it from an environment with the same `numpy` and `pandas` versions that `pipelines/requirements.txt` pins
 (check with `pip show numpy pandas`, or `uv pip show numpy pandas` in this repo's uv-managed `.venv`). The
