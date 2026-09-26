@@ -57,19 +57,23 @@ class SqlError(BaseModel):
 _EXEC_LOCK = threading.Lock()
 
 
-def execute(deps: AgentDeps, sql: str) -> SqlResult | SqlError:
-    """Budget → validate → run. Shared by run_sql, the tier-2 tools and the rule-based fallback."""
+def execute(deps: AgentDeps, sql: str, max_rows: int | None = None) -> SqlResult | SqlError:
+    """Budget → validate → run. Shared by run_sql, the tier-2 tools, the rule-based fallback and dashboard panels.
+
+    `max_rows` raises the row cap for pack-authored dashboard queries (a 90-day trend has more than 100 rows); the
+    model-facing tools never pass it."""
     pack, con = deps.pack, deps.connector
+    limit = max_rows or pack.max_result_rows
     with _EXEC_LOCK:
         try:
             deps.budget.take_sql()
-            clean = validate_sql(sql, pack.allowed_tables(con.dialect), pack.max_result_rows)
+            clean = validate_sql(sql, pack.allowed_tables(con.dialect), limit)
             df = con.query(clean, max_bytes=pack.raw.get("max_bytes_billed"))
         except AdPilotError as exc:
             cols = [c for c, _ in _gold_columns(deps)] if exc.kind == "SqlSchema" else []
             return SqlError(kind=exc.kind, message=exc.message, hint=exc.hint, columns=cols)
         deps.last_result = df
-    rows = df.head(pack.max_result_rows)
+    rows = df.head(limit)
     result = SqlResult(
         sql=clean,
         columns=list(df.columns),
