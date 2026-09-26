@@ -3,6 +3,8 @@ run_sql tool uses (budget → validate_sql → connector), each on a fresh per-c
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import threading
 import time
 from collections.abc import Callable, Hashable
@@ -18,7 +20,19 @@ from adpilot.core.tools import AgentDeps, SqlError, execute
 from adpilot.dashboard.config import DashboardConfig, FilterDef, PanelDef
 from adpilot.dashboard.filters import Filters, build_where
 
+log = logging.getLogger(__name__)
+
 OPTIONS_MAX_ROWS = 500
+# Kinds our own guards raise with fixed, safe-to-show text (adpilot/core/guardrails.py). Everything else reaching
+# here (SqlSchema, SqlSyntax, DataSourceUnavailable) comes from a connector and can carry the live project:dataset.table.
+_SAFE_ERROR_KINDS = {"SqlPolicy", "BudgetExceeded"}
+
+
+def _safe_error(kind: str, message: str) -> str:
+    if kind in _SAFE_ERROR_KINDS:
+        return f"{kind}: {message}"
+    log.warning("dashboard query failed: %s: %s", kind, message)
+    return f"{kind}: this panel could not be read"
 
 
 class TtlCache:
@@ -76,7 +90,7 @@ def run_panel(template: AgentDeps, cfg: DashboardConfig, panel: PanelDef, flt: F
     where = build_where(cfg, panel.table, deps.pack.raw["date_column"], flt, dialect)
     res = execute(deps, deps.pack.render(panel.sql, dialect, where=where), max_rows=cfg.max_rows)
     if isinstance(res, SqlError):
-        return result.model_copy(update={"error": f"{res.kind}: {res.message}"})
+        return result.model_copy(update={"error": _safe_error(res.kind, res.message)})
     chart = None
     if panel.chart is not None:
         try:
@@ -91,16 +105,18 @@ def run_panel(template: AgentDeps, cfg: DashboardConfig, panel: PanelDef, flt: F
 
 def run_page(template: AgentDeps, cfg: DashboardConfig, page: str, flt: Filters, cache: TtlCache,
              ids: tuple[str, ...] = ()) -> list[PanelResult]:
-    """The page's panels that apply to this selection (or only `ids`), in pack order. Cached only when every panel
-    succeeded, so a transient failure is retried on the next load instead of being served for the TTL."""
-    key = ("panels", page, ids, flt)
-    hit = cache.get(key)
-    if hit is not None:
-        return hit
+    """The page's panels that apply to this selection (or only `ids`), in pack order. Cached per panel, and only
+    when that panel succeeded, so one always-failing panel is retried every load without evicting the rest."""
     wanted = [p for p in cfg.panels_for(page) if (not ids or p.id in ids) and panel_applies(p, flt)]
-    out = [run_panel(template, cfg, p, flt) for p in wanted]
-    if not any(r.error for r in out):
-        cache.put(key, out)
+    out = []
+    for p in wanted:
+        key = ("panel", p.id, flt)
+        result = cache.get(key)
+        if result is None:
+            result = run_panel(template, cfg, p, flt)
+            if result.error is None:
+                cache.put(key, result)
+        out.append(result)
     return out
 
 
@@ -109,7 +125,7 @@ def filter_options(template: AgentDeps, cfg: DashboardConfig, page: str, flt: Fi
     """Per filter declared for the page: {"values": [...]} or {"min": x, "max": y}. A categorical filter's options are
     narrowed by the date range and its ancestors only (platform → campaign → ad set), so choosing a campaign never
     empties the campaign list itself; a range's bounds follow every categorical choice."""
-    key = ("filters", page, flt)
+    key = ("filters", page, dataclasses.replace(flt, ranges=()))  # option queries never read ranges
     hit = cache.get(key)
     if hit is not None:
         return hit
@@ -148,7 +164,7 @@ def _option(template: AgentDeps, cfg: DashboardConfig, f: FilterDef, flt: Filter
     res = execute(deps, deps.pack.render(sql, dialect, where=where), max_rows=OPTIONS_MAX_ROWS)
     if isinstance(res, SqlError):
         empty = {"values": []} if f.type == "categorical" else {}
-        return {**empty, "error": f"{res.kind}: {res.message}"}
+        return {**empty, "error": _safe_error(res.kind, res.message)}
     if f.type == "categorical":
         return {"values": [r["value"] for r in res.rows if r["value"] is not None], "truncated": res.truncated}
     row = res.rows[0] if res.rows else {}
@@ -185,6 +201,18 @@ def dashboard_meta(template: AgentDeps, cfg: DashboardConfig, cache: TtlCache) -
     return meta
 
 
+def _safe_problems(problems: list[str]) -> list[str]:
+    """brief.load's problems are `"couldn't read the <name> table (<exc>)"`; the parenthetical can carry the live
+    project:dataset.table, so viewers get the fixed sentence and the original goes to the log only."""
+    out = []
+    for p in problems:
+        head, sep, _tail = p.partition(" (")
+        if sep:
+            log.warning("pacing problem: %s", p)
+        out.append(head)
+    return out
+
+
 def pacing_rows(template: AgentDeps, cache: TtlCache) -> dict:
     """Month-end pacing computed by the daily brief's own code (brief.load + analyses.pace_numbers), so the dashboard
     and the brief can never disagree about the same month. Whole account, anchored on the newest day in the data."""
@@ -194,10 +222,13 @@ def pacing_rows(template: AgentDeps, cache: TtlCache) -> dict:
     try:
         t, budgets = settings(template.pack)
         data, problems = load(fresh_deps(template), t)
-    except (AdPilotError, ValueError) as exc:
+    except ValueError as exc:  # settings() rejects pack.yaml config with our own text: safe to show as-is
         return {"as_of": None, "rows": [], "problems": [str(exc)]}
+    except AdPilotError as exc:  # a connector failure reading the gold table: message may name it
+        log.warning("pacing setup failed: %s: %s", exc.kind, exc.message)
+        return {"as_of": None, "rows": [], "problems": [f"{exc.kind}: couldn't read the pacing data"]}
     if "gold" not in data:
-        return {"as_of": None, "rows": [], "problems": problems}
+        return {"as_of": None, "rows": [], "problems": _safe_problems(problems)}
     rows = [
         {
             "platform": plat,
@@ -210,7 +241,7 @@ def pacing_rows(template: AgentDeps, cache: TtlCache) -> dict:
         }
         for plat, n in pace_numbers(data["gold"], data.get("forecast"), budgets, data["latest"]).items()
     ]
-    out = {"as_of": data["latest"].isoformat(), "rows": rows, "problems": problems}
+    out = {"as_of": data["latest"].isoformat(), "rows": rows, "problems": _safe_problems(problems)}
     if not problems:
         cache.put(("pacing",), out)
     return out

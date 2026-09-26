@@ -151,3 +151,58 @@ def test_a_bad_briefing_budget_is_a_pacing_problem_not_a_500(deps):
 
     out = pacing_rows(bad_deps, TtlCache(0))
     assert out["rows"] == [] and out["problems"]
+
+
+def test_a_connector_error_does_not_leak_the_live_table_name(deps, cfg, monkeypatch):
+    """Final-review finding 1: SqlSchema/SqlSyntax/DataSourceUnavailable messages come from the connector and can
+    carry the live project:dataset.table; only our own guards' kinds (SqlPolicy, BudgetExceeded) are shown verbatim."""
+    kpis = next(p for p in cfg.panels if p.id == "kpis")
+    monkeypatch.setattr(panels, "execute",
+                         lambda *a, **k: SqlError(kind="SqlSchema", message="Not found: proj:dataset.table"))
+    r = run_panel(deps, cfg, kpis, FLT)
+    assert "proj:dataset.table" not in r.error
+    assert r.error == "SqlSchema: this panel could not be read"
+
+
+def test_pacing_problems_do_not_leak_the_live_table_name(deps, monkeypatch):
+    """Final-review finding 1: brief.load's problems are `"couldn't read the <name> table (<exc>)"`; the exception
+    text (which can name the live table) must not reach viewers."""
+    from adpilot.dashboard.panels import pacing_rows
+
+    monkeypatch.setattr(panels, "load",
+                         lambda *a, **k: ({}, ["couldn't read the flags table (NotFound: proj:dataset.table)"]))
+    out = pacing_rows(deps, TtlCache(0))
+    assert out["rows"] == [] and out["as_of"] is None
+    assert out["problems"] == ["couldn't read the flags table"]
+
+
+def test_filter_options_cache_key_ignores_range_values(deps, cfg, monkeypatch):
+    """Final-review finding 2: option queries never read ranges, so two calls differing only in a range value must
+    share a cache entry instead of each re-running every option query."""
+    calls = []
+    real = panels.execute
+    monkeypatch.setattr(panels, "execute", lambda *a, **k: calls.append(1) or real(*a, **k))
+    cache = TtlCache(60)
+    a = Filters(date(2024, 1, 1), date(2024, 1, 30), ranges=(("spend", 0.0, 100.0),))
+    b = Filters(date(2024, 1, 1), date(2024, 1, 30), ranges=(("spend", 50.0, 200.0),))
+    filter_options(deps, cfg, "deep_dive", a, cache)
+    first = len(calls)
+    filter_options(deps, cfg, "deep_dive", b, cache)
+    assert len(calls) == first
+
+
+def test_a_failed_panel_does_not_stop_others_from_caching(deps, cfg, monkeypatch):
+    """Final-review finding 3: page caching is per panel, so an always-failing panel is retried every load without
+    evicting the panels next to it from the cache."""
+    trend = next(p for p in cfg.panels if p.id == "spend_trend")
+    bad = trend.model_copy(update={"chart": ChartSpec(chart_type="line", x="date", y="nope")})
+    local_cfg = cfg.model_copy(update={"panels": [bad if p.id == "spend_trend" else p for p in cfg.panels]})
+    calls = []
+    real = panels.execute
+    monkeypatch.setattr(panels, "execute", lambda *a, **k: calls.append(1) or real(*a, **k))
+    cache = TtlCache(60)
+    run_page(deps, local_cfg, "overview", FLT, cache, ids=("kpis", "spend_trend"))
+    first = len(calls)
+    results = run_page(deps, local_cfg, "overview", FLT, cache, ids=("kpis", "spend_trend"))
+    assert len(calls) == first + 1  # only spend_trend (still failing) re-ran; kpis served from cache
+    assert next(r for r in results if r.id == "spend_trend").error is not None

@@ -72,3 +72,11 @@ def test_a_misspelt_key_fails_instead_of_being_ignored(pack):
 
     with pytest.raises(ValueError):
         load_dashboard(_with(pack, mutate))
+
+
+def test_an_unknown_platform_on_a_panel_fails(pack):
+    def mutate(d):
+        next(p for p in d["panels"] if p["id"] == "google_quality")["platforms"] = ["Gogle"]
+
+    with pytest.raises(ValueError, match="platform"):
+        load_dashboard(_with(pack, mutate))

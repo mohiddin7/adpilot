@@ -88,6 +88,9 @@ def _check_against_pack(cfg: DashboardConfig, pack: Pack) -> None:
     ids = [p.id for p in cfg.panels]
     if len(ids) != len(set(ids)):
         raise ValueError("dashboard: a panel id is declared twice")
+    # A typo in a `platforms:` list ("Gogle") would otherwise just hide that filter/panel forever.
+    platform_filter = next((f for f in cfg.filters if f.column == "platform"), None)
+    allowed_platforms = set(platform_filter.values) if platform_filter and platform_filter.values else None
     for f in cfg.filters:
         for t in f.tables:
             if t not in tables:
@@ -98,6 +101,10 @@ def _check_against_pack(cfg: DashboardConfig, pack: Pack) -> None:
             raise ValueError(f"filter {f.column}: depends_on {f.depends_on!r} is not a declared filter")
         if f.values is not None and f.type != "categorical":
             raise ValueError(f"filter {f.column}: only a categorical filter can have `values`")
+        if allowed_platforms is not None:
+            for plat in f.platforms or []:
+                if plat not in allowed_platforms:
+                    raise ValueError(f"filter {f.column}: platform {plat!r} is not one of {sorted(allowed_platforms)}")
     for p in cfg.panels:
         if p.table not in tables:
             raise ValueError(f"panel {p.id}: unknown table {p.table!r}")
@@ -107,3 +114,7 @@ def _check_against_pack(cfg: DashboardConfig, pack: Pack) -> None:
             p.sql.format(**{t: t for t in tables}, where="1 = 1")
         except (KeyError, IndexError, ValueError) as exc:
             raise ValueError(f"panel {p.id}: bad placeholder in sql ({exc})") from exc
+        if allowed_platforms is not None:
+            for plat in p.platforms or []:
+                if plat not in allowed_platforms:
+                    raise ValueError(f"panel {p.id}: platform {plat!r} is not one of {sorted(allowed_platforms)}")
