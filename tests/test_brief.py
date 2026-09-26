@@ -372,3 +372,22 @@ def test_the_writer_model_words_the_published_brief(deps):
     b = run_brief(deps, FunctionModel(fn))
     assert "Plain words title" in b.markdown and "writer `function" in b.markdown
     assert b.rows[0].advice == "Plain words title"
+
+
+def test_pace_numbers_projects_month_end_from_the_run_rate():
+    from datetime import date, timedelta
+
+    import pandas as pd
+
+    from adpilot.brief.analyses import pace_numbers
+
+    latest = date(2026, 9, 10)
+    rows = [{"date": latest - timedelta(days=i), "platform": "Google", "spend": 100.0} for i in range(15)]
+    rows.append({"date": latest, "platform": "Bing", "spend": 5.0})
+    out = pace_numbers(pd.DataFrame(rows), None, {"Google": 3000}, latest)
+    g = out["Google"]
+    assert g["spent_mtd"] == 1000.0  # September 1-10
+    assert g["days_left"] == 20
+    assert g["projected"] == 1000.0 + 20 * 100.0  # 7-day run rate is $100/day
+    assert g["basis"] == "last 7 days" and g["budget"] == 3000.0
+    assert out["Bing"]["budget"] is None and out["Bing"]["projected"] is None

@@ -9,6 +9,8 @@ from collections.abc import Callable, Hashable
 
 from pydantic import BaseModel
 
+from adpilot.brief import load, settings
+from adpilot.brief.analyses import pace_numbers
 from adpilot.core.chart import ChartSpec, validate_spec
 from adpilot.core.errors import AdPilotError
 from adpilot.core.runtime import fresh_deps
@@ -181,3 +183,34 @@ def dashboard_meta(template: AgentDeps, cfg: DashboardConfig, cache: TtlCache) -
     }
     cache.put(("meta",), meta)
     return meta
+
+
+def pacing_rows(template: AgentDeps, cache: TtlCache) -> dict:
+    """Month-end pacing computed by the daily brief's own code (brief.load + analyses.pace_numbers), so the dashboard
+    and the brief can never disagree about the same month. Whole account, anchored on the newest day in the data."""
+    hit = cache.get(("pacing",))
+    if hit is not None:
+        return hit
+    t, budgets = settings(template.pack)
+    try:
+        data, problems = load(fresh_deps(template), t)
+    except AdPilotError as exc:
+        return {"as_of": None, "rows": [], "problems": [exc.message]}
+    if "gold" not in data:
+        return {"as_of": None, "rows": [], "problems": problems}
+    rows = [
+        {
+            "platform": plat,
+            "budget": n["budget"],
+            "spent_mtd": round(n["spent_mtd"], 2),
+            "projected": None if n["projected"] is None else round(n["projected"], 2),
+            "off_pct": None if n["budget"] is None else round((n["projected"] / n["budget"] - 1) * 100, 1),
+            "days_left": n["days_left"],
+            "basis": n["basis"],
+        }
+        for plat, n in pace_numbers(data["gold"], data.get("forecast"), budgets, data["latest"]).items()
+    ]
+    out = {"as_of": data["latest"].isoformat(), "rows": rows, "problems": problems}
+    if not problems:
+        cache.put(("pacing",), out)
+    return out

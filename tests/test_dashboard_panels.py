@@ -126,3 +126,14 @@ def test_meta_reports_the_data_window_and_hides_sql(deps, cfg):
     assert (m["date_min"], m["date_max"]) == ("2024-01-01", "2024-01-30")
     assert all(set(p) == {"id", "title", "kind", "table", "platforms"} for p in m["panels"]["overview"])
     assert m["insights"] and {f["column"] for f in m["filters"]} >= {"platform", "severity"}
+
+
+def test_pacing_uses_the_briefs_projection(deps):
+    from adpilot.dashboard.panels import pacing_rows
+
+    out = pacing_rows(deps, TtlCache(0))
+    rows = {r["platform"]: r for r in out["rows"]}
+    assert out["as_of"] == "2024-01-30" and out["problems"] == []
+    assert rows["Google"]["budget"] == 58000 and rows["Google"]["spent_mtd"] > 0
+    assert rows["Google"]["basis"] == "last 7 days"  # the bundled forecast table is empty
+    assert isinstance(rows["Google"]["off_pct"], float)

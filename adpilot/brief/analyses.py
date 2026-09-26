@@ -249,26 +249,41 @@ def _anomaly_item(plat, cid, name, kind, days, stake) -> Item:
 # ---------- 3. pacing ----------
 
 
-def pacing(gold: pd.DataFrame, forecast: pd.DataFrame | None, budgets: dict, latest: date, t: dict
-           ) -> tuple[list[str], list[Item], dict]:
-    """Projected month-end spend vs the monthly budget. Days past the forecast use the last-7-day run rate."""
+def pace_numbers(gold: pd.DataFrame, forecast: pd.DataFrame | None, budgets: dict, latest: date) -> dict[str, dict]:
+    """Per platform: budget, spent_mtd, projected month-end spend, days_left, basis. The one projection the brief and
+    the dashboard (adpilot/dashboard/panels.py) share. Days past the forecast use the last-7-day run rate."""
     start = latest.replace(day=1)
     end = latest.replace(day=calendar.monthrange(latest.year, latest.month)[1])
     left = [latest + timedelta(days=i) for i in range(1, (end - latest).days + 1)]
-    lines, items, status = [], [], {}
+    out: dict[str, dict] = {}
     for plat in sorted(set(gold["platform"]) | set(budgets)):
         g = gold[gold["platform"] == plat]
-        if plat not in budgets:
-            lines.append(f"{plat}: no budget set")
-            continue
         mtd = float(g[(g["date"] >= start) & (g["date"] <= latest)]["spend"].sum())
+        if plat not in budgets:
+            out[plat] = {"budget": None, "spent_mtd": mtd, "projected": None, "days_left": len(left), "basis": None}
+            continue
         rate = float(_window(g, latest, 7)["spend"].sum()) / 7
         fc = {}
         if forecast is not None and len(forecast):
             f = forecast[(forecast["platform"] == plat) & (forecast["metric_name"] == "spend")]
             fc = dict(zip(f["target_date"], f["predicted_value"], strict=True))
-        projected = mtd + sum(fc.get(d, rate) for d in left)
-        budget = float(budgets[plat])
+        out[plat] = {
+            "budget": float(budgets[plat]), "spent_mtd": mtd, "projected": mtd + sum(fc.get(d, rate) for d in left),
+            "days_left": len(left), "basis": "forecast" if fc else "last 7 days",
+        }
+    return out
+
+
+def pacing(gold: pd.DataFrame, forecast: pd.DataFrame | None, budgets: dict, latest: date, t: dict
+           ) -> tuple[list[str], list[Item], dict]:
+    """Projected month-end spend vs the monthly budget, as brief lines and (for a real overspend) an item."""
+    lines, items, status = [], [], {}
+    for plat, n in pace_numbers(gold, forecast, budgets, latest).items():
+        if n["budget"] is None:
+            lines.append(f"{plat}: no budget set")
+            continue
+        mtd, projected, budget, days_left = n["spent_mtd"], n["projected"], n["budget"], n["days_left"]
+        fc = n["basis"] == "forecast"
         off = projected / budget - 1
         status[plat] = off
         if abs(off) <= t["pacing_on_track_pct"] / 100:
@@ -278,14 +293,14 @@ def pacing(gold: pd.DataFrame, forecast: pd.DataFrame | None, budgets: dict, lat
         lines.append(f"{plat}: will {'overspend' if over else 'underspend'} by about {money(projected - budget)}")
         if not over or off < t["pacing_item_pct"] / 100:
             continue  # unspent budget is not money at risk: it stays a line under "Looking ahead"
-        per_day = (budget - mtd) / len(left) if left else 0.0
+        per_day = (budget - mtd) / days_left if days_left else 0.0
         do = (f"Lower {plat}'s daily budget to about {money(per_day)} a day for the rest of the month."
               if per_day > 0 else f"{plat} has already spent its monthly budget; pause or cut it for the rest of the month.")
         items.append(Item(
             id=f"pace:{plat}:{latest:%Y-%m}", kind="pace", subject=plat, stake=abs(projected - budget),
             happened=f"At this pace {plat} will spend about {money(projected)} this month against a {money(budget)} budget.",
             title=f"Slow down {plat} spending",
-            checked=f"It has spent {money(mtd)} so far with {len(left)} day{'s' if len(left) != 1 else ''} to go; the rest is projected from "
+            checked=f"It has spent {money(mtd)} so far with {days_left} day{'s' if days_left != 1 else ''} to go; the rest is projected from "
                     f"{'the forecast' if fc else 'the last 7 days'}.",
             do=do, confidence="high" if fc else "medium (no forecast, run rate only)",
             check_line="whether the month-end projection gets back on budget",
