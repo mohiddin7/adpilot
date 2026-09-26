@@ -6,15 +6,16 @@ later without rewriting history. Live traces (optional) go to Logfire.
 
 ## What is recorded
 
-Dataset `adpilot_audit` (name from `BQ_AUDIT_DATASET`), three tables, all partitioned by day and append-only:
+Dataset `adpilot_audit` (name from `BQ_AUDIT_DATASET`), four tables, all partitioned by day and append-only:
 
 | table | one row per | key columns |
 |---|---|---|
 | `agent_calls` | agent or judge call | `trace_id`, `ts`, `source` (chat/eval/judge/api/brief/mcp), `session_id`, `run_id`, `case_name`, `question`, `answer_md`, `sql`, `model_requested`, `model_used`, `fell_back`, `tokens_in/out`, `cost_usd`, `latency_s`, `refused`, `error_kind`, `messages_json` |
 | `scores` | grade on a call | `trace_id`, `run_id`, `name` (`factual`, `safe_sql`, `judge`, …), `value`, `passed`, `source` (code/judge/human), `grader`, `reason` |
 | `eval_runs` | `adpilot eval` run | `run_id`, `tier`, `overall`, `gate_ok`, `gate_reasons`, `scorecard_json`, `calls_used`, `tokens_in/out`, `cost_usd` |
+| `brief_items` | daily-brief item published or re-checked | `run_id`, `brief_date` (first published), `item_id`, `kind`, `advice`, `at_stake_usd`, `check_json`, `status` (open/resolved/done/expired); the newest row per `item_id` is its state |
 
-Every table also has `attributes` (JSON text, for anything new) and `schema_version`. The code creates the
+Every table has `schema_version`, and all but `brief_items` have `attributes` (JSON text, for anything new). The code creates the
 dataset and tables and adds missing columns itself; it never renames or drops one.
 
 ## Setup (once)
@@ -93,14 +94,14 @@ Schema reads over the API and MCP are recorded too, as rows with `case_name = 's
 and an empty answer: they say who read the schema and when. They are not answers, so leave them out of any rate
 over answers (refusals, fallbacks), as above.
 
-The latest daily brief, question by question, then the synthesis:
+The latest daily brief's items, and what became of each:
 
 ```sql
-SELECT case_name, question, refused, error_kind, model_used, answer_md
-FROM `adpilot_audit.agent_calls`
-WHERE source = 'brief'
-  AND run_id = (SELECT run_id FROM `adpilot_audit.agent_calls` WHERE source = 'brief' ORDER BY ts DESC LIMIT 1)
-ORDER BY ts;
+SELECT item_id, brief_date, status, at_stake_usd, advice
+FROM `adpilot_audit.brief_items`
+WHERE TRUE
+QUALIFY ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY ts DESC) = 1
+ORDER BY brief_date DESC, at_stake_usd DESC;
 ```
 
 Calls by surface over the last 7 days:

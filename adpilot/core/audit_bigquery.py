@@ -15,7 +15,16 @@ from dataclasses import dataclass
 from pydantic_ai import ModelMessagesTypeAdapter
 from pydantic_ai.messages import ModelMessage
 
-from adpilot.core.audit import AuditConfig, AuditRecord, AuditUnavailable, FlushReport, RunRow, ScoreRow
+from adpilot.core.audit import (
+    AuditConfig,
+    AuditRecord,
+    AuditUnavailable,
+    BriefItemRow,
+    FlushReport,
+    RunRow,
+    ScoreRow,
+    latest_per_item,
+)
 
 TRANSIENT_MAX_ATTEMPTS = 3
 BACKOFF_S = (1, 4, 16)
@@ -74,6 +83,16 @@ TABLES: dict[str, TableSpec] = {
         ],
         ["tier"],
     ),
+    "brief_items": TableSpec(
+        "brief_items",
+        [
+            ("ts", "TIMESTAMP", "REQUIRED"), ("run_id", "STRING", "REQUIRED"), ("pack", "STRING", "NULLABLE"),
+            ("brief_date", "DATE", "NULLABLE"), ("item_id", "STRING", "REQUIRED"), ("kind", "STRING", "NULLABLE"),
+            ("subject", "STRING", "NULLABLE"), ("advice", "STRING", "NULLABLE"), ("at_stake_usd", "FLOAT64", "NULLABLE"),
+            ("check_json", "STRING", "NULLABLE"), ("status", "STRING", "NULLABLE"), ("schema_version", "INT64", "NULLABLE"),
+        ],
+        ["item_id"],
+    ),
 }
 
 
@@ -98,7 +117,7 @@ class BigQuerySink:
         # ponytail: unbounded — every record (each with a full messages_json) sits here until the one
         # end-of-run flush. Fine at today's ~120 calls/run; if the case set grows an order of magnitude,
         # switch to chunked flushes (e.g. flush agent_calls every N records) instead of one giant batch.
-        self._buffers: dict[str, list[dict]] = {"agent_calls": [], "scores": [], "eval_runs": []}
+        self._buffers: dict[str, list[dict]] = {"agent_calls": [], "scores": [], "eval_runs": [], "brief_items": []}
         self._pending_records: list[AuditRecord] = []
 
     # ----- client -----
@@ -214,6 +233,10 @@ class BigQuerySink:
         with self._lock:
             self._buffers["eval_runs"].append(row.row())
 
+    def record_brief_items(self, rows: Sequence[BriefItemRow]) -> None:
+        with self._lock:
+            self._buffers["brief_items"].extend(r.row() for r in rows)
+
     def pending_calls(self) -> list[AuditRecord]:
         return list(self._pending_records)
 
@@ -225,7 +248,7 @@ class BigQuerySink:
         stops the whole flush — every later table (even ones that would themselves load fine) stays
         buffered too, rather than letting scores/eval_runs land in BigQuery with no matching call row."""
         report = FlushReport()
-        order = ("agent_calls", "scores", "eval_runs")
+        order = ("agent_calls", "scores", "eval_runs", "brief_items")
         with self._flush_lock:  # one flush at a time: snapshot-then-delete-by-count is not reentrant
             for i, name in enumerate(order):
                 with self._lock:
@@ -307,6 +330,15 @@ class BigQuerySink:
         cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("run", "STRING", run_id)])
         for r in self.client.query(sql, job_config=cfg).result():
             yield dict(r)
+
+    def recent_brief_items(self, pack: str, since) -> list[BriefItemRow]:
+        from google.cloud import bigquery
+
+        sql = (f"SELECT * FROM `{self._table_ref('brief_items')}` WHERE pack = @pack AND brief_date >= @since "
+               "QUALIFY ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY ts DESC) = 1")
+        cfg = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("pack", "STRING", pack),
+                                                        bigquery.ScalarQueryParameter("since", "DATE", since)])
+        return latest_per_item([BriefItemRow(**dict(r)) for r in self.client.query(sql, job_config=cfg).result()])
 
 
 def _alias(field_type: str) -> str:

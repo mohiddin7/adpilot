@@ -135,34 +135,39 @@ def cmd_chat(args, out) -> int:
 
 
 def cmd_brief(args, out) -> int:
-    """Markdown on `out` (or --out); every status line on stderr so `adpilot brief > brief.md` stays clean."""
-    from adpilot.core.brief import questions, run_brief
+    """Markdown on `out` (or --out); every status line on stderr so `adpilot brief > brief.md` stays clean.
+    Exit 1 when data or past advice could not be read (the brief still publishes), 2 when the audit write failed."""
+    from adpilot.brief import run_brief, settings
 
     err = sys.stderr
     sink = open_sink(err)
     if sink is None:
         return 2
     deps = _deps(args, sink)
-    if not questions(deps.pack):
-        print(f"pack {deps.pack.name} defines no briefing questions (pack.yaml: briefing.questions)", file=err)
+    try:
+        settings(deps.pack)
+    except ValueError as exc:
+        print(exc, file=err)
         return 2
     model = build_model()
     if model is None:
-        print("No AGENT_LLM_BEARER_TOKEN set — every question falls back and there is no synthesis.", file=err)
+        print("No AGENT_LLM_BEARER_TOKEN set — the brief is worded from templates.", file=err)
     try:
-        brief = run_brief(deps, build_agent(model), model)
+        brief = run_brief(deps, model)
         if args.out:
-            Path(args.out).write_text(brief.markdown)
+            Path(args.out).write_text(brief.markdown, encoding="utf-8")
         else:
             print(brief.markdown, file=out)
     finally:
-        # Every question's record is already buffered; flush even if writing the brief raised (as cmd_chat does).
+        # The writer's record and the brief's items are buffered; flush even if writing the brief raised.
         rep = sink.flush()
         if not rep.ok:
             print(f"audit: {rep.pending} row(s) not persisted — {'; '.join(rep.errors)}", file=err)
+    for line in brief.problems + brief.caveats:
+        print(f"brief: {line}", file=err)
     if not rep.ok:
         return 2
-    return 1 if brief.unavailable or brief.summary is None else 0
+    return 1 if brief.problems else 0
 
 
 def cmd_mcp(args, out) -> int:

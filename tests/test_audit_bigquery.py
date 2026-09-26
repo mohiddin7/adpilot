@@ -96,7 +96,7 @@ def test_preflight_creates_dataset_in_staging_location_and_tables():
     sink = BigQuerySink(CFG, client=client)
     sink.preflight()
     assert client.created_datasets == [("adpilot_audit", "EU")]
-    assert set(t.split(".")[-1] for t in client.tables) == {"agent_calls", "scores", "eval_runs"}
+    assert set(t.split(".")[-1] for t in client.tables) == {"agent_calls", "scores", "eval_runs", "brief_items"}
     cols = [f.name for f in client.tables["adpilot-lakehouse.adpilot_audit.agent_calls"]]
     assert cols[:3] == ["trace_id", "otel_trace_id", "ts"] and "attributes" in cols and "schema_version" in cols
 

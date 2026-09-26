@@ -49,13 +49,9 @@ def test_anomaly_direction_values_documented(pack):
     assert "HIGH_CPA" in pack.tables["anomalies"]["columns"]["anomaly_direction"]
 
 
-def test_briefing_questions_pass_the_input_guards_unchanged(pack):
-    """A briefing question the guards reject or rewrite would be 'unavailable' in every daily brief, silently."""
-    from adpilot.core.guardrails import is_in_scope, sanitize_question
+def test_briefing_block_is_valid(pack):
+    """The brief refuses to run on a typo'd threshold, so the shipped pack must pass its own check."""
+    from adpilot.brief import settings
 
-    qs = pack.raw["briefing"]["questions"]
-    assert len(qs) == 4
-    for q in qs:
-        assert sanitize_question(q) == q
-        assert is_in_scope(q)
-        assert "latest 7 days in the data" in q or "forecast" in q or "budget optimizer" in q  # anchored, never "today"
+    t, budgets = settings(pack)
+    assert set(budgets) == {"Facebook", "Google", "TikTok"} and t["max_items"] == 3
