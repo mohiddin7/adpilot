@@ -137,3 +137,17 @@ def test_pacing_uses_the_briefs_projection(deps):
     assert rows["Google"]["budget"] == 58000 and rows["Google"]["spent_mtd"] > 0
     assert rows["Google"]["basis"] == "last 7 days"  # the bundled forecast table is empty
     assert isinstance(rows["Google"]["off_pct"], float)
+
+
+def test_a_bad_briefing_budget_is_a_pacing_problem_not_a_500(deps):
+    import dataclasses
+    from copy import deepcopy
+
+    from adpilot.dashboard.panels import pacing_rows
+
+    bad_raw = deepcopy(deps.pack.raw)
+    bad_raw["briefing"]["budgets"]["Google"] = 0  # settings() rejects a non-positive budget with ValueError
+    bad_deps = dataclasses.replace(deps, pack=dataclasses.replace(deps.pack, raw=bad_raw))
+
+    out = pacing_rows(bad_deps, TtlCache(0))
+    assert out["rows"] == [] and out["problems"]

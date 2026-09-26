@@ -191,11 +191,11 @@ def pacing_rows(template: AgentDeps, cache: TtlCache) -> dict:
     hit = cache.get(("pacing",))
     if hit is not None:
         return hit
-    t, budgets = settings(template.pack)
     try:
+        t, budgets = settings(template.pack)
         data, problems = load(fresh_deps(template), t)
-    except AdPilotError as exc:
-        return {"as_of": None, "rows": [], "problems": [exc.message]}
+    except (AdPilotError, ValueError) as exc:
+        return {"as_of": None, "rows": [], "problems": [str(exc)]}
     if "gold" not in data:
         return {"as_of": None, "rows": [], "problems": problems}
     rows = [
