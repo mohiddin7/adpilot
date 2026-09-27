@@ -137,7 +137,7 @@ Code computes and formats every number from four fixed read-only queries; nothin
 
 ## Configuration
 
-All names and keys come from `.env` (local) or `secrets.toml` (Streamlit Cloud). See `.env.example`. The connector is picked by `--connector`, `ADPILOT_CONNECTOR`, or the pack default.
+All names and keys come from `.env` (see `.env.example`) or, for the deployed API, its Cloud Run environment. The Streamlit Cloud secrets hold only the dashboard's `[api]` section (`ADPILOT_API_URL`, `ADPILOT_API_KEY`). The connector is picked by `--connector`, `ADPILOT_CONNECTOR`, or the pack default.
 
 The agent and the eval judge have separate chains, so the agent's model never grades its own answers. Each variable is read under one name only — a legacy spelling is ignored with a warning, never silently aliased.
 

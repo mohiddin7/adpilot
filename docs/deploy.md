@@ -70,7 +70,7 @@ set -a; source .env; set +a
 PROJ=$(gcloud config get-value project); REGION=us-east4
 SA="adpilot-api@${PROJ}.iam.gserviceaccount.com"
 IMAGE="${REGION}-docker.pkg.dev/${PROJ}/adpilot/adpilot:$(git rev-parse --short HEAD)"
-docker build -t adpilot . && docker tag adpilot "${IMAGE}" && docker push "${IMAGE}"
+docker build --platform linux/amd64 -t adpilot . && docker tag adpilot "${IMAGE}" && docker push "${IMAGE}"
 gcloud run deploy adpilot-api --image "${IMAGE}" --region "${REGION}" \
   --allow-unauthenticated \
   --min-instances 0 --max-instances 2 --concurrency 4 --no-cpu-throttling --memory 1Gi --timeout 300 --port 8080 \
@@ -80,7 +80,11 @@ gcloud run deploy adpilot-api --image "${IMAGE}" --region "${REGION}" \
 ```
 
 The image is about 0.3 GB compressed and Artifact Registry's free tier is 0.5 GB, so keep one tag and delete the
-previous one after each deploy.
+previous one after each deploy:
+
+```bash
+gcloud artifacts docker images delete "${REGION}-docker.pkg.dev/${PROJ}/adpilot/adpilot:<old-tag>" --quiet
+```
 
 `--allow-unauthenticated` is required: callers authenticate with `X-API-Key`, and the Streamlit dashboard cannot
 present a Cloud Run IAM token. `--min-instances 0` is deliberate: the service scales to zero when idle (free), and
