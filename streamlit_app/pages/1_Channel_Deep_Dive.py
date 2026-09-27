@@ -4,6 +4,7 @@ tables with flagged campaigns marked, and the platform's own panels (quality sco
 
 import streamlit as st
 from lib import chat, view
+from lib.api_client import ApiError
 from lib.controls import context_line, prior_range, with_dates
 
 view.start("Channel deep dive", "🎯")
@@ -13,7 +14,8 @@ st.title("Channel deep dive")
 segment = next((f for f in m["filters"] if f["column"] == "platform" and f.get("values")), None)
 platform = "All"
 if segment:
-    platform = st.segmented_control("Platform", ["All", *segment["values"]], default="All", key="dd_platform") or "All"
+    platform = st.segmented_control("Platform", ["All", *segment["values"]], default="All", required=True,
+                                     key="dd_platform") or "All"
 fixed = {} if platform == "All" else {"platform": [platform]}
 
 with st.expander("Filters", expanded=True):
@@ -33,7 +35,10 @@ prior = None
 ids = view.kpi_ids(m, "deep_dive")
 if compare and ids:
     prior_start, prior_end = prior_range(start, end)
-    prior_results = view.guarded(view.panels, "deep_dive", tuple(with_dates(params, prior_start, prior_end) + ids))
+    try:
+        prior_results = view.panels("deep_dive", tuple(with_dates(params, prior_start, prior_end) + ids))
+    except ApiError:
+        prior_results = []  # no deltas; the page still draws
     prior = prior_results[0] if prior_results else None
     st.caption(f"Changes compare with {prior_start} to {prior_end}.")
 

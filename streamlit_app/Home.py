@@ -26,7 +26,10 @@ prior = None
 ids = view.kpi_ids(m, "overview")
 if compare and ids:
     prior_start, prior_end = prior_range(start, end)
-    prior_results = view.guarded(view.panels, "overview", tuple(with_dates(params, prior_start, prior_end) + ids))
+    try:
+        prior_results = view.panels("overview", tuple(with_dates(params, prior_start, prior_end) + ids))
+    except ApiError:
+        prior_results = []  # no deltas; the page still draws
     prior = prior_results[0] if prior_results else None
     st.caption(f"Changes compare with {prior_start} to {prior_end}.")
 
@@ -39,3 +42,12 @@ def pacing_section() -> None:
 
 
 view.render_page(results, prior, after_kpis=pacing_section)
+
+attention = next((p for p in results if p["table"] == "anomalies" and p["rows"]), None)
+flagged = list(dict.fromkeys((r["platform"], r["campaign_name"]) for r in attention["rows"]
+                             if r.get("platform") and r.get("campaign_name"))) if attention else []
+if flagged:
+    pick = st.selectbox("Flagged campaign", flagged, format_func=lambda pc: f"{pc[1]} ({pc[0]})", key="ov_flagged")
+    if st.button("Open in channel deep dive", key="open_flagged"):
+        st.session_state["dd_platform"], st.session_state["dd_campaign_name"] = pick[0], [pick[1]]
+        st.switch_page("pages/1_Channel_Deep_Dive.py")

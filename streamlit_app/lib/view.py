@@ -57,22 +57,23 @@ def guarded(fn, *args):
 
 # Short client-side caches: every widget click reruns the page, and the API caches for 15 minutes anyway.
 # Exceptions are never cached, so a failed read is retried on the next rerun.
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, max_entries=200,
+               show_spinner="Loading AdPilot… the first view after a quiet spell can take a little while to wake up.")
 def meta() -> dict:
     return api_client.dashboard()
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, max_entries=200, show_spinner=False)
 def options(page: str, params: tuple[tuple[str, str], ...]) -> dict:
     return api_client.filter_options(page, list(params))
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, max_entries=200, show_spinner="Loading panels…")
 def panels(page: str, params: tuple[tuple[str, str], ...]) -> list[dict]:
     return api_client.panels(page, list(params))
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, max_entries=200, show_spinner=False)
 def pacing() -> dict:
     return api_client.pacing()
 
@@ -118,13 +119,16 @@ def filter_controls(page: str, m: dict, start: date, end: date, key: str,
         opts = guarded(options, page, tuple(to_params(start, end, {**fixed, **chosen})))
         pruned = False
         for c in cats:
+            if "error" in opts.get(c, {}):
+                continue  # options failed to load: nothing to check the choice against, so keep it
             valid = keep_valid(chosen[c], opts.get(c, {}).get("values", []))
             if valid != chosen[c]:
                 st.session_state[f"{key}_{c}"] = valid
                 pruned = True
         if not pruned:
             break
-    platforms = fixed.get("platform") or list(st.session_state.get(f"{key}_platform", []))
+    platforms = fixed.get("platform") or (list(st.session_state.get(f"{key}_platform") or []) if "platform" in cats
+                                          else [])
     selected: dict[str, list[str]] = dict(fixed)
     ranges: dict[str, tuple[float, float]] = {}
     bounds: dict[str, tuple[float, float]] = {}
@@ -137,7 +141,12 @@ def filter_controls(page: str, m: dict, start: date, end: date, key: str,
         slot = cols[shown % ncols]
         state_key = f"{key}_{column}"
         if f["type"] == "categorical":
-            selected[column] = slot.multiselect(f["label"], option.get("values", []), key=state_key)
+            choices = option.get("values") or st.session_state.get(state_key, [])
+            selected[column] = slot.multiselect(f["label"], choices, key=state_key)
+            if "error" in option:
+                slot.caption(option["error"])
+        elif "error" in option:
+            slot.caption(f"{f['label']}: {option['error']}")
         else:
             lo, hi = option.get("min"), option.get("max")
             if lo is None or hi is None or float(lo) >= float(hi):

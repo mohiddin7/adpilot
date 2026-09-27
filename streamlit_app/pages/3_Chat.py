@@ -2,6 +2,7 @@
 
 import streamlit as st
 from lib import chat, view
+from lib.controls import md
 
 view.start("Chat", "💬")
 chat.thinking_toggle()
@@ -15,12 +16,12 @@ for message in chat.history():
         elif message.get("error"):
             st.warning(message["content"])
         else:
-            st.markdown(message["content"])
+            st.markdown(md(message["content"]))
 
 question = st.chat_input("Ask about your marketing data…", key="page_chat")
 if question:
     with st.chat_message("user"):
-        st.markdown(question)
+        st.markdown(md(question))
     with st.chat_message("assistant"):
         answer = chat.ask_and_record(question)
         if answer is not None:

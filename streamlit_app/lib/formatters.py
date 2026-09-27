@@ -54,19 +54,6 @@ def fmt_currency(value: float | None, decimals: int = 1) -> str:
     return f"${v:.0f}"
 
 
-def fmt_currency_full(value: float | None) -> str:
-    """Full form: $130,244.90 — for tooltips, source data tables, and exact reconciliation."""
-    if value is None:
-        return "—"
-    try:
-        v = float(value)
-    except (TypeError, ValueError):
-        return "—"
-    if v != v:
-        return "—"
-    return f"${v:,.2f}"
-
-
 def fmt_number(value: float | None, decimals: int = 1) -> str:
     """13363 → "13.4K"   542 → "542"   None → "—"."""
     if value is None:
@@ -101,50 +88,3 @@ def fmt_pct(value: float | None, decimals: int = 1, already_pct: bool = False) -
     if not already_pct:
         v = v * 100
     return f"{v:.{decimals}f}%"
-
-
-def fmt_delta(value: float | None, decimals: int = 1, as_pct: bool = True) -> str:
-    """
-    Signed change indicator.
-      fmt_delta(0.123) → "+12.3%"   fmt_delta(-0.04) → "-4.0%"
-    """
-    if value is None:
-        return ""
-    try:
-        v = float(value)
-    except (TypeError, ValueError):
-        return ""
-    if v != v:
-        return ""
-
-    if as_pct:
-        v = v * 100
-        sign = "+" if v >= 0 else ""
-        return f"{sign}{v:.{decimals}f}%"
-    sign = "+" if v >= 0 else ""
-    return f"{sign}{v:,.{decimals}f}"
-
-
-def fmt_int(value: int | None) -> str:
-    """1234 → "1,234". None → "—"."""
-    if value is None:
-        return "—"
-    try:
-        return f"{int(value):,}"
-    except (TypeError, ValueError):
-        return "—"
-
-
-# ── DataFrame column formatting helpers ──────────────────────────────────────
-
-def currency_columns(df, columns: list[str]) -> dict:
-    """Return st.column_config formatters for currency columns."""
-    import streamlit as st
-    return {c: st.column_config.NumberColumn(format="$%.2f") for c in columns if c in df.columns}
-
-
-def percent_columns(df, columns: list[str], decimals: int = 1) -> dict:
-    """Return st.column_config formatters for percent columns."""
-    import streamlit as st
-    fmt = f"%.{decimals}f%%"
-    return {c: st.column_config.NumberColumn(format=fmt) for c in columns if c in df.columns}

@@ -107,3 +107,106 @@ def test_a_slider_the_viewer_never_moved_follows_widening_bounds(dash_api):
     assert not at.exception
     for s in at.slider:
         assert s.value == (s.min, s.max)
+
+
+def test_deselecting_the_platform_does_not_crash_the_deep_dive(dash_api):
+    """Clicking the already-selected segment sets it to None; the page must still draw."""
+    at = run("pages/1_Channel_Deep_Dive.py")
+    at.session_state["dd_platform"] = None
+    at.run()
+    assert not at.exception, at.exception
+
+
+def test_a_failed_filter_option_query_keeps_the_choice_and_says_why(dash_api, monkeypatch):
+    import streamlit as st
+
+    ac, _, _ = dash_api
+    at = run("pages/1_Channel_Deep_Dive.py", dd_platform="Facebook")
+    campaign = at.multiselect(key="dd_campaign_name").options[0]
+    at.multiselect(key="dd_campaign_name").select(campaign).run()
+    real = ac.filter_options
+
+    def broken(page, params):
+        out = real(page, params)
+        out["campaign_name"] = {"values": [], "error": "SqlPolicy: campaign options could not be read"}
+        out["spend"] = {"error": "SqlPolicy: spend bounds could not be read"}
+        return out
+
+    monkeypatch.setattr(ac, "filter_options", broken)
+    st.cache_data.clear()
+    at.run()
+    assert not at.exception, at.exception
+    assert at.multiselect(key="dd_campaign_name").value == [campaign]
+    captions = [c.value for c in at.caption]
+    assert any("campaign options could not be read" in c for c in captions)
+    assert any("spend bounds could not be read" in c for c in captions)
+
+
+def test_needs_attention_opens_the_flagged_campaign_in_the_deep_dive(dash_api, monkeypatch):
+    """DuckDB's anomalies table is empty, so one flagged row is injected into the overview's anomalies panel."""
+    from lib import view
+
+    ac, _, _ = dash_api
+    campaign = ac.filter_options("deep_dive", [("date_from", "2024-01-01"), ("date_to", "2024-01-30"),
+                                              ("platform", "Google")])["campaign_name"]["values"][0]
+    real = view.panels
+
+    def flagged(page, params):
+        out = real(page, params)
+        for p in out:
+            if p["table"] == "anomalies":
+                p["rows"] = [{"date": "2024-01-30", "platform": "Google", "campaign_name": campaign,
+                              "observed_cpa": 90.0, "usual_cpa": 30.0, "severity": "SEVERE", "confidence": "high"}]
+        return out
+
+    monkeypatch.setattr(view, "panels", flagged)
+    at = run("Home.py")
+    assert not at.exception, at.exception
+    at.button(key="open_flagged").click().run()
+    assert not at.exception, at.exception
+    assert at.session_state["dd_platform"] == "Google"
+    assert at.session_state["dd_campaign_name"] == [campaign]
+    assert at.multiselect(key="dd_campaign_name").value == [campaign]  # AppTest followed switch_page
+
+
+@pytest.mark.parametrize("page,preset_key", [("Home.py", "ov_preset"), ("pages/1_Channel_Deep_Dive.py", "dd_preset")])
+def test_a_failed_comparison_fetch_drops_the_deltas_not_the_page(dash_api, monkeypatch, page, preset_key):
+    """Last 7 days: its comparison week is inside the demo month, so a working fetch would show deltas."""
+    from lib import view
+    from lib.api_client import ApiError
+
+    real = view.panels
+
+    def prior_fails(page_id, params):
+        if any(k == "panel" for k, _ in params):  # only the comparison-period call asks for named panels
+            raise ApiError("server", "The AdPilot service failed (HTTP 500).")
+        return real(page_id, params)
+
+    assert any(m.delta for m in run(page, **{preset_key: "Last 7 days"}).metric)  # deltas when the fetch works
+    monkeypatch.setattr(view, "panels", prior_fails)
+    at = run(page, **{preset_key: "Last 7 days"})
+    assert not at.exception, at.exception
+    assert at.metric and not any(m.delta for m in at.metric)
+
+
+def test_the_chat_page_shows_the_viewers_dollar_amounts_literally(dash_api):
+    at = run("pages/3_Chat.py")
+    at.chat_input[0].set_value("Why did spend go from $5K to $7K?").run()
+    assert any("\\$5K to \\$7K" in m.value for m in at.markdown)
+    at.run()  # the history replay path
+    assert any("\\$5K to \\$7K" in m.value for m in at.markdown)
+
+
+def test_a_failed_sidebar_ask_shows_its_error_once(dash_api, monkeypatch):
+    from lib import api_client
+    from lib.api_client import ApiError
+
+    def fails(question, session_id):
+        raise ApiError("server", "The analyst hit a snag.")
+
+    monkeypatch.setattr(api_client, "ask", fails)
+    at = run("Home.py")
+    at.chat_input[0].set_value(QUESTION).run()
+    assert not at.exception
+    shown = [e.value for e in at.error] + [c.value for c in at.caption]
+    assert shown.count("The analyst hit a snag.") == 1

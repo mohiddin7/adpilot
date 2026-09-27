@@ -107,9 +107,6 @@ def sidebar(context: str) -> None:
         if question:
             ask_and_record(question, context)
         last = next((m for m in reversed(history()) if m["role"] == "assistant"), None)
-        if last is not None:
-            if "answer" in last:
-                render_answer(last["answer"], compact=True)
-            else:
-                st.caption(last["content"])
+        if last is not None and "answer" in last:  # a failed ask already showed its banner
+            render_answer(last["answer"], compact=True)
         st.caption("The full conversation is on the Chat page.")
