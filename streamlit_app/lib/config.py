@@ -88,3 +88,13 @@ GROUND_TRUTH = {
     "google_spend":      37_686.20,
     "tiktok_spend":      74_266.70,
 }
+
+
+# ── adpilot-api: the rewired dashboard's only data source ────────────────────
+# Functions, not constants, so a test (or a secrets edit picked up on rerun) is read at call time.
+def api_url() -> str:
+    return _get("api", "ADPILOT_API_URL", "ADPILOT_API_URL", "http://localhost:8080").rstrip("/")
+
+
+def api_key() -> str:
+    return _get("api", "ADPILOT_API_KEY", "ADPILOT_API_KEY")
