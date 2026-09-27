@@ -1,8 +1,7 @@
 # Deploying the API
 
-**No GCP resource is created by this branch.** Everything below is documentation for a later,
-owner-approved step — the container runs and is smoke-tested locally, and deploying it is a one-command
-follow-up, not something this branch does on its own.
+**Every command below that touches GCP creates or changes a real resource and is run by the owner, one step
+at a time, with a yes before each one.** The container itself still just runs and is smoke-tested locally.
 
 ## Container
 
@@ -34,6 +33,7 @@ The image installs `.[api,mcp]`, so the same container serves the MCP tools at `
 ### One-time setup (owner-run, one approval per step)
 
 ```bash
+set -a; source .env; set +a
 PROJ=$(gcloud config get-value project); REGION=us-east4
 SA="adpilot-api@${PROJ}.iam.gserviceaccount.com"
 
@@ -66,6 +66,7 @@ above are the working equivalent; the first deploy failed here because the audit
 ### Deploy
 
 ```bash
+set -a; source .env; set +a
 PROJ=$(gcloud config get-value project); REGION=us-east4
 SA="adpilot-api@${PROJ}.iam.gserviceaccount.com"
 IMAGE="${REGION}-docker.pkg.dev/${PROJ}/adpilot/adpilot:$(git rev-parse --short HEAD)"
