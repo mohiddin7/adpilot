@@ -27,25 +27,25 @@ class ApiError(Exception):
 
 
 def dashboard() -> dict:
-    return _request("GET", "/dashboard").json()
+    return _json(_request("GET", "/dashboard"))
 
 
 def filter_options(page: str, params: list[tuple[str, str]]) -> dict:
-    return _request("GET", "/filters", params=[("page", page), *params]).json()["options"]
+    return _json(_request("GET", "/filters", params=[("page", page), *params]))["options"]
 
 
 def panels(page: str, params: list[tuple[str, str]]) -> list[dict]:
-    return _request("GET", "/panels", params=[("page", page), *params]).json()["panels"]
+    return _json(_request("GET", "/panels", params=[("page", page), *params]))["panels"]
 
 
 def pacing() -> dict:
-    return _request("GET", "/pacing").json()
+    return _json(_request("GET", "/pacing"))
 
 
 def ask(question: str, session_id: str) -> dict:
     # retry_all=False: a POST that reached the server may already have started the model. Retrying it blind
     # could run the question twice, so only a connection that never got there (ConnectTimeout) is retried.
-    return _request("POST", "/ask", retry_all=False, json={"question": question, "session_id": session_id}).json()
+    return _json(_request("POST", "/ask", retry_all=False, json={"question": question, "session_id": session_id}))
 
 
 def ask_stream(question: str, session_id: str) -> Iterator[tuple[str, dict]]:
@@ -61,6 +61,8 @@ def ask_stream(question: str, session_id: str) -> Iterator[tuple[str, dict]]:
             yield name, payload
             if name == "done":
                 return
+    except (requests.RequestException, ValueError) as exc:  # the connection dropped or a line wasn't JSON
+        raise ApiError("unavailable", "The answer stream was cut off. Try again.") from exc
     finally:
         r.close()
 
@@ -89,21 +91,36 @@ def parse_sse(lines: Iterable[str | bytes]) -> Iterator[tuple[str, dict]]:
 def _request(method: str, path: str, retry_all: bool = True, **kwargs):
     """retry_all=False (ask/ask_stream): a request that reached the server may have started the model, so only
     a ConnectTimeout (never sent) is retried — never a status code, never a ReadTimeout/other connection drop."""
+    key = config.api_key()
+    if not key:
+        raise ApiError("auth", "The dashboard has no API key configured.")
     url = config.api_url() + path
-    headers = {"X-API-Key": config.api_key()}
+    headers = {"X-API-Key": key}
     for attempt in (1, 2):
         try:
             r = session.request(method, url, headers=headers, timeout=TIMEOUT, **kwargs)
-        except (requests.ConnectionError, requests.Timeout) as exc:
-            retryable = retry_all or isinstance(exc, requests.ConnectTimeout)
+        except requests.RequestException as exc:  # never show exc: its text carries the service URL
+            retryable = isinstance(exc, (requests.ConnectionError, requests.Timeout) if retry_all
+                                   else requests.ConnectTimeout)
             if attempt == 2 or not retryable:
                 raise ApiError("unavailable", "The AdPilot service did not respond. Try again in a minute.") from exc
         else:
             if not retry_all or r.status_code not in RETRYABLE_STATUS or attempt == 2:
-                _raise_for(r)
+                try:
+                    _raise_for(r)
+                except ApiError:
+                    r.close()  # a streamed response holds its connection until closed
+                    raise
                 return r
         time.sleep(RETRY_WAIT_S)
     raise ApiError("unavailable", "The AdPilot service did not respond. Try again in a minute.")
+
+
+def _json(r):
+    try:
+        return r.json()
+    except ValueError as exc:  # a proxy's HTML error page, a truncated body
+        raise ApiError("server", "The AdPilot service sent an unreadable response.") from exc
 
 
 def _raise_for(r) -> None:

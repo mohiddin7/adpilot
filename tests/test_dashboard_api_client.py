@@ -127,3 +127,106 @@ def test_an_error_event_in_the_stream_raises(dash_api, monkeypatch):
     with pytest.raises(ApiError, match="The answer stream failed. Try again.") as exc:
         list(api_client.ask_stream("q", "s3"))
     assert "worker died" not in str(exc.value)
+
+
+class Canned:
+    """A session that returns one canned response, whatever is asked."""
+
+    def __init__(self, response):
+        self.response, self.calls = response, 0
+
+    def request(self, *args, **kwargs):
+        self.calls += 1
+        return self.response
+
+
+HOST = "adpilot-api-abc123.a.run.app"
+
+
+@pytest.mark.parametrize("exc", [requests.ReadTimeout(f"HTTPSConnectionPool(host='{HOST}'): Read timed out."),
+                                 requests.exceptions.ChunkedEncodingError(f"Connection to {HOST} broken")])
+def test_a_stream_cut_off_midway_is_unavailable_and_hides_the_host(monkeypatch, exc):
+    class Dropping:
+        status_code, headers = 200, {}
+
+        def iter_lines(self, decode_unicode=False):
+            yield "event: status"
+            yield 'data: {"phase": "thinking"}'
+            yield ""
+            raise exc
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(api_client, "session", Canned(Dropping()))
+    monkeypatch.setattr(api_client.config, "api_key", lambda: "k" * 32)
+    with pytest.raises(ApiError) as err:
+        list(api_client.ask_stream("q", "s"))
+    assert err.value.kind == "unavailable" and HOST not in err.value.message
+
+
+def test_a_stream_with_bad_json_is_unavailable(monkeypatch):
+    class Garbled:
+        status_code, headers = 200, {}
+
+        def iter_lines(self, decode_unicode=False):
+            return iter(["event: status", "data: {not json", ""])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(api_client, "session", Canned(Garbled()))
+    monkeypatch.setattr(api_client.config, "api_key", lambda: "k" * 32)
+    with pytest.raises(ApiError) as err:
+        list(api_client.ask_stream("q", "s"))
+    assert err.value.kind == "unavailable"
+
+
+class NotJson:
+    status_code, headers = 200, {}
+
+    def json(self):
+        raise requests.exceptions.JSONDecodeError("Expecting value", "<html>", 0)
+
+
+@pytest.mark.parametrize("call", [lambda: api_client.dashboard(), lambda: api_client.ask("q", "s"),
+                                  lambda: api_client.panels("overview", WINDOW)])
+def test_a_200_that_is_not_json_is_a_server_error(monkeypatch, call):
+    monkeypatch.setattr(api_client, "session", Canned(NotJson()))
+    monkeypatch.setattr(api_client.config, "api_key", lambda: "k" * 32)
+    with pytest.raises(ApiError) as err:
+        call()
+    assert err.value.kind == "server" and err.value.message == "The AdPilot service sent an unreadable response."
+
+
+def test_a_malformed_api_url_is_unavailable_without_the_url(monkeypatch):
+    monkeypatch.setattr(api_client.config, "api_url", lambda: HOST)  # no scheme: requests raises MissingSchema
+    monkeypatch.setattr(api_client.config, "api_key", lambda: "k" * 32)
+    monkeypatch.setattr(api_client, "RETRY_WAIT_S", 0)
+    with pytest.raises(ApiError) as err:
+        api_client.dashboard()
+    assert err.value.kind == "unavailable" and HOST not in err.value.message
+
+
+def test_a_rejected_stream_is_closed(monkeypatch):
+    class Rejected:
+        status_code, headers, closed = 401, {}, False
+
+        def close(self):
+            self.closed = True
+
+    rejected = Rejected()
+    monkeypatch.setattr(api_client, "session", Canned(rejected))
+    monkeypatch.setattr(api_client.config, "api_key", lambda: "k" * 32)
+    with pytest.raises(ApiError):
+        list(api_client.ask_stream("q", "s"))
+    assert rejected.closed
+
+
+def test_an_empty_api_key_is_an_auth_error_without_a_request(monkeypatch):
+    session = Canned(NotJson())
+    monkeypatch.setattr(api_client, "session", session)
+    monkeypatch.setattr(api_client.config, "api_key", lambda: "")
+    with pytest.raises(ApiError) as err:
+        api_client.dashboard()
+    assert err.value.kind == "auth" and session.calls == 0
