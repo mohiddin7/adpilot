@@ -12,7 +12,7 @@
 - **Packs** (`packs/ads/`): everything domain-specific — table allowlist, column descriptions, glossary, system prompt, canned fallback queries and a DuckDB bootstrap. Swap the directory to point the same agent at different data.
 - **Connectors**: BigQuery (bytes-billed cap) and DuckDB over the raw CSVs, so the agent and tests run with zero credentials.
 - **Pipeline** (`pipelines/`, daily at 02:00 UTC on Cloud Run functions — see docs/deploy.md): calibrated synthetic source → validate → Bronze MERGE → Gold MERGE (30-column contract) → anomaly flags (MAD z-score) → budget optimizer (LP) → 14-day forecast (Holt-Winters) → QA reconciliation. Idempotent, audited, cost-capped.
-- **Dashboard** (`streamlit_app/`): performance overview, per-channel deep dives, AI insight cards and chat. Being replaced by a pack-driven dashboard in Phase 4.
+- **Dashboard** (`streamlit_app/`): pack-driven overview, channel deep dive with every filter the pack declares, AI insight cards, and a chat on every page (with a "show thinking" toggle). It holds no database or model credentials: every number and answer comes from the API (`/dashboard`, `/filters`, `/panels`, `/pacing`, `/ask`).
 
 ## Roadmap
 
@@ -22,7 +22,7 @@
 | 1 | Data-agnostic agent core (Pydantic AI), typed tools, guardrails, `adpilot chat` CLI ✅ |
 | 2 | Eval harness: golden cases, red-team, self-heal rate, LLM judge, scorecard ✅ |
 | 3 | Three surfaces over the same agent: FastAPI service ✅ · daily brief ✅ · MCP server ✅ |
-| 4 | Pack-driven dashboard + human-in-the-loop budget approvals |
+| 4 | Pack-driven dashboard ✅ · human-in-the-loop budget approvals |
 | 5 | Production rollout: Docker ✅, tracing ✅, deployed Cloud Run service |
 
 ## Quick start
@@ -91,10 +91,12 @@ python pipelines/07_qa_validation.py
 adpilot --connector bigquery chat
 ```
 
-Dashboard:
+The dashboard is a client of the API: start the API (above), or set `ADPILOT_API_URL` to the deployed service. It
+reads `ADPILOT_API_URL` and `ADPILOT_API_KEY` from the environment / `.env`, or from an `[api]` section in Streamlit
+secrets.
 
 ```bash
-cd streamlit_app && streamlit run Home.py
+streamlit run streamlit_app/Home.py
 ```
 
 Tests (deterministic — the model is scripted with pydantic-ai's `TestModel`/`FunctionModel`, the data is DuckDB):
