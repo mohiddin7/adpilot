@@ -88,7 +88,7 @@ def error_kind_of(caveats: Sequence[str]) -> str | None:
 
 
 class RunContextInfo(BaseModel):
-    source: str = "chat"  # chat | api | mcp | brief | eval | judge
+    source: str = "chat"  # chat | api | mcp | brief | eval | judge | dashboard
     session_id: str | None = None
     run_id: str | None = None
     case_name: str | None = None

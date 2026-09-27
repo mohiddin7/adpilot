@@ -26,13 +26,14 @@ import sys
 
 import anyio.to_thread
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 
 from adpilot.core.agent import ask, build_agent
 from adpilot.core.audit import RunContextInfo
+from adpilot.core.errors import AdPilotError
 from adpilot.core.guardrails import RateLimiter
 from adpilot.core.models import build_model
 from adpilot.core.runtime import (
@@ -47,9 +48,13 @@ from adpilot.core.runtime import (
     fresh_deps,
     mcp_installed,
     open_sink,
+    record_read,
     record_schema_read,
 )
 from adpilot.core.tools import AgentDeps
+from adpilot.dashboard import panels as dash
+from adpilot.dashboard.config import load_dashboard
+from adpilot.dashboard.filters import FilterError, Filters, parse_filters
 
 MIN_KEY_LEN = 24
 log = logging.getLogger(__name__)
@@ -155,6 +160,12 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
     # schema.summary() queries the data source, so the connector and schema text are built once and shared;
     # per-request deps are a copy with fresh per-turn state.
     app.state.deps_template = build_deps(pack, connector, sink)
+    pack_obj = app.state.deps_template.pack
+    # A bad `dashboard:` section fails boot; a pack without one simply has no dashboard endpoints (404).
+    app.state.dashboard = load_dashboard(pack_obj) if "dashboard" in pack_obj.raw else None
+    app.state.dash_cache = dash.TtlCache(app.state.dashboard.cache_ttl_s if app.state.dashboard else 0)
+    # Its own bucket: browsing the dashboard (a few reads per click) must not use up the chat's ADPILOT_API_RPM.
+    app.state.dash_limiter = RateLimiter(per_minute=int(os.environ.get("ADPILOT_DASHBOARD_RPM", "120")))
 
     if mcp_installed():
         from adpilot.mcp_server import build_mcp, http_endpoint
@@ -268,5 +279,73 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    def dashboard_config():
+        """404 without a `dashboard:` section, then the dashboard's own 429 bucket — both before any query."""
+        cfg = app.state.dashboard
+        if cfg is None:
+            raise HTTPException(status_code=404, detail="this pack has no dashboard")
+        wait = app.state.dash_limiter.try_acquire()
+        if wait:
+            raise HTTPException(
+                status_code=429, detail="rate limit exceeded",
+                headers={"Retry-After": str(max(1, math.ceil(wait)))},
+            )
+        return cfg
+
+    def dashboard_audit(case_name: str) -> None:
+        # No flush per read: a BigQuery load job per page click would run into the 1,500-load-jobs-per-table-per-day
+        # quota. These rows ride the next /ask flush or the shutdown flush in the lifespan.
+        record_read(sink, app.state.deps_template.pack.name, "dashboard", case_name)
+
+    def viewer_filters(cfg, page: str, request: Request) -> Filters:
+        items = [(k, v) for k, v in request.query_params.multi_items() if k not in ("page", "panel")]
+        try:
+            return parse_filters(cfg, page, items)
+        except FilterError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @app.get("/dashboard", dependencies=[Depends(require_key)])
+    def get_dashboard() -> dict:
+        cfg = dashboard_config()
+        try:
+            meta = dash.dashboard_meta(app.state.deps_template, cfg, app.state.dash_cache)
+        except AdPilotError as exc:
+            raise HTTPException(status_code=503, detail=exc.message) from None
+        dashboard_audit("dashboard")
+        return meta
+
+    @app.get("/filters", dependencies=[Depends(require_key)])
+    def get_filters(request: Request, page: str = Query(pattern="^(overview|deep_dive)$")) -> dict:
+        cfg = dashboard_config()
+        flt = viewer_filters(cfg, page, request)
+        try:
+            options = dash.filter_options(app.state.deps_template, cfg, page, flt, app.state.dash_cache)
+        except FilterError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        dashboard_audit("filters")
+        return {"page": page, "options": options}
+
+    @app.get("/panels", dependencies=[Depends(require_key)])
+    def get_panels(request: Request, page: str = Query(pattern="^(overview|deep_dive)$")) -> dict:
+        cfg = dashboard_config()
+        flt = viewer_filters(cfg, page, request)
+        ids = tuple(request.query_params.getlist("panel"))
+        unknown = sorted(set(ids) - {p.id for p in cfg.panels_for(page)})
+        if unknown:
+            raise HTTPException(status_code=422, detail=f"unknown panel(s) for the {page} page: {', '.join(unknown)}")
+        try:
+            results = dash.run_page(app.state.deps_template, cfg, page, flt, app.state.dash_cache, ids)
+        except FilterError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        dashboard_audit("panels")
+        return {"page": page, "panels": [r.model_dump(mode="json") for r in results]}
+
+    @app.get("/pacing", dependencies=[Depends(require_key)])
+    def get_pacing() -> dict:
+        dashboard_config()
+        out = dash.pacing_rows(app.state.deps_template, app.state.dash_cache)
+        dashboard_audit("pacing")
+        return out
 
     return app

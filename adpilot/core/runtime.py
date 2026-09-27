@@ -112,17 +112,21 @@ def flush_audit(sink: AuditSink) -> bool:
     return rep.ok
 
 
-def record_schema_read(sink: AuditSink, pack_name: str, source: str) -> None:
-    """A schema read is not an agent call, but it is an authenticated surface call, so it gets one row too.
+def record_read(sink: AuditSink, pack_name: str, source: str, case_name: str) -> None:
+    """An authenticated surface read that is not an agent call (a schema read, a dashboard panel) still gets one row.
 
-    `case_name = 'schema'` is how queries tell these rows from answers (the question and answer are empty markers,
-    not the schema text: it is the same large string every time and already in the pack).
+    `case_name` is how queries tell these rows from answers; the question and answer are empty markers, not the
+    payload (the same large text every time, and already in the pack).
     """
     sink.record(build_record(
-        trace_id=new_trace_id(), ts=datetime.now(UTC), latency_s=0.0, question="(schema)", answer_md="", sql=None,
+        trace_id=new_trace_id(), ts=datetime.now(UTC), latency_s=0.0, question=f"({case_name})", answer_md="", sql=None,
         refused=False, confidence=1.0, caveats=[], messages=[], usage=None, model_requested=None,
-        context=RunContextInfo(source=source, case_name="schema"), pack_name=pack_name, prompt_hash=None,
+        context=RunContextInfo(source=source, case_name=case_name), pack_name=pack_name, prompt_hash=None,
     ))
+
+
+def record_schema_read(sink: AuditSink, pack_name: str, source: str) -> None:
+    record_read(sink, pack_name, source, "schema")
 
 
 def mcp_installed() -> bool:

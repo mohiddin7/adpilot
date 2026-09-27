@@ -53,9 +53,9 @@ class Pack:
     def allowed_tables(self, connector: str) -> set[str]:
         return {self.table_ref(name, connector) for name in self.tables}
 
-    def render(self, sql: str, connector: str) -> str:
-        """Replace {gold}, {anomalies}, ... with physical references."""
-        return sql.format(**{name: self.table_ref(name, connector) for name in self.tables})
+    def render(self, sql: str, connector: str, **extra: str) -> str:
+        """Replace {gold}, {anomalies}, ... with physical references, plus any `extra` placeholders ({where})."""
+        return sql.format(**{name: self.table_ref(name, connector) for name in self.tables}, **extra)
 
 
 def load_pack(name_or_path: str = "ads") -> Pack:

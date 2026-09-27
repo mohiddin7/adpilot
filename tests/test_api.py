@@ -460,3 +460,137 @@ def test_the_stream_does_its_blocking_work_off_the_loop_in_anyio_threads(api, mo
     on_loop, thread_name = where[0]
     assert on_loop is False
     assert thread_name.startswith("AnyIO"), thread_name
+
+
+# ---------- dashboard endpoints (Phase 4A) ----------
+
+H = {"X-API-Key": KEY}
+WINDOW = {"date_from": "2024-01-01", "date_to": "2024-01-30"}
+
+
+def _panels(client, **params) -> dict:
+    r = client.get("/panels", params=params, headers=H)
+    assert r.status_code == 200, r.text
+    return {p["id"]: p for p in r.json()["panels"]}
+
+
+def test_dashboard_endpoints_require_the_key(api):
+    client, sink = api
+    for path in ("/dashboard", "/filters?page=overview", "/panels?page=overview", "/pacing"):
+        assert client.get(path).status_code == 401
+    assert sink.calls == []
+
+
+def test_dashboard_meta_gives_the_data_window_and_no_sql(api):
+    client, _ = api
+    body = client.get("/dashboard", headers=H).json()
+    assert (body["date_min"], body["date_max"]) == ("2024-01-01", "2024-01-30")
+    assert {f["column"] for f in body["filters"]} >= {"platform", "campaign_name", "severity", "quality_score"}
+    assert all(set(p) == {"id", "title", "kind", "table", "platforms"} for p in body["panels"]["overview"])
+    assert body["insights"]
+
+
+def test_overview_panels_all_run(api):
+    client, _ = api
+    panels = _panels(client, page="overview", **WINDOW)
+    assert set(panels) == {"kpis", "spend_trend", "cpa_trend", "spend_share", "needs_attention", "budget_plan",
+                           "spend_forecast"}
+    assert [p["id"] for p in panels.values() if p["error"]] == []
+    assert panels["kpis"]["rows"][0]["spend"] > 0
+    assert panels["budget_plan"]["rows"] == [] and panels["budget_plan"]["note"]  # empty pipeline table: a note
+
+
+def test_a_platform_filter_narrows_the_numbers(api):
+    client, _ = api
+    everything = _panels(client, page="overview", **WINDOW)["kpis"]["rows"][0]["spend"]
+    facebook = _panels(client, page="overview", platform="Facebook", **WINDOW)["kpis"]["rows"][0]["spend"]
+    assert 0 < facebook < everything
+
+
+def test_platform_panels_appear_only_for_their_platform(api):
+    client, _ = api
+    google = _panels(client, page="deep_dive", platform="Google", **WINDOW)
+    assert "google_quality" in google and "tiktok_video_funnel" not in google
+    assert "google_quality" not in _panels(client, page="deep_dive", platform=["Google", "TikTok"], **WINDOW)
+    assert "google_quality" not in _panels(client, page="deep_dive", **WINDOW)
+
+
+def test_the_panel_param_limits_the_run_and_rejects_unknown_ids(api):
+    client, _ = api
+    assert list(_panels(client, page="overview", panel="kpis", **WINDOW)) == ["kpis"]
+    r = client.get("/panels", params={"page": "overview", "panel": "nope", **WINDOW}, headers=H)
+    assert r.status_code == 422 and "nope" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("params", [
+    {"date_from": "2024-13-01", "date_to": "2024-01-30"},
+    {"date_from": "2024-01-30", "date_to": "2024-01-01"},
+    {**WINDOW, "platfrom": "Google"},
+    {**WINDOW, "platform": "Bing"},
+    {**WINDOW, "sub_group_name": "x"},  # a deep-dive filter on the overview page
+])
+def test_bad_filters_are_422_and_write_no_row(api, params):
+    client, sink = api
+    r = client.get("/panels", params={"page": "overview", **params}, headers=H)
+    assert r.status_code == 422
+    assert sink.calls == []
+
+
+def test_an_unknown_page_is_422(api):
+    client, _ = api
+    assert client.get("/panels", params={"page": "admin", **WINDOW}, headers=H).status_code == 422
+
+
+def test_a_quote_in_a_filter_value_is_data_not_sql(api):
+    client, _ = api
+    panels = _panels(client, page="deep_dive", campaign_name="x') OR 1=1 --", **WINDOW)
+    assert panels["dd_campaigns"]["error"] is None and panels["dd_campaigns"]["rows"] == []
+
+
+def test_a_value_with_a_sql_keyword_fails_only_the_panels_it_reaches(api):
+    """Review focus 1: validate_sql scans literals too (the ceiling documented in adpilot/dashboard/filters.py)."""
+    client, _ = api
+    panels = _panels(client, page="overview", campaign_name="Drop Shipping Sale", **WINDOW)
+    assert "SqlPolicy" in panels["kpis"]["error"]
+    assert panels["budget_plan"]["error"] is None  # no {where}: the filter never reaches it
+
+
+def test_filter_options_cascade_from_platform(api):
+    client, _ = api
+
+    def options(**params):
+        r = client.get("/filters", params={"page": "deep_dive", **WINDOW, **params}, headers=H)
+        assert r.status_code == 200, r.text
+        return r.json()["options"]
+
+    everything, facebook = options(), options(platform="Facebook")
+    assert everything["platform"]["values"] == ["Facebook", "Google", "TikTok"]
+    assert facebook["campaign_name"]["values"]
+    assert set(facebook["campaign_name"]["values"]) < set(everything["campaign_name"]["values"])
+    assert everything["spend"]["min"] <= everything["spend"]["max"]
+
+
+def test_pacing_uses_the_brief_projection(api):
+    client, _ = api
+    body = client.get("/pacing", headers=H).json()
+    rows = {r["platform"]: r for r in body["rows"]}
+    assert body["as_of"] == "2024-01-30"
+    assert rows["Google"]["budget"] == 58000 and rows["Google"]["spent_mtd"] > 0
+
+
+def test_dashboard_reads_are_audited_but_not_flushed_per_read(api):
+    client, sink = api
+    _panels(client, page="overview", **WINDOW)
+    assert (sink.calls[-1].source, sink.calls[-1].case_name) == ("dashboard", "panels")
+    assert sink.flushed["agent_calls"] == 0
+
+
+def test_the_dashboard_has_its_own_rate_bucket(api):
+    client, sink = api
+    from adpilot.core.guardrails import RateLimiter
+
+    client.app.state.dash_limiter = RateLimiter(per_minute=0)
+    r = client.get("/dashboard", headers=H)
+    assert r.status_code == 429 and int(r.headers["Retry-After"]) >= 1
+    assert sink.calls == []
+    assert client.get("/schema", headers=H).status_code == 200  # the chat's bucket is untouched
