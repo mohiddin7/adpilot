@@ -1,0 +1,8 @@
+# Dashboard theme from streamlit_app/assets/palette.json (light grounds + brand). Streamlit reads this from the
+# directory `streamlit run` starts in: the repo root, locally (README) and on Community Cloud.
+[theme]
+base = "light"
+primaryColor = "#a8515c"
+backgroundColor = "#f7f4ef"
+secondaryBackgroundColor = "#fffdf9"
+textColor = "#14120f"

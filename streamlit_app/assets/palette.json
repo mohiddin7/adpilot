@@ -1,0 +1,84 @@
+{
+  "$comment": "Machine-readable AdPilot color palette. Ported from an earlier project's validated palette; hex values are unchanged, names below are renamed to AdPilot's own domain (brief item status, anomaly severity, audit trail) instead of the source app's.",
+  "generated": "2026-09-26",
+  "rule": "Hold chroma constant across a tier; solve OKLCH lightness per hue to hit one target WCAG relative luminance.",
+  "grounds": {
+    "light": {
+      "bg": "#f7f4ef",
+      "surface": "#fffdf9"
+    },
+    "dark": {
+      "bg": "#14120f",
+      "surface": "#221e19"
+    }
+  },
+  "tiers": {
+    "status-light": {
+      "chroma": 0.105,
+      "targetRelativeLuminance": 0.1155
+    },
+    "status-dark": {
+      "chroma": 0.13,
+      "targetRelativeLuminance": 0.2395
+    },
+    "brand-light": {
+      "chroma": 0.115,
+      "targetRelativeLuminance": 0.15
+    },
+    "brand-dark": {
+      "chroma": 0.115,
+      "targetRelativeLuminance": 0.3
+    }
+  },
+  "colors": {
+    "brand": {
+      "light": "#a8515c",
+      "dark": "#d67a84",
+      "hue": 13.8,
+      "note": "clay rose — locked AdPilot brand colour, never a status"
+    },
+    "critical": {
+      "light": "#a14126",
+      "dark": "#db6141",
+      "hue": 36,
+      "token": "--ap-color-critical",
+      "note": "anomaly severity=CRITICAL; refused-answer and error states"
+    },
+    "resolved": {
+      "light": "#2f6c36",
+      "dark": "#479650",
+      "hue": 146,
+      "token": "--ap-color-resolved",
+      "note": "brief item status=resolved/done"
+    },
+    "open": {
+      "light": "#7e5900",
+      "dark": "#b07d00",
+      "hue": 80,
+      "token": "--ap-color-open",
+      "note": "brief item status=open; anomaly severity=MODERATE"
+    },
+    "forecast": {
+      "light": "#35619a",
+      "dark": "#4e88d3",
+      "hue": 256,
+      "token": "--ap-color-forecast",
+      "note": "forecast bands; anomaly severity=SEVERE"
+    },
+    "audited": {
+      "light": "#685497",
+      "dark": "#9177cf",
+      "hue": 296,
+      "token": "--ap-color-audited",
+      "note": "audit trail / observability accents"
+    }
+  },
+  "rejected": {
+    "#c17137": "~10 degrees from Anthropic's Claude accent and the worst white-on-fill contrast of six candidates (3.69:1). Do not reintroduce.",
+    "#d97757": "Anthropic's Claude accent itself. Avoid this hue band entirely."
+  },
+  "constraints": {
+    "colorIsNeverSoleMeaning": "The status colours collapse under deuteranopia (forecast/audited delta-E 0.016). Always pair with a text label, shape or direct annotation.",
+    "bordersAreNotBoundaries": "Neutral borders measure 1.21:1 and 1.52:1 — fine as separators, never as the sole boundary of a control."
+  }
+}
