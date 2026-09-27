@@ -96,3 +96,14 @@ def test_a_rejected_key_shows_a_banner_not_a_traceback(dash_api, monkeypatch):
     at = run("Home.py")
     assert not at.exception
     assert "API key was rejected" in at.error[0].value
+
+
+def test_a_slider_the_viewer_never_moved_follows_widening_bounds(dash_api):
+    """Review fix: switching platform back to All widens bounds; a slider the viewer never touched must
+    follow the new bounds, not stay clamped to the old narrower range and silently drop rows."""
+    at = run("pages/1_Channel_Deep_Dive.py", dd_platform="Google")
+    at.session_state["dd_platform"] = "All"
+    at.run()
+    assert not at.exception
+    for s in at.slider:
+        assert s.value == (s.min, s.max)

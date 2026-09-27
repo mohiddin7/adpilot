@@ -143,11 +143,17 @@ def filter_controls(page: str, m: dict, start: date, end: date, key: str,
             if lo is None or hi is None or float(lo) >= float(hi):
                 continue
             lo, hi = float(lo), float(hi)
+            bounds_key = f"{state_key}_bounds"
             if state_key in st.session_state:
-                st.session_state[state_key] = clamp_pair(tuple(st.session_state[state_key]), lo, hi)
+                current = tuple(st.session_state[state_key])
+                if current == st.session_state.get(bounds_key):
+                    st.session_state[state_key] = (lo, hi)  # never touched: follow the new bounds
+                else:
+                    st.session_state[state_key] = clamp_pair(current, lo, hi)
                 ranges[column] = slot.slider(f["label"], lo, hi, key=state_key)
             else:
                 ranges[column] = slot.slider(f["label"], lo, hi, (lo, hi), key=state_key)
+            st.session_state[bounds_key] = (lo, hi)
             bounds[column] = (lo, hi)
         shown += 1
     return selected, to_params(start, end, selected, ranges, bounds)
