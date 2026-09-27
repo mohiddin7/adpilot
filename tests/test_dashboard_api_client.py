@@ -61,15 +61,17 @@ def test_a_bad_filter_is_a_bad_request_with_the_servers_reason(dash_api):
 
 
 class Flaky:
-    """Fails the first `n` requests with a connection error, then hands off to the in-process session."""
+    """Fails the first `n` requests with `exc` (a connection error by default), then hands off to the
+    in-process session."""
 
-    def __init__(self, inner, n):
+    def __init__(self, inner, n, exc=None):
         self.inner, self.n, self.calls = inner, n, 0
+        self.exc = exc if exc is not None else requests.ConnectionError("cold start")
 
     def request(self, *args, **kwargs):
         self.calls += 1
         if self.calls <= self.n:
-            raise requests.ConnectionError("cold start")
+            raise self.exc
         return self.inner.request(*args, **kwargs)
 
 
@@ -84,6 +86,24 @@ def test_two_connection_failures_are_unavailable(dash_api, monkeypatch):
     with pytest.raises(ApiError) as exc:
         api_client.dashboard()
     assert exc.value.kind == "unavailable"
+
+
+def test_a_read_timeout_on_ask_is_not_retried(dash_api, monkeypatch):
+    """A ReadTimeout means the request reached the server — it may have already started the model, so ask()
+    must not retry it blind."""
+    flaky = Flaky(api_client.session, 1, requests.ReadTimeout("stalled"))
+    monkeypatch.setattr(api_client, "session", flaky)
+    with pytest.raises(ApiError) as exc:
+        api_client.ask("What was spend by platform?", "s4")
+    assert exc.value.kind == "unavailable" and flaky.calls == 1
+
+
+def test_a_connect_timeout_on_ask_is_retried_once(dash_api, monkeypatch):
+    """A ConnectTimeout means the request never reached the server — safe to retry even for ask()."""
+    flaky = Flaky(api_client.session, 1, requests.ConnectTimeout("cold start"))
+    monkeypatch.setattr(api_client, "session", flaky)
+    body = api_client.ask("What was spend by platform?", "s5")
+    assert "pre-defined query" in body["answer_md"] and flaky.calls == 2
 
 
 def test_an_error_event_in_the_stream_raises(dash_api, monkeypatch):
@@ -102,5 +122,8 @@ def test_an_error_event_in_the_stream_raises(dash_api, monkeypatch):
             return Broken()
 
     monkeypatch.setattr(api_client, "session", Session())
-    with pytest.raises(ApiError, match="worker died"):
+    # Security: the server's raw error detail ("worker died") must never reach the page — only the generic
+    # sentence does.
+    with pytest.raises(ApiError, match="The answer stream failed. Try again.") as exc:
         list(api_client.ask_stream("q", "s3"))
+    assert "worker died" not in str(exc.value)
