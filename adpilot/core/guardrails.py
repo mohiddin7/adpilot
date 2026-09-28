@@ -39,38 +39,142 @@ _SUSPICIOUS = re.compile(
     r"(INFORMATION_SCHEMA|__TABLES__|__SCHEMA__|@@version|pg_catalog|sqlite_master|duckdb_\w+\(|read_\w+\()",
     re.IGNORECASE,
 )
-_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
-_LINE_COMMENT = re.compile(r"--[^\n]*")
 _FENCE = re.compile(r"^```(?:sql)?\s*|\s*```$", re.IGNORECASE)
 _TABLE_REF = re.compile(r"\b(?:FROM|JOIN)\s+[`\"]?([\w.\-]+)[`\"]?", re.IGNORECASE)
 _CTE_NAME = re.compile(r"\b(?:WITH|,)\s*([\w]+)\s+AS\s*\(", re.IGNORECASE)
-_LIMIT = re.compile(r"\bLIMIT\s+(\d+)\b", re.IGNORECASE)
+# Only a LIMIT that ends the statement caps the outermost query; one inside parentheses caps a subquery.
+_TRAILING_LIMIT = re.compile(r"\bLIMIT\s+(\d+)(?:\s+OFFSET\s+\d+)?\s*$", re.IGNORECASE)
+# Characters the engines may not agree on as line ends (DuckDB ends a -- comment at a lone \r, not at \v or
+# U+2028; GoogleSQL has no local oracle), so a comment boundary could differ. Never needed in a query.
+_AMBIGUOUS_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x85\u2028\u2029]|\r(?!\n)")
 
 
-def validate_sql(sql: str, allowed_tables: set[str], max_rows: int) -> str:
-    """Return cleaned SQL (fences stripped, LIMIT enforced) or raise AdPilotError(kind="SqlPolicy")."""
+def _refuse(why: str) -> AdPilotError:
+    return AdPilotError("SqlPolicy", f"{why} This SQL form is not supported.")
+
+
+def _close(sql: str, i: int, backslash: bool) -> int:
+    """Index of the quote that closes the quoted run opening at sql[i]. DuckDB doubles the quote to escape it;
+    GoogleSQL escapes with a backslash and refuses a raw newline inside a (non-triple) quote."""
+    q, j = sql[i], i + 1
+    while j < len(sql):
+        ch = sql[j]
+        if backslash and ch in "\r\n":
+            break
+        if backslash and ch == "\\" and sql[j + 1 : j + 2] not in "\r\n":  # at the very end the slice is "", also "in"
+            j += 2
+        elif ch == q and not backslash and sql[j + 1 : j + 2] == q:
+            j += 2
+        elif ch == q:
+            return j
+        else:
+            j += 1
+    raise _refuse("Unterminated or multi-line quoted text.")
+
+
+def _lex(sql: str, dialect: str) -> tuple[str, list[tuple[int, int]]]:
+    """One left-to-right pass → (masked, string-content spans). Same length as `sql`, so offsets map 1:1:
+    string contents become spaces (the quotes stay), comments become spaces, quoted identifiers stay as they are.
+    Any form outside the supported set raises SqlPolicy; an unknown dialect raises ValueError."""
+    if dialect == "duckdb":
+        strings, idents, bq = "'", '"', False
+    elif dialect == "bigquery":
+        strings, idents, bq = "'\"", "`", True
+    else:
+        raise ValueError(f"No SQL lexer for dialect {dialect!r}.")
+    if _AMBIGUOUS_CHARS.search(sql):
+        raise _refuse("Control characters are not allowed in SQL.")
+    out, spans, i, n, after_string = list(sql), [], 0, len(sql), False
+    while i < n:
+        c = sql[i]
+        if sql.startswith("/*", i):
+            j = i + 2
+            while not sql.startswith("*/", j):
+                if j >= n:
+                    raise _refuse("Unterminated block comment.")
+                if sql.startswith("/*", j):  # DuckDB nests block comments, GoogleSQL does not
+                    raise _refuse("Nested block comments are not allowed.")
+                j += 1
+            out[i : j + 2] = " " * (j + 2 - i)
+            i = j + 2
+        elif sql.startswith("--", i) or (bq and c == "#"):
+            if bq and sql[i : i + 10].lower() == "#legacysql":
+                raise _refuse("Legacy SQL is not allowed.")
+            j = i
+            while j < n and sql[j] not in "\r\n":
+                j += 1
+            out[i:j] = " " * (j - i)
+            i = j
+        elif c in strings:
+            if after_string:  # 'a' 'b' / 'a'\n'b': DuckDB concatenates across a newline, GoogleSQL varies
+                raise _refuse("Adjacent string literals are not allowed.")
+            if i and (sql[i - 1].isalnum() or sql[i - 1] in "_&"):  # E'' x'' b'' N'' U&'' r'' rb'' ...
+                raise _refuse("Prefixed string literals are not allowed.")
+            if bq and sql[i + 1 : i + 3] == c * 2:
+                raise _refuse("Triple-quoted strings are not allowed.")
+            j = _close(sql, i, bq)
+            out[i + 1 : j] = " " * (j - i - 1)
+            spans.append((i + 1, j))
+            i, after_string = j + 1, True
+        elif c in idents:
+            if after_string and c == '"':  # 'a'"b": refused rather than trusted to split into literal + identifier
+                raise _refuse("A quote straight after a string literal is not allowed.")
+            j = _close(sql, i, bq)
+            if j == i + 1:  # both engines refuse a zero-length quoted identifier
+                raise _refuse("Empty quoted identifier.")
+            i, after_string = j + 1, False
+        else:
+            if c == "$" and not bq:
+                raise _refuse("Dollar-quoted strings are not allowed.")
+            after_string = after_string and c.isspace()
+            i += 1
+    return "".join(out), spans
+
+
+def mask_sql(sql: str, dialect: str) -> str:
+    """`sql` with string-literal contents and comments blanked to spaces, offsets unchanged (see _lex)."""
+    return _lex(sql, dialect)[0]
+
+
+def validate_sql(sql: str, allowed_tables: set[str], max_rows: int, *, dialect: str) -> str:
+    """Return the SQL to run (fences stripped, trailing ; removed, LIMIT enforced on the outermost query) or raise
+    AdPilotError(kind="SqlPolicy"). Every structural check reads the masked text, so a quoted value is data; the
+    returned SQL is the original text, literal values never altered."""
     if not sql or not sql.strip():
         raise AdPilotError("SqlPolicy", "Empty SQL.")
     if len(sql) > MAX_SQL_LENGTH:
         raise AdPilotError("SqlPolicy", f"SQL is too long ({len(sql)} chars; max {MAX_SQL_LENGTH}).")
 
-    sql = _FENCE.sub("", sql.strip()).strip().rstrip(";").strip()
-    bare = _LINE_COMMENT.sub(" ", _BLOCK_COMMENT.sub(" ", sql))
+    sql = _FENCE.sub("", sql.strip()).strip()
+    masked, spans = _lex(sql, dialect)
+    end = len(masked.rstrip()) - 1
+    if end >= 0 and masked[end] == ";":  # the one trailing ; goes, in both texts, so offsets stay 1:1
+        sql, masked = sql[:end] + " " + sql[end + 1 :], masked[:end] + " " + masked[end + 1 :]
+    sql = sql.rstrip()
+    masked = masked[: len(sql)]
 
-    if _FORBIDDEN.search(bare) or _FORBIDDEN.search(sql):
+    # The old raw-text _FORBIDDEN scan existed only because regex comment stripping could be fooled (a quote in
+    # a comment, a -- in a string); the single lexer pass removes that reason. Comments still count for this
+    # one scan (a write keyword in a comment is refused, as before); only string contents are data.
+    no_strings = list(sql)
+    for s, e in spans:
+        no_strings[s:e] = " " * (e - s)
+    if _FORBIDDEN.search("".join(no_strings)):
         raise AdPilotError("SqlPolicy", "Only read-only SELECT statements are allowed.")
-    if _SUSPICIOUS.search(bare):
+    if _SUSPICIOUS.search(masked):
         raise AdPilotError("SqlPolicy", "Metadata and file-reading functions are not allowed.")
+    if ";" in masked:
+        raise AdPilotError("SqlPolicy", "Exactly one statement is allowed.")
 
-    statements = [s for s in sqlparse.parse(bare) if str(s).strip()]
+    statements = [s for s in sqlparse.parse(masked) if str(s).strip()]
     if len(statements) != 1:
         raise AdPilotError("SqlPolicy", f"Exactly one statement is allowed (got {len(statements)}).")
     stmt_type = statements[0].get_type()
     if stmt_type not in ("SELECT", "UNKNOWN"):  # sqlparse reports WITH ... SELECT as UNKNOWN
         raise AdPilotError("SqlPolicy", f"Statement type {stmt_type} is not allowed; only SELECT.")
 
-    ctes = {m.lower() for m in _CTE_NAME.findall(bare)}
-    referenced = {t for t in _TABLE_REF.findall(bare) if t.lower() not in ctes}
+    ctes = {m.lower() for m in _CTE_NAME.findall(masked)}
+    referenced = {t for t in _TABLE_REF.findall(masked) if t.lower() not in ctes}
     if not referenced:
         raise AdPilotError("SqlPolicy", "No table reference found.", hint=f"Allowed tables: {sorted(allowed_tables)}")
     unknown = sorted(t for t in referenced if t not in allowed_tables)
@@ -81,11 +185,11 @@ def validate_sql(sql: str, allowed_tables: set[str], max_rows: int) -> str:
             hint=f"Allowed tables: {sorted(allowed_tables)}",
         )
 
-    m = _LIMIT.search(sql)
-    if not m:
-        return f"{sql} LIMIT {max_rows}"
-    if int(m.group(1)) > max_rows:
-        return _LIMIT.sub(f"LIMIT {max_rows}", sql)
+    m = _TRAILING_LIMIT.search(masked)
+    if not m:  # a new line when the SQL ends in a comment, or the LIMIT would be commented out
+        return sql + ("\n" if sql[len(masked.rstrip()) :].strip() else " ") + f"LIMIT {max_rows}"
+    if int(m.group(1)) > max_rows:  # the match span holds in the original: same length, and the digits are code
+        return sql[: m.start(1)] + str(max_rows) + sql[m.end(1) :]
     return sql
 
 

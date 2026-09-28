@@ -5,12 +5,10 @@ validated first and quoted per dialect last. Quoting is not the only guard: date
 a filter with a fixed `values` list rejects anything else, the expression's length is capped, and the finished
 statement still goes through validate_sql inside execute().
 
-ponytail: validate_sql scans the whole statement, string literals included, for write keywords and for LIMIT. A real
-value like "Drop Shipping Sale" fails its panels with SqlPolicy (the page still loads; tests/test_api.py pins it),
-and so does a whole-word match like "Call" (a Google campaign type: "Call - US"), a false positive. A value
-containing "LIMIT 99999" is not caught at all: it is rewritten inside the literal instead of failing, so that panel
-silently shows "No rows" rather than an error. Masking literals before those scans is a change to the model-SQL
-validator and gets its own review.
+Quoted values are data: validate_sql lexes the statement once per dialect and runs its keyword, table and LIMIT
+checks on text with string-literal contents blanked, so "Drop Shipping Sale", "Call - US" or "LIMIT 99999 deal"
+reach the query unchanged (tests/test_api.py pins it). Its lexer refuses the quote forms it does not model, which
+sql_literal never emits.
 """
 
 from __future__ import annotations

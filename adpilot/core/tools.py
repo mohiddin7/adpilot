@@ -67,7 +67,7 @@ def execute(deps: AgentDeps, sql: str, max_rows: int | None = None) -> SqlResult
     with _EXEC_LOCK:
         try:
             deps.budget.take_sql()
-            clean = validate_sql(sql, pack.allowed_tables(con.dialect), limit)
+            clean = validate_sql(sql, pack.allowed_tables(con.dialect), limit, dialect=con.dialect)
             df = con.query(clean, max_bytes=pack.raw.get("max_bytes_billed"))
         except AdPilotError as exc:
             cols = [c for c, _ in _gold_columns(deps)] if exc.kind == "SqlSchema" else []

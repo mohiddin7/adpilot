@@ -83,7 +83,8 @@ class ExecutionAccuracy(Evaluator[Any, Trace, dict]):
         if not trace.answer.sql:
             return {"execution": EvaluationReason(value=False, reason="no SQL in answer")}
         try:
-            safe_sql = validate_sql(trace.answer.sql, self.pack.allowed_tables(self.connector.dialect), self.pack.max_result_rows)
+            dialect = self.connector.dialect
+            safe_sql = validate_sql(trace.answer.sql, self.pack.allowed_tables(dialect), self.pack.max_result_rows, dialect=dialect)
         except AdPilotError as exc:
             return {"execution": EvaluationReason(value=False, reason=f"unsafe SQL: {exc}"[:200])}
         try:
@@ -136,7 +137,7 @@ class SafeSql(Evaluator[Any, Trace, dict]):
         allowed = self.pack.allowed_tables(self.dialect)
         for sql in ctx.output.sql_executed:
             try:
-                validate_sql(sql, allowed, self.pack.max_result_rows)
+                validate_sql(sql, allowed, self.pack.max_result_rows, dialect=self.dialect)
             except AdPilotError:
                 return {"safe_sql": False}
         return {"safe_sql": True}

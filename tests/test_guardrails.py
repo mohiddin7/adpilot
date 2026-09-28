@@ -14,8 +14,8 @@ BQ = "p.d.fct_unified_marketing_performance"
 ALLOWED = {BQ, "fct_unified_marketing_performance", "tbl_forecast"}
 
 
-def v(sql: str) -> str:
-    return validate_sql(sql, ALLOWED, max_rows=100)
+def v(sql: str, dialect: str = "duckdb") -> str:
+    return validate_sql(sql, ALLOWED, max_rows=100, dialect=dialect)
 
 
 @pytest.mark.parametrize(
@@ -46,6 +46,212 @@ def test_backticks_fences_and_cte_accepted():
     sql = "```sql\nWITH t AS (SELECT platform, spend FROM `p.d.fct_unified_marketing_performance`)\nSELECT * FROM t JOIN tbl_forecast f ON 1=1;\n```"
     out = v(sql)
     assert out.startswith("WITH t AS") and out.endswith("LIMIT 100")
+
+
+# ---- quoted values are data: one lexer pass per dialect, every check on the masked text ----
+import random  # noqa: E402
+
+import duckdb  # noqa: E402
+
+from adpilot.core.guardrails import _lex, mask_sql  # noqa: E402
+
+G = "fct_unified_marketing_performance"
+STR = duckdb.token_type.string_const
+
+
+def rejected(sql: str, dialect: str = "duckdb") -> bool:
+    try:
+        v(sql, dialect)
+    except AdPilotError as exc:
+        assert exc.kind == "SqlPolicy"
+        return True
+    return False
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"SELECT 1 FROM {G} WHERE a = 'x' ; DROP TABLE t",
+        f"SELECT 1 FROM {G} /* ' */ DROP TABLE t",
+        f"SELECT 1 FROM {G} WHERE a = 'x' -- '; DROP TABLE y",  # comment text, but a write keyword in a comment
+        f"SELECT 1 FROM {G} WHERE a = 'x' /* '; DROP TABLE y */",  # is still refused (as before this change)
+        f"SELECT 1 FROM {G} WHERE a = E'\\x27; DROP'",
+        f"SELECT 1 FROM {G} WHERE a = $$; DROP$$",
+        f"SELECT 1 FROM {G} WHERE a = 'abc",
+        f"SELECT 1 FROM {G} WHERE a = \"abc",
+        f"SELECT 1 FROM {G} /* never closed",
+        f"SELECT 1 FROM {G} /* a /* nested */ */",
+        f"SELECT 1 FROM {G} WHERE a = 'x' 'y'",  # adjacent literals: DuckDB/BigQuery concatenate or refuse
+        f"SELECT 1 FROM {G} WHERE a = 'x'\n'y'",
+        f"SELECT 1 FROM {G} WHERE a = 'x' -- c\n'y'",
+        f"SELECT 1 FROM {G} WHERE a = 'x'\"y\"",
+        f"SELECT 1 FROM {G} WHERE a = x'00'",  # any prefix directly before a quote: E'', x'', b'', r'', N''
+        f"SELECT 1 FROM {G} -- c\rDROP TABLE t",  # a lone \r ends a comment in DuckDB; refused in both
+        f"SELECT 1 FROM {G} -- c\x0b'\nDROP TABLE t --'",
+        f"SELECT 1 FROM {G} -- c\u2028'\nDROP TABLE t --'",
+        f"SELECT read_csv('x') FROM {G}",
+        f"SELECT * FROM read_parquet('s3://b/x') JOIN {G} ON true",
+        f"SELECT * FROM {G} JOIN INFORMATION_SCHEMA.TABLES ON true",
+        "SELECT 1 FROM secrets WHERE x = 'fct_unified_marketing_performance'",
+        f"SELECT 1 FROM {G};;",
+        f"SELECT 1 FROM {G}; SELECT 2 FROM {G}",
+        f"SELECT 1 FROM {G} WHERE a = 'x'; DELETE FROM {G} WHERE b = ';'",
+    ],
+)
+def test_rejected_in_both_dialects(sql, dialect):
+    assert rejected(sql, dialect)
+
+
+@pytest.mark.parametrize(
+    ("dialect", "sql"),
+    [
+        # DuckDB: a backslash is ordinary, so the literal ends at the second quote and DROP is code
+        ("duckdb", f"SELECT 1 FROM {G} WHERE a = 'a\\'; DROP TABLE x; --'"),
+        ("duckdb", f"SELECT 1 FROM {G} WHERE a = 'it''s' ; DROP TABLE t"),
+        ('duckdb', f'SELECT 1 FROM "secrets" JOIN {G} ON true'),
+        ("duckdb", f"SELECT 1 FROM {G} WHERE a = \"DROP\""),  # identifiers are never masked
+        # BigQuery: '' is not an escape, so 'it''s' is two adjacent literals
+        ("bigquery", f"SELECT 1 FROM {G} WHERE a = 'it''s'"),
+        ("bigquery", f"SELECT 1 FROM {G} WHERE a = '''x'''"),
+        ("bigquery", f'SELECT 1 FROM {G} WHERE a = """x"""'),
+        ("bigquery", f"SELECT 1 FROM {G} WHERE a = r'x'"),
+        ("bigquery", f"SELECT 1 FROM {G} WHERE a = B\"x\""),
+        ("bigquery", f"SELECT 1 FROM {G} WHERE a = rb'x'"),
+        ("bigquery", f"SELECT 1 FROM {G} WHERE a = bR'x'"),
+        ("bigquery", f"SELECT 1 FROM {G} WHERE a = 'abc\\'"),  # a trailing backslash escapes the closing quote
+        ("bigquery", f"SELECT 1 FROM {G} WHERE a = 'two\nlines'"),  # GoogleSQL refuses a newline in '...'
+        ("bigquery", f"SELECT 1 FROM `{G}\nx`"),
+        ("bigquery", f"#legacySQL\nSELECT 1 FROM {G}"),
+        ("bigquery", f"SELECT 1 FROM {G} WHERE a = 'x' # '; DROP TABLE y"),
+        ("bigquery", "SELECT 1 FROM `p.d.other`"),
+    ],
+)
+def test_rejected_per_dialect(dialect, sql):
+    assert rejected(sql, dialect)
+
+
+@pytest.mark.parametrize(
+    ("dialect", "sql", "out"),
+    [
+        # BigQuery: backslash escapes, so this is one literal and nothing in it is code
+        ("bigquery", f"SELECT 1 FROM {G} WHERE a = 'a\\'; DROP TABLE x; --'",
+         f"SELECT 1 FROM {G} WHERE a = 'a\\'; DROP TABLE x; --' LIMIT 100"),
+        # a quote inside a comment opens nothing, and the LIMIT goes on a new line, never into the comment
+        ("duckdb", f"SELECT 1 FROM {G} WHERE a = 'x' -- '; note", f"SELECT 1 FROM {G} WHERE a = 'x' -- '; note\nLIMIT 100"),
+        ("bigquery", f"SELECT 1 FROM {G} WHERE a = 'x' # '; note", f"SELECT 1 FROM {G} WHERE a = 'x' # '; note\nLIMIT 100"),
+        ("duckdb", f"SELECT 1 FROM {G}; -- done", f"SELECT 1 FROM {G}  -- done\nLIMIT 100"),
+        # real values that used to trip the keyword scan
+        ("duckdb", f"SELECT 1 FROM {G} WHERE c IN ('Drop Shipping Sale', 'Call - US')",
+         f"SELECT 1 FROM {G} WHERE c IN ('Drop Shipping Sale', 'Call - US') LIMIT 100"),
+        ("bigquery", f"SELECT 1 FROM {G} WHERE c = 'Drop Shipping Sale'",
+         f"SELECT 1 FROM {G} WHERE c = 'Drop Shipping Sale' LIMIT 100"),
+        ("duckdb", f"SELECT 1 FROM {G} WHERE c = 'it''s; a -- /* deal'",
+         f"SELECT 1 FROM {G} WHERE c = 'it''s; a -- /* deal' LIMIT 100"),
+        ("bigquery", f"SELECT 1 FROM {G} WHERE c = \"it's\" AND d = 'x\\\\'",
+         f"SELECT 1 FROM {G} WHERE c = \"it's\" AND d = 'x\\\\' LIMIT 100"),
+        # LIMIT inside a literal is data: never rewritten, and it never stops the real LIMIT
+        ("duckdb", f"SELECT 1 FROM {G} WHERE c = 'LIMIT 99999 deal'",
+         f"SELECT 1 FROM {G} WHERE c = 'LIMIT 99999 deal' LIMIT 100"),
+        ("bigquery", f"SELECT 1 FROM {G} WHERE c = 'no limit 5'", f"SELECT 1 FROM {G} WHERE c = 'no limit 5' LIMIT 100"),
+        ("duckdb", f"SELECT 1 FROM {G} WHERE c = 'LIMIT 99999' LIMIT 500",
+         f"SELECT 1 FROM {G} WHERE c = 'LIMIT 99999' LIMIT 100"),
+        # a table name inside a literal is not a table reference
+        ("duckdb", f"SELECT 1 FROM {G} WHERE x = 'FROM secrets'", f"SELECT 1 FROM {G} WHERE x = 'FROM secrets' LIMIT 100"),
+        ("bigquery", f"SELECT 1 FROM `p.d.{G}` WHERE x = \"JOIN secrets\"",
+         f"SELECT 1 FROM `p.d.{G}` WHERE x = \"JOIN secrets\" LIMIT 100"),
+        # LIMIT caps the outermost query
+        ("duckdb", f"SELECT * FROM (SELECT * FROM {G} LIMIT 5)", f"SELECT * FROM (SELECT * FROM {G} LIMIT 5) LIMIT 100"),
+        ("bigquery", f"SELECT * FROM {G} WHERE a IN (SELECT a FROM {G} LIMIT 5)",
+         f"SELECT * FROM {G} WHERE a IN (SELECT a FROM {G} LIMIT 5) LIMIT 100"),
+        ("duckdb", f"SELECT * FROM {G} LIMIT 5 OFFSET 10", f"SELECT * FROM {G} LIMIT 5 OFFSET 10"),
+        ("bigquery", f"SELECT * FROM {G} LIMIT 500 OFFSET 10", f"SELECT * FROM {G} LIMIT 100 OFFSET 10"),
+        ("duckdb", f"SELECT * FROM {G} LIMIT /* c */ 5000 -- c", f"SELECT * FROM {G} LIMIT /* c */ 100 -- c"),
+    ],
+)
+def test_accepted_with_literals_intact(dialect, sql, out):
+    assert v(sql, dialect) == out
+
+
+@pytest.mark.parametrize(
+    ("sql", "masked"),
+    [
+        ("SELECT 'it\\'s'", "SELECT '     '"),
+        ("SELECT 'a\\\\'", "SELECT '   '"),
+        ("SELECT \"it's\" x", "SELECT \"    \" x"),
+        ("SELECT `we'ird`, `a\\`b`", "SELECT `we'ird`, `a\\`b`"),
+        ("SELECT 1 # it's\nFROM t", "SELECT 1" + " " * 7 + "\nFROM t"),
+        ("SELECT 1 -- it's\n/* \" */", "SELECT 1" + " " * 8 + "\n" + " " * 7),
+        ("SELECT ''", "SELECT ''"),
+    ],
+)
+def test_bigquery_mask_table(sql, masked):
+    assert mask_sql(sql, "bigquery") == masked
+
+
+def test_duckdb_mask_keeps_offsets_and_identifiers():
+    sql = "SELECT \"a'b\" FROM t WHERE x = 'it''s' -- c\n/* 'x' */"
+    assert mask_sql(sql, "duckdb") == "SELECT \"a'b\" FROM t WHERE x = '" + " " * 5 + "'" + " " * 5 + "\n" + " " * 9
+
+
+def test_an_unknown_dialect_is_a_value_error_never_a_guess():
+    with pytest.raises(ValueError, match="snowflake"):
+        mask_sql("SELECT 1", "snowflake")
+    with pytest.raises(ValueError, match="snowflake"):
+        validate_sql(f"SELECT 1 FROM {G}", ALLOWED, 100, dialect="snowflake")
+
+
+# The differential test: DuckDB's own tokenizer is the oracle for every input the duckdb lexer accepts.
+PIECES = ["'", "''", "\\", '"', "`", "--", "/*", "*/", "\n", ";", "E'", "$$", "#", "SELECT", "DROP", "LIMIT 5",
+          "FROM gold", " ", " ", "  ", "'x'", "'a''b'", "'it\\'", '"id"', '"a""b"', "/* c */", "-- c\n", ",", "(", ")",
+          "\r\n", "\r", "x", "1", "=", "'DROP TABLE t; --'"]
+VALID = ["SELECT a, 'x' FROM gold WHERE b = 'it''s' -- c\nLIMIT 5", "SELECT \"a\"\"b\" FROM gold /* 'q' */",
+         "SELECT 1 FROM gold WHERE c IN ('a', 'b;c', '--d', '/*e')", "WITH t AS (SELECT 'x' AS y) SELECT * FROM t"]
+SEED, N = 20260928, 6000
+
+
+def _corpus():
+    rng = random.Random(SEED)
+    out = list(VALID)
+    while len(out) < N:
+        out.append("".join(rng.choice(PIECES) for _ in range(rng.randint(1, 14))))
+    return out
+
+
+def _tokens(sql: str) -> list[tuple[int, object]]:
+    """duckdb.tokenize reports UTF-8 byte offsets; the lexer works in characters."""
+    raw = sql.encode()
+    return [(len(raw[:o].decode()), t) for o, t in duckdb.tokenize(sql)]
+
+
+def _duck_agrees(sql: str) -> None:
+    masked, spans = _lex(sql, "duckdb")
+    toks = _tokens(sql)
+    assert len(masked) == len(sql)
+    # Offsets, not types: DuckDB labels a bare ** a keyword but ** cut from **/**/ an operator (same scan).
+    masked_toks = _tokens(masked)
+    assert [o for o, _ in masked_toks] == [o for o, _ in toks], "masking changed DuckDB's tokens: a masked range held code"
+    starts = [o for o, t in toks if t == STR]
+    assert [s - 1 for s, _ in spans] == starts == [o for o, t in masked_toks if t == STR], "string starts disagree"
+    for s, e in spans:
+        assert _tokens(sql[s - 1 : e + 1]) == [(0, STR)], "span is not exactly one DuckDB literal"
+        rest = [(o - e - 1, t) for o, t in toks if o > s - 1]
+        assert _tokens(sql[e + 1 :]) == rest, "DuckDB's literal runs past the lexer's closing quote"
+        assert not any(s <= o < e for o, _ in toks), "a DuckDB token starts inside a masked literal"
+    assert all(masked[o] == sql[o] for o, _ in toks), "a DuckDB token starts inside masked text"
+
+
+def test_duckdb_lexer_agrees_with_duckdb_tokenizer():
+    accepted = 0
+    for sql in _corpus():
+        try:
+            _lex(sql, "duckdb")
+        except AdPilotError:
+            continue
+        accepted += 1
+        _duck_agrees(sql)
+    print(f"differential: seed={SEED} corpus={N} accepted={accepted} ({accepted / N:.1%})")
+    assert accepted / N > 0.25  # a lexer that refuses nearly everything proves nothing
 
 
 def test_sanitize_question():

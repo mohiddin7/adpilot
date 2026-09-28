@@ -547,12 +547,33 @@ def test_a_quote_in_a_filter_value_is_data_not_sql(api):
     assert panels["dd_campaigns"]["error"] is None and panels["dd_campaigns"]["rows"] == []
 
 
-def test_a_value_with_a_sql_keyword_fails_only_the_panels_it_reaches(api):
-    """Review focus 1: validate_sql scans literals too (the ceiling documented in adpilot/dashboard/filters.py)."""
+@pytest.mark.parametrize("value", ["Drop Shipping Sale", "Call Tracking"])
+def test_a_value_with_a_sql_keyword_is_data(api, value):
+    """validate_sql masks string literals before its keyword scan, so a real campaign name is just a value (this
+    replaced a test that pinned the old ceiling: the value failed its panels with SqlPolicy)."""
     client, _ = api
-    panels = _panels(client, page="overview", campaign_name="Drop Shipping Sale", **WINDOW)
-    assert "SqlPolicy" in panels["kpis"]["error"]
-    assert panels["budget_plan"]["error"] is None  # no {where}: the filter never reaches it
+    panels = _panels(client, page="overview", campaign_name=value, **WINDOW)
+    assert panels["kpis"]["error"] is None
+    assert all(p["error"] is None for p in panels.values())
+    assert _panels(client, page="deep_dive", campaign_name=value, **WINDOW)["dd_campaigns"]["rows"] == []
+
+
+def test_a_limit_inside_a_value_never_rewrites_the_literal(api, monkeypatch):
+    from adpilot.connectors.duckdb import DuckDBSource
+
+    ran: list[str] = []
+    real = DuckDBSource.query
+
+    def record(self, sql, max_bytes=None):
+        ran.append(sql)
+        return real(self, sql, max_bytes)
+
+    monkeypatch.setattr(DuckDBSource, "query", record)
+    client, _ = api
+    panels = _panels(client, page="deep_dive", campaign_name="LIMIT 99999 deal", **WINDOW)
+    assert panels["dd_campaigns"]["error"] is None and panels["dd_campaigns"]["rows"] == []
+    reached = [s for s in ran if "LIMIT 99999 deal" in s]
+    assert reached and all("'LIMIT 99999 deal'" in s for s in reached)
 
 
 def test_filter_options_cascade_from_platform(api):
