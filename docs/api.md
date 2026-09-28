@@ -73,7 +73,7 @@ Event types:
 |---|---|---|
 | `status` | first, then once per tool call/repair/final-result | `{"phase", "tool", "detail"}` |
 | `answer` | once, before `done` | the same `AnswerBody` as `POST /ask` |
-| `error` | only on a transport/threading failure — `ask()`'s own failures already come back as a refused `answer` | `{"kind", "message"}` |
+| `error` | only on a transport/threading failure — `ask()`'s own failures already come back as a refused `answer` | `{"kind", "message"}`: `message` is always "The answer failed on the server. Try again."; the exception text goes to the server log only |
 | `done` | always last | `{}` |
 
 `phase` is one of `thinking | tool | sql | repair | answering`. `thinking` is emitted immediately, before the

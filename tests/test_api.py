@@ -337,7 +337,7 @@ def test_request_deps_are_a_fresh_copy_per_request(api):
     assert a is not b and a.results is not b.results and a.budget is not b.budget
 
 
-def test_the_stream_emits_an_error_event_then_done_when_the_worker_raises(api, monkeypatch):
+def test_the_stream_emits_an_error_event_then_done_when_the_worker_raises(api, monkeypatch, caplog):
     client, _ = api
     import adpilot.api.app as app_mod
 
@@ -353,7 +353,9 @@ def test_the_stream_emits_an_error_event_then_done_when_the_worker_raises(api, m
     events = sse_events(r)
     names = [n for n, _ in events]
     assert names == ["status", "error", "done"]
-    assert dict(events)["error"] == {"kind": "RuntimeError", "message": "worker exploded"}
+    # Deliberately changed from pinning the raw text: exception text never reaches the client, only the log.
+    assert dict(events)["error"] == {"kind": "RuntimeError", "message": "The answer failed on the server. Try again."}
+    assert "worker exploded" not in r.text and "worker exploded" in caplog.text
 
 
 def test_a_flush_that_raises_does_not_fail_the_request(api, monkeypatch, caplog):
