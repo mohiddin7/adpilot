@@ -360,6 +360,62 @@ def test_legitimate_from_lists_pass_per_dialect():
     assert v(f"SELECT * FROM `p.d.{G}` g JOIN p.d.{G} h ON true, {T2}", "bigquery").endswith("LIMIT 100")
 
 
+# ---- only an allowlisted token may follow a table item: DuckDB reads `a: b` as table b under the alias a ----
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"SELECT table_name, sql FROM {G}: duckdb_tables",
+        f"SELECT * FROM {G}: pg_tables",
+        f"SELECT * FROM {G}: duckdb_settings ()",
+        f"SELECT * FROM {G}:secrets",
+        f"SELECT * FROM {G} :secrets",
+        f"SELECT * FROM {G} : secrets",
+        f'SELECT * FROM "{G}": secrets',
+        f'SELECT * FROM {G}: "secrets"',
+        f"SELECT * FROM {T2}, {G}: secrets",
+        f"SELECT * FROM {T2} JOIN {G}: secrets ON true",
+        f"SELECT * FROM (SELECT * FROM {G}: secrets) t",
+        f"SELECT * FROM (SELECT 1 FROM {G}) t: secrets",
+        f"SELECT * FROM (SELECT 1 FROM {G}): secrets",
+        f"WITH t AS (SELECT * FROM {G}: secrets) SELECT * FROM t",
+        f"FROM {G}: secrets SELECT *",
+        f"SELECT * FROM {G}::secrets",
+        f"SELECT * FROM {G} . secrets",
+        f"SELECT * FROM {G} g: secrets",
+        f"SELECT * FROM {G} AS g: secrets",
+        f"SELECT * FROM {G} AS g (a, b)",
+        f"SELECT * FROM {G} TABLESAMPLE 10",
+        f"SELECT * FROM {G} g h",
+        f"SELECT * FROM {G} offset, secrets",  # OFFSET is not reserved in BigQuery: it never ends a FROM list
+    ],
+)
+def test_only_allowlisted_tokens_follow_a_table(sql, dialect):
+    assert rejected(sql, dialect)
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+@pytest.mark.parametrize(
+    "tail",
+    ["", " g", " AS g", " g, {T2}", " AS g JOIN {T2} f ON g.a = f.a", " NATURAL JOIN {T2}", " LEFT OUTER JOIN {T2} USING (a)",
+     " CROSS JOIN {T2}", " FULL JOIN {T2} ON true", " WHERE a = 1", " g GROUP BY 1", " HAVING count(*) > 1", " QUALIFY a = 1",
+     " ORDER BY 1", " LIMIT 5", " LIMIT 5 OFFSET 2", " UNION ALL SELECT 1 FROM {T2}", " EXCEPT SELECT 1 FROM {T2}",
+     " INTERSECT SELECT 1 FROM {T2}", " g WINDOW w AS (ORDER BY a)"],
+)
+def test_the_allowlisted_follows_pass(tail, dialect):
+    assert v(f"SELECT * FROM {G}" + tail.format(T2=T2), dialect)
+    assert v(f"SELECT * FROM (SELECT * FROM {G}{tail.format(T2=T2)}) AS s", dialect)
+
+
+def test_the_colon_bypass_never_reaches_the_database(deps):
+    from adpilot.core.tools import SqlError, execute
+
+    for sql in [f"SELECT table_name, sql FROM {G}: duckdb_tables", f"SELECT * FROM {G}: pg_tables",
+                f"SELECT * FROM {G}: duckdb_settings ()"]:
+        res = execute(deps, sql)
+        assert isinstance(res, SqlError) and res.kind == "SqlPolicy", sql
+
+
 def test_sanitize_question():
     assert sanitize_question("  What was spend?\x00 ") == "What was spend?"
     with pytest.raises(AdPilotError):

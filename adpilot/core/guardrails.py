@@ -50,6 +50,11 @@ _NAME = {
 }
 # Reserved in both dialects, and each starts a comma list that is not a FROM list.
 _FROM_ENDS = {"SELECT", "GROUP", "ORDER", "WINDOW"}
+# The only words that may follow a table item (after an optional [AS] alias), besides "," ")" and the end. Anything
+# else is refused: DuckDB reads `FROM a: b` as table b under the alias a, and a new trick needs no new rule here.
+_AFTER_TABLE = {"JOIN", "NATURAL", "LEFT", "RIGHT", "FULL", "INNER", "CROSS", "SEMI", "ANTI", "OUTER", "ON", "USING",
+                "WHERE", "GROUP", "HAVING", "QUALIFY", "WINDOW", "ORDER", "LIMIT", "OFFSET", "UNION", "EXCEPT",
+                "INTERSECT", "SELECT"}  # SELECT: DuckDB's FROM-first `FROM t SELECT ...`
 # Read a table (or the catalog) with no FROM: TABLE t, (DESCRIBE t), (SUMMARIZE t), (SHOW TABLES), PIVOT_WIDER t ...
 _NO_FROM_READS = {"TABLE", "DESCRIBE", "SUMMARIZE", "SHOW", "EXPLAIN", "PIVOT_WIDER", "PIVOT_LONGER"}
 # Only a LIMIT that ends the statement caps the outermost query; one inside parentheses caps a subquery.
@@ -175,11 +180,25 @@ def _tables(masked: str, code: str, dialect: str) -> tuple[list[tuple[str, int]]
                 return j + 1
         raise _refuse("Unbalanced parentheses.")
 
+    def alias_word(j: int) -> bool:
+        return j < len(toks) and toks[j][0] == "w" and "." not in toks[j][1] and word(j) not in _AFTER_TABLE
+
+    def after(j: int) -> int:  # toks[j] follows a table item: [AS] alias, then only an allowlisted token
+        if word(j) == "AS" or alias_word(j):
+            j += word(j) == "AS"
+            if not alias_word(j):
+                raise _refuse("This alias is not supported.")
+            j += 1
+        if j < len(toks) and word(j) not in _AFTER_TABLE and word(j) not in (",", ")"):
+            raise _refuse(f"{toks[j][1]!r} after a table is not supported.")
+        return j
+
     def item(i: int) -> int:  # one FROM/JOIN item starts at toks[i]: the index to walk on from
         kind, t = toks[i][:2] if i < len(toks) else ("", "")
         if kind == "s":
             raise _refuse("A string in table position is a file path, never a table.")
         if t == "(" and word(i + 1) in ("SELECT", "FROM", "WITH"):
+            after(group_end(i))
             return i  # a subquery: the walk checks the FROM lists inside it
         if kind != "w" and t != "`":
             raise _refuse("This FROM item is not supported; name an allowed table or use a subquery.")
@@ -187,7 +206,7 @@ def _tables(masked: str, code: str, dialect: str) -> tuple[list[tuple[str, int]]
         if word(j) == "(":
             raise _refuse("Table functions, UNNEST and LATERAL are not allowed in FROM.")
         refs.append((table, toks[i][2]))
-        return j
+        return after(j)
 
     i = 0
     if word(0) == "WITH":  # only a leading WITH names CTEs, each visible after its own body (not RECURSIVE)
