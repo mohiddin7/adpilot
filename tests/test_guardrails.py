@@ -225,7 +225,7 @@ def _tokens(sql: str) -> list[tuple[int, object]]:
 
 
 def _duck_agrees(sql: str) -> None:
-    masked, spans = _lex(sql, "duckdb")
+    masked, spans, _ = _lex(sql, "duckdb")
     toks = _tokens(sql)
     assert len(masked) == len(sql)
     # Offsets, not types: DuckDB labels a bare ** a keyword but ** cut from **/**/ an operator (same scan).
@@ -252,6 +252,112 @@ def test_duckdb_lexer_agrees_with_duckdb_tokenizer():
         _duck_agrees(sql)
     print(f"differential: seed={SEED} corpus={N} accepted={accepted} ({accepted / N:.1%})")
     assert accepted / N > 0.25  # a lexer that refuses nearly everything proves nothing
+
+
+# ---- every table the statement reads is checked; a file path is never a table ----
+T2 = "tbl_forecast"
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # comma joins and aliases
+        f"SELECT * FROM {G}, secrets",
+        f"SELECT * FROM {G} g, secrets s",
+        f"SELECT * FROM {G} AS g, secrets AS s",
+        f"SELECT * FROM {G} g JOIN {G} h ON g.a = h.a, secrets",
+        f"SELECT * FROM {G} g JOIN secrets s USING (a)",
+        f"SELECT * FROM {G} g LEFT JOIN {T2} f ON g.a = f.a, {T2} x, secrets",
+        # subqueries and CTEs
+        f"SELECT * FROM (SELECT * FROM {G}, secrets) t",
+        f"SELECT * FROM {G} WHERE a IN (SELECT a FROM {G}, secrets)",
+        f"SELECT * FROM {G} WHERE a IN (FROM secrets)",
+        f"WITH t AS (SELECT * FROM {G}, secrets) SELECT * FROM t",
+        "WITH secrets AS (SELECT * FROM secrets) SELECT * FROM secrets",  # a CTE is not visible in its own body
+        f"WITH a AS (SELECT * FROM b), b AS (SELECT * FROM {G}) SELECT * FROM a",  # nor in an earlier one
+        f"SELECT * FROM (WITH secrets AS (SELECT * FROM {G}) SELECT * FROM secrets) t, secrets",
+        f"WITH RECURSIVE t AS (SELECT 1 FROM {G}) SELECT * FROM t",
+        f"SELECT * FROM {G} UNION ALL SELECT * FROM secrets",
+        # LATERAL, table functions, UNNEST, parenthesised FROM lists
+        f"SELECT * FROM {G}, LATERAL (SELECT * FROM {G})",
+        f"SELECT * FROM {G}, UNNEST([1, 2])",
+        f"SELECT * FROM {G} CROSS JOIN UNNEST(g.arr)",
+        f"SELECT * FROM {G}, generate_series(1, 3)",
+        "SELECT * FROM range (10)",
+        "SELECT * FROM query_table('secrets')",
+        f"SELECT * FROM ({G} JOIN secrets ON true)",
+        f"SELECT * FROM ({G}), secrets",
+        f"SELECT * FROM (({G}))",
+        # a string in table position is a file path to DuckDB
+        f"SELECT * FROM {G}, 'x.csv'",
+        f"SELECT * FROM 'x.csv' JOIN {G} ON true",
+        f"SELECT * FROM {G} JOIN '/etc/passwd' ON true",
+        # statements that read a table without FROM
+        f"SELECT * FROM {G} WHERE a IN (TABLE secrets)",
+        f"SELECT 1 FROM {G} UNION TABLE secrets",
+        f"SELECT * FROM {G} WHERE EXISTS (DESCRIBE secrets)",
+        f"SELECT * FROM {G} WHERE EXISTS (DESC secrets)",
+        f"SELECT * FROM {G} WHERE EXISTS (SUMMARIZE secrets)",
+        f"SELECT (SHOW TABLES) FROM {G}",
+        f"SELECT * FROM {G} WHERE EXISTS (PIVOT secrets ON s USING count(*))",
+        "PIVOT secrets ON s USING count(*)",
+        "DESCRIBE secrets",
+        f"SET enable_external_access = true; SELECT 1 FROM {G}",
+        "VALUES (1)",
+        # names that only look allowlisted
+        f"SELECT * FROM other.{G}",
+        f"SELECT * FROM {G}x",
+        f"SELECT * FROM {G}​, {T2}",  # the engine reads a different name than \w does
+    ],
+)
+def test_every_table_is_checked(sql, dialect):
+    assert rejected(sql, dialect)
+
+
+@pytest.mark.parametrize(
+    ("dialect", "sql"),
+    [
+        ("duckdb", f'SELECT * FROM "{G}", "secrets"'),
+        ("duckdb", f'SELECT * FROM "{G}""x"'),  # an escaped quote inside a table name is never guessed at
+        ("duckdb", f"SELECT * FROM {G} POSITIONAL JOIN secrets"),
+        ("duckdb", f"SELECT * FROM {G} ASOF JOIN secrets s ON true"),
+        ("duckdb", f"FROM {G}, secrets SELECT *"),
+        ("bigquery", f"SELECT * FROM `p.d.{G}`, `p.d.secrets`"),
+        ("bigquery", f"SELECT * FROM `p.d.{G}`, \"x.csv\""),
+        ("bigquery", "SELECT * FROM `p.d.fct_*`"),
+        ("bigquery", f"SELECT * FROM `p.d.{G}` g, g.arr"),
+        ("bigquery", f"SELECT * FROM `p.d.{G}\\`x`"),
+    ],
+)
+def test_every_table_is_checked_per_dialect(dialect, sql):
+    assert rejected(sql, dialect)
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"SELECT * FROM {G} g, {T2} f WHERE g.platform = f.platform",
+        f"SELECT * FROM {G} AS g JOIN {T2} AS f ON g.platform = f.platform, {T2} x",
+        f"WITH t AS (SELECT * FROM {G}), u AS (SELECT * FROM t) SELECT * FROM t, u",
+        f"SELECT * FROM (SELECT * FROM {G}) AS s, {T2}",
+        f"SELECT a, b FROM {G} WHERE b IN (SELECT b FROM {T2}) GROUP BY a, b ORDER BY a DESC, b",
+        f"SELECT sum(x) OVER (PARTITION BY a ORDER BY b DESC) FROM {G} ORDER BY 1 DESC",
+        f"SELECT * FROM {G} QUALIFY row_number() OVER (PARTITION BY a ORDER BY b) = 1",
+        f"(SELECT a FROM {G}) UNION ALL (SELECT a FROM {T2})",
+        f"SELECT CAST(d AS TIMESTAMP WITH TIME ZONE) FROM {G}",
+        f"SELECT * FROM {G} WHERE c IN ('a, b', 'FROM secrets')",
+    ],
+)
+def test_legitimate_from_lists_pass(sql, dialect):
+    assert v(sql, dialect).endswith("LIMIT 100")
+
+
+def test_legitimate_from_lists_pass_per_dialect():
+    assert v(f'FROM {G} SELECT a, b', "duckdb").endswith("LIMIT 100")
+    assert v(f'SELECT * FROM "{G}" g, {T2}', "duckdb").endswith("LIMIT 100")
+    assert v(f"SELECT * FROM `p.d.{G}` g JOIN p.d.{G} h ON true, {T2}", "bigquery").endswith("LIMIT 100")
 
 
 def test_sanitize_question():

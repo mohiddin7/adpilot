@@ -17,6 +17,12 @@ class DuckDBSource:
     def __init__(self, csv_dir: Path, init_sql: str) -> None:
         self._con = duckdb.connect()
         self._con.execute(init_sql.replace("{csv_dir}", Path(csv_dir).as_posix()))
+        # Load every view's rows now (a view over read_csv would read the file on each query), then close file
+        # access for good: no later query, validated or not, can read a file or turn access back on.
+        for (view,) in self._con.execute("SELECT view_name FROM duckdb_views() WHERE NOT internal").fetchall():
+            q = '"' + view.replace('"', '""') + '"'
+            self._con.execute(f"CREATE TABLE _adpilot_load AS FROM {q}; DROP VIEW {q}; ALTER TABLE _adpilot_load RENAME TO {q}")
+        self._con.execute("SET enable_external_access = false; SET lock_configuration = true")
         self._lock = threading.Lock()  # one shared connection; the eval harness can query it from two threads
 
     def execute_script(self, sql: str) -> None:
