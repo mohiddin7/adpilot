@@ -257,23 +257,6 @@ def _tables(masked: str, code: str, dialect: str) -> tuple[list[tuple[str, int]]
     return refs, ctes
 
 
-_PARSER, _PARSER_LOCK = None, threading.Lock()
-
-
-def _duckdb_reads(sql: str) -> set[str]:
-    """DuckDB's own parser: the tables `sql` reads, CTE scoping included. A second layer behind _tables for duckdb
-    only. It raises on some texts the engine runs (UNNEST, a PIVOT subquery); _tables refuses those by itself."""
-    import duckdb
-
-    global _PARSER
-    with _PARSER_LOCK:
-        _PARSER = _PARSER or duckdb.connect()
-        try:
-            return set(_PARSER.get_table_names(sql))  # bare names: qualified=True appends "AS alias"; _tables checks paths
-        except duckdb.Error:
-            return set()
-
-
 def validate_sql(sql: str, allowed_tables: set[str], max_rows: int, *, dialect: str) -> str:
     """Return the SQL to run (fences stripped, trailing ; removed, LIMIT enforced on the outermost query) or raise
     AdPilotError(kind="SqlPolicy"). Every structural check reads the masked text, so a quoted value is data; the
@@ -319,8 +302,6 @@ def validate_sql(sql: str, allowed_tables: set[str], max_rows: int, *, dialect: 
     referenced = {t for t, at in refs if not any(t == c and at >= seen for c, seen in ctes)}
     if not referenced:
         raise AdPilotError("SqlPolicy", "No table reference found.", hint=f"Allowed tables: {sorted(allowed_tables)}")
-    if dialect == "duckdb":
-        referenced |= _duckdb_reads(sql)
     unknown = sorted(t for t in referenced if t not in allowed_tables)
     if unknown:
         raise AdPilotError(

@@ -416,6 +416,40 @@ def test_the_colon_bypass_never_reaches_the_database(deps):
         assert isinstance(res, SqlError) and res.kind == "SqlPolicy", sql
 
 
+def test_validation_touches_no_engine_network_or_file(monkeypatch):
+    """validate_sql is pure text: it must never open a DuckDB connection (get_table_names on a network-capable
+    connection fired HTTP requests for read_csv('http://...') and could hang), a socket, or a file."""
+    import socket
+    import threading
+
+    import adpilot.core.guardrails as g
+
+    def refuse(*a, **k):
+        raise AssertionError("validation reached out")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(duckdb, "connect", refuse)
+    monkeypatch.setattr(g, "_PARSER", None, raising=False)
+    monkeypatch.setattr("builtins.open", refuse)
+    outcomes: list[object] = []
+
+    def run():
+        for sql in [f"SELECT platform FROM {G}", f"SELECT * FROM {G}: read_csv ('http://127.0.0.1:9/x')",
+                    f"SELECT * FROM {G} WHERE a IN (SELECT * FROM read_csv ('http://127.0.0.1:9/x'))",
+                    f"SELECT read_csv ('http://127.0.0.1:9/x') FROM {G}"]:
+            try:
+                outcomes.append(v(sql))
+            except Exception as exc:  # noqa: BLE001 — collected, asserted below
+                outcomes.append(exc)
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not t.is_alive(), "validation hung"
+    assert not [o for o in outcomes if isinstance(o, AssertionError)], outcomes
+    assert len(outcomes) == 4 and isinstance(outcomes[0], str)
+
+
 def test_sanitize_question():
     assert sanitize_question("  What was spend?\x00 ") == "What was spend?"
     with pytest.raises(AdPilotError):
