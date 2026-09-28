@@ -478,6 +478,14 @@ def test_catalog_names_are_refused_as_identifiers(name, dialect):
     assert rejected(f"SELECT a FROM {G} WHERE a IN (SELECT a FROM {name})", dialect)
 
 
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+@pytest.mark.parametrize("expr", ["sleep_ms(60000)", "SLEEP_MS (60000)", "sleep(60)", "pg_sleep(60)", "60000.sleep_ms()"])
+def test_sleep_functions_are_refused(expr, dialect):
+    """A sleep holds the shared _EXEC_LOCK: one query would freeze every other SQL call."""
+    assert rejected(f"SELECT {expr} FROM {G}", dialect)
+    assert rejected(f"SELECT a FROM {G} WHERE a = {expr}", dialect)
+
+
 def test_quoted_engine_names_are_refused_in_duckdb():  # in BigQuery "..." is a string: data
     assert rejected(f'SELECT "read_blob"(\'x\') FROM {G}') and rejected(f'SELECT "duckdb_settings" FROM {G}')
 

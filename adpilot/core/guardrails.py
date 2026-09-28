@@ -49,7 +49,8 @@ _ENGINE = re.compile(
     r"\b(?:read_\w+|glob|sniff_csv|parquet_\w+|query|query_table|getenv|getvariable|which_secret|\w+_scan|"
     r"python_map_function|json_execute_serialized_sql|json_serialize_plan|json_(?:de)?serialize_sql|checkpoint|"
     r"force_checkpoint|(?:en|dis)able_(?:logging|profiling)|truncate_duckdb_logs|write_log|in_search_path|"
-    r"has_\w+_privilege|txid_current|current_\w+_id)[\"`]?\s*\(",
+    r"has_\w+_privilege|txid_current|current_\w+_id|"
+    r"sleep|sleep_ms)[\"`]?\s*\(",  # a sleep holds _EXEC_LOCK for every caller; pg_sleep is caught by pg_\w*
     re.IGNORECASE,
 )
 _FENCE = re.compile(r"^```(?:sql)?[ \t\r\n]*|[ \t\r\n]*```$", re.IGNORECASE)
