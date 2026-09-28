@@ -528,6 +528,28 @@ def test_the_false_positive_fixes_open_no_bypass(sql, dialect):
     assert rejected(sql, dialect)
 
 
+# ---- Unicode spaces: DuckDB's parser turns these 18 into ASCII spaces before it scans (probed over the whole BMP
+# with extract_statements); Python sees punctuation (U+200B, U+2060, U+FEFF) or a space the tokenizer does not ----
+DUCKDB_SPACES = [0x00A0, *range(0x2000, 0x200B), 0x200B, 0x202F, 0x205F, 0x2060, 0x3000, 0xFEFF]
+PY_ONLY_SPACES = [0x1680]  # Python whitespace, part of a name to DuckDB: a mismatch either way
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+@pytest.mark.parametrize("cp", DUCKDB_SPACES + PY_ONLY_SPACES, ids=lambda c: f"U+{c:04X}")
+def test_unicode_spaces_are_refused_in_code(cp, dialect):
+    ch = chr(cp)
+    for sql in [f"SELECT current_setting{ch}('threads') FROM {G}", f"SELECT getvariable{ch}('x') FROM {G}",
+                f"SELECT *{ch}FROM{ch}secrets",
+                f"SELECT a FROM {G}{ch}WHERE a = 1", f"{ch}SELECT a FROM {G}", f"SELECT a FROM {G},{ch}{T2}"]:
+        assert rejected(sql, dialect), repr(sql)
+
+
+@pytest.mark.parametrize("cp", DUCKDB_SPACES + PY_ONLY_SPACES, ids=lambda c: f"U+{c:04X}")
+def test_unicode_spaces_are_data_inside_strings_identifiers_and_comments(cp):
+    ch = chr(cp)
+    assert v(f"SELECT a AS \"x{ch}y\" FROM {G} WHERE c = 'Caf{ch}Noir' -- note{ch}\n").endswith("LIMIT 100")
+
+
 def test_sanitize_question():
     assert sanitize_question("  What was spend?\x00 ") == "What was spend?"
     with pytest.raises(AdPilotError):

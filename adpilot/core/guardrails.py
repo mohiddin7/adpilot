@@ -52,7 +52,8 @@ _ENGINE = re.compile(
     r"has_\w+_privilege|txid_current|current_\w+_id)[\"`]?\s*\(",
     re.IGNORECASE,
 )
-_FENCE = re.compile(r"^```(?:sql)?\s*|\s*```$", re.IGNORECASE)
+_FENCE = re.compile(r"^```(?:sql)?[ \t\r\n]*|[ \t\r\n]*```$", re.IGNORECASE)
+_WS = " \t\r\n"  # ASCII only: str.strip() would also drop the Unicode spaces _CODE_NON_ASCII refuses
 # Tokens of the "code" text (masked, quoted-identifier contents as _): a string, a (dotted) word, or one symbol.
 _TOKEN = re.compile(r"(?P<s>'[ ]*'|\"[ ]*\")|(?P<w>(?:\"_+\"|`_+`|\w+)(?:\.(?:\"_+\"|`_+`|\w+))*)|(?P<p>\S)")
 # A table name: dotted parts, each a bare word or a quoted part with no escapes (an escape is refused, not guessed).
@@ -75,6 +76,11 @@ _TRAILING_LIMIT = re.compile(r"\bLIMIT\s+(\d+)(?:\s+OFFSET\s+\d+)?\s*$", re.IGNO
 # Characters the engines may not agree on as line ends (DuckDB ends a -- comment at a lone \r, not at \v or
 # U+2028; GoogleSQL has no local oracle), so a comment boundary could differ. Never needed in a query.
 _AMBIGUOUS_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x85\u2028\u2029]|\r(?!\n)")
+# In code (not in strings, comments or quoted identifiers, where DuckDB keeps them as data): any non-ASCII
+# character Python does not call a word character. DuckDB 1.5.5's parser turns 18 such code points into ASCII
+# spaces before it scans (U+00A0, U+2000-U+200B, U+202F, U+205F, U+2060, U+3000, U+FEFF; its tokenize() does not
+# show this); others (U+1680, symbols) are whitespace or punctuation to Python but part of a name to DuckDB.
+_CODE_NON_ASCII = re.compile(r"[^\w\x00-\x7f]")
 
 
 def _refuse(why: str) -> AdPilotError:
@@ -290,13 +296,19 @@ def validate_sql(sql: str, allowed_tables: set[str], max_rows: int, *, dialect: 
     if len(sql) > MAX_SQL_LENGTH:
         raise AdPilotError("SqlPolicy", f"SQL is too long ({len(sql)} chars; max {MAX_SQL_LENGTH}).")
 
-    sql = _FENCE.sub("", sql.strip()).strip()
+    sql = _FENCE.sub("", sql.strip(_WS)).strip(_WS)
     masked, spans, idents = _lex(sql, dialect)
-    end = len(masked.rstrip()) - 1
+    end = len(masked.rstrip(_WS)) - 1
     if end >= 0 and masked[end] == ";":  # the one trailing ; goes, in both texts, so offsets stay 1:1
         sql, masked = sql[:end] + " " + sql[end + 1 :], masked[:end] + " " + masked[end + 1 :]
-    sql = sql.rstrip()
+    sql = sql.rstrip(_WS)
     masked = masked[: len(sql)]
+    code = list(masked)  # masked, quoted-identifier contents as _: only code is left
+    for s, e in idents:
+        code[s:e] = "_" * (e - s)
+    code = "".join(code)
+    if _CODE_NON_ASCII.search(code):
+        raise _refuse("Non-ASCII spaces and symbols are not allowed outside quotes.")
 
     # The old raw-text _FORBIDDEN scan existed only because regex comment stripping could be fooled (a quote in
     # a comment, a -- in a string); the single lexer pass removes that reason. Comments still count for this
@@ -318,10 +330,7 @@ def validate_sql(sql: str, allowed_tables: set[str], max_rows: int, *, dialect: 
     if stmt_type not in ("SELECT", "UNKNOWN"):  # sqlparse reports WITH ... SELECT as UNKNOWN
         raise AdPilotError("SqlPolicy", f"Statement type {stmt_type} is not allowed; only SELECT.")
 
-    code = list(masked)
-    for s, e in idents:
-        code[s:e] = "_" * (e - s)
-    refs, ctes = _tables(masked, "".join(code), dialect)
+    refs, ctes = _tables(masked, code, dialect)
     # A name is a CTE only after that CTE's body ends (CTE names are case-insensitive in both engines; a dotted name
     # is never a CTE); anywhere else it is a real table.
     referenced = {t for t, at in refs if not any(t.lower() == c.lower() and at >= seen for c, seen in ctes)}
@@ -337,7 +346,7 @@ def validate_sql(sql: str, allowed_tables: set[str], max_rows: int, *, dialect: 
 
     m = _TRAILING_LIMIT.search(masked)
     if not m:  # a new line when the SQL ends in a comment, or the LIMIT would be commented out
-        return sql + ("\n" if sql[len(masked.rstrip()) :].strip() else " ") + f"LIMIT {max_rows}"
+        return sql + ("\n" if sql[len(masked.rstrip(_WS)) :].strip(_WS) else " ") + f"LIMIT {max_rows}"
     if int(m.group(1)) > max_rows:  # the match span holds in the original: same length, and the digits are code
         return sql[: m.start(1)] + str(max_rows) + sql[m.end(1) :]
     return sql
