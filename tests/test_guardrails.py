@@ -488,6 +488,46 @@ def test_lookalikes_of_engine_names_pass():
         assert v(sql).endswith("LIMIT 100")
 
 
+# ---- false positives: FROM that is an operator or a function argument, and CTE names in any case ----
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"SELECT * FROM {G} WHERE platform IS DISTINCT FROM 'Google'",
+        f"SELECT * FROM {G} WHERE platform IS NOT DISTINCT FROM 'Google'",
+        f"SELECT a IS DISTINCT FROM b, c FROM {G}",
+        f"WITH Monthly AS (SELECT * FROM {G}) SELECT * FROM monthly",
+        f"WITH monthly AS (SELECT * FROM {G}) SELECT * FROM MONTHLY m JOIN {T2} f ON true",
+        f"SELECT EXTRACT(YEAR FROM date) AS y FROM {G}",
+        f"SELECT SUBSTRING(campaign_name FROM 1 FOR 3) FROM {G}",
+        f"SELECT TRIM(BOTH ' ' FROM campaign_name) FROM {G}",
+        f"SELECT extract(month FROM date), count(*) FROM {G} GROUP BY 1",
+    ],
+)
+def test_legitimate_from_as_operator_or_argument_passes(sql, dialect):
+    assert v(sql, dialect).endswith("LIMIT 100")
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"SELECT EXTRACT(YEAR FROM (SELECT max(d) FROM secrets)) FROM {G}",
+        f"SELECT a FROM {G} WHERE a IN ((SELECT 1) UNION SELECT s FROM secrets)",
+        f"SELECT TRIM(BOTH FROM ((SELECT 1) UNION SELECT s FROM secrets)) FROM {G}",
+        f"SELECT a IS DISTINCT FROM (SELECT s FROM secrets) FROM {G}",
+        f"SELECT * FROM {G} WHERE a IS DISTINCT FROM b, secrets",
+        f"SELECT foo(x FROM secrets) FROM {G}",
+        f"SELECT (x FROM secrets) FROM {G}",
+        "SELECT DISTINCT FROM secrets",
+        "WITH Secrets AS (SELECT * FROM secrets) SELECT * FROM SECRETS",
+        f"WITH a AS (SELECT * FROM B), b AS (SELECT * FROM {G}) SELECT * FROM a",
+    ],
+)
+def test_the_false_positive_fixes_open_no_bypass(sql, dialect):
+    assert rejected(sql, dialect)
+
+
 def test_sanitize_question():
     assert sanitize_question("  What was spend?\x00 ") == "What was spend?"
     with pytest.raises(AdPilotError):

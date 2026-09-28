@@ -246,18 +246,29 @@ def _tables(masked: str, code: str, dialect: str) -> tuple[list[tuple[str, int]]
     if word(i) not in ("SELECT", "FROM", "("):
         raise _refuse("Only SELECT queries are allowed.")
 
-    k, depth, open_from = 0, 0, set()
+    # A FROM that is not a table list: `x IS [NOT] DISTINCT FROM y`, and FROM directly inside EXTRACT/SUBSTRING/
+    # TRIM/OVERLAY(...), whose grammar takes expressions only, so any table read there is a nested (query), walked.
+    # Not "any group that does not start with SELECT": ((SELECT 1) UNION SELECT * FROM t) starts with "(".
+    k, depth, open_from, groups = 0, 0, set(), []
     while k < len(toks):
         t = toks[k][1]
+        if t == "FROM" and (
+            (groups and groups[-1])
+            or (word(k - 1) == "DISTINCT" and (word(k - 2) == "IS" or (word(k - 2) == "NOT" and word(k - 3) == "IS")))
+        ):
+            k += 1
+            continue
         if t in _NO_FROM_READS or (t == "DESC" and word(k - 1) in ("(", "")) or (
             t in ("PIVOT", "UNPIVOT") and k + 1 < len(toks) and toks[k + 1][0] == "w" and word(k + 1) not in ("INCLUDE", "EXCLUDE")
         ):
             raise _refuse(f"{t} is not allowed; read tables with SELECT ... FROM.")
         if t in ("(", "[", "{"):
             depth += 1
+            groups.append(t == "(" and word(k - 1) in ("EXTRACT", "SUBSTRING", "TRIM", "OVERLAY"))
         elif t in (")", "]", "}"):
             open_from.discard(depth)
             depth -= 1
+            groups = groups[:-1]
             if depth < 0:
                 raise _refuse("Unbalanced parentheses.")
         elif t in ("FROM", "JOIN") or (t == "," and depth in open_from):
@@ -311,8 +322,9 @@ def validate_sql(sql: str, allowed_tables: set[str], max_rows: int, *, dialect: 
     for s, e in idents:
         code[s:e] = "_" * (e - s)
     refs, ctes = _tables(masked, "".join(code), dialect)
-    # A name is a CTE only after that CTE's body ends (exact spelling); anywhere else it is a real table.
-    referenced = {t for t, at in refs if not any(t == c and at >= seen for c, seen in ctes)}
+    # A name is a CTE only after that CTE's body ends (CTE names are case-insensitive in both engines; a dotted name
+    # is never a CTE); anywhere else it is a real table.
+    referenced = {t for t, at in refs if not any(t.lower() == c.lower() and at >= seen for c, seen in ctes)}
     if not referenced:
         raise AdPilotError("SqlPolicy", "No table reference found.", hint=f"Allowed tables: {sorted(allowed_tables)}")
     unknown = sorted(t for t in referenced if t not in allowed_tables)
