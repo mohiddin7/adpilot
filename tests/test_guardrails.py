@@ -450,6 +450,44 @@ def test_validation_touches_no_engine_network_or_file(monkeypatch):
     assert len(outcomes) == 4 and isinstance(outcomes[0], str)
 
 
+# ---- engine functions that read files, network, environment or configuration, or run nested SQL; catalogs ----
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+@pytest.mark.parametrize(
+    "expr",
+    ["read_csv ('x')", "read_csv\n('x')", "read_csv /* c */ ('x')", "READ_TEXT('x')",
+     "read_json_auto ('x')", "read_ndjson_objects ('x')", "read_parquet ('x')", "read_duckdb ('x')", "glob ('*')",
+     "sniff_csv ('x')", "parquet_metadata ('x')", "parquet_scan ('x')", "query ('SELECT 1')",
+     "query_table ('secrets')", "getenv ('HOME')", "current_setting ('threads')", "'threads'.current_setting()",
+     "getvariable ('x')", "which_secret ('s3://b', 's3')", "current_query()", "current_database()",
+     "current_schemas(true)", "json_execute_serialized_sql ('x')", "json_serialize_plan ('SELECT 1')",
+     "arrow_scan (1, 2, 3)", "pandas_scan (1)", "python_map_function (1)", "seq_scan ()", "checkpoint ()",
+     "force_checkpoint ()", "enable_logging ()", "truncate_duckdb_logs ()", "write_log ('x')", "pg_sleep (10)",
+     "duckdb_settings ()", "duckdb_tables()", "pragma_version ()", "pg_get_viewdef (1)", "txid_current ()",
+     "has_schema_privilege ('main', 'usage')", "in_search_path ('memory', 'main')", "current_user", "session_user"],
+)
+def test_engine_functions_are_refused_anywhere(expr, dialect):
+    assert rejected(f"SELECT {expr} FROM {G}", dialect)
+    assert rejected(f"SELECT a FROM {G} WHERE b = {expr}", dialect)
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
+@pytest.mark.parametrize("name", ["pg_tables", "pg_catalog.pg_class", "duckdb_tables", "information_schema.columns",
+                                  "sqlite_master", "main.duckdb_views", "pragma_table_info"])
+def test_catalog_names_are_refused_as_identifiers(name, dialect):
+    assert rejected(f"SELECT {name} FROM {G}", dialect)
+    assert rejected(f"SELECT a FROM {G} WHERE a IN (SELECT a FROM {name})", dialect)
+
+
+def test_quoted_engine_names_are_refused_in_duckdb():  # in BigQuery "..." is a string: data
+    assert rejected(f'SELECT "read_blob"(\'x\') FROM {G}') and rejected(f'SELECT "duckdb_settings" FROM {G}')
+
+
+def test_lookalikes_of_engine_names_pass():
+    for sql in [f"SELECT avg_pg_x, my_query, read_count, current_date, current_timestamp FROM {G}",
+                f"SELECT a FROM {G} WHERE b = 'read_csv(x) query(1) pg_tables'"]:
+        assert v(sql).endswith("LIMIT 100")
+
+
 def test_sanitize_question():
     assert sanitize_question("  What was spend?\x00 ") == "What was spend?"
     with pytest.raises(AdPilotError):

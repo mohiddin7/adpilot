@@ -36,7 +36,20 @@ _FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 _SUSPICIOUS = re.compile(
-    r"(INFORMATION_SCHEMA|__TABLES__|__SCHEMA__|@@version|pg_catalog|sqlite_master|duckdb_\w+\(|read_\w+\()",
+    r"(INFORMATION_SCHEMA|__TABLES__|__SCHEMA__|@@version|pg_catalog|sqlite_master|duckdb_\w+\s*\(|read_\w+\s*\()",
+    re.IGNORECASE,
+)
+# SQL only (the question gate keeps _SUSPICIOUS: "query (" is English). Enumerated from DuckDB 1.5.5's
+# duckdb_functions(): anything that reads files, network, environment or configuration, runs nested SQL, has a side
+# effect or sleeps, called by name (quoted or not, any whitespace, method syntax too); and every catalog name
+# (pg_*, duckdb_*, pragma_*, sqlite_*, information_schema) as an identifier anywhere in code.
+_ENGINE = re.compile(
+    r"\b(?:information_schema|__tables__|__schema__|pg_\w*|duckdb_\w*|pragma_\w*|sqlite_\w*|"
+    r"current_(?:setting|query|catalog|database|schemas?|user|role)|session_user)\b|@@version|"
+    r"\b(?:read_\w+|glob|sniff_csv|parquet_\w+|query|query_table|getenv|getvariable|which_secret|\w+_scan|"
+    r"python_map_function|json_execute_serialized_sql|json_serialize_plan|json_(?:de)?serialize_sql|checkpoint|"
+    r"force_checkpoint|(?:en|dis)able_(?:logging|profiling)|truncate_duckdb_logs|write_log|in_search_path|"
+    r"has_\w+_privilege|txid_current|current_\w+_id)[\"`]?\s*\(",
     re.IGNORECASE,
 )
 _FENCE = re.compile(r"^```(?:sql)?\s*|\s*```$", re.IGNORECASE)
@@ -282,7 +295,7 @@ def validate_sql(sql: str, allowed_tables: set[str], max_rows: int, *, dialect: 
         no_strings[s:e] = " " * (e - s)
     if _FORBIDDEN.search("".join(no_strings)):
         raise AdPilotError("SqlPolicy", "Only read-only SELECT statements are allowed.")
-    if _SUSPICIOUS.search(masked):
+    if _SUSPICIOUS.search(masked) or _ENGINE.search(masked):
         raise AdPilotError("SqlPolicy", "Metadata and file-reading functions are not allowed.")
     if ";" in masked:
         raise AdPilotError("SqlPolicy", "Exactly one statement is allowed.")
