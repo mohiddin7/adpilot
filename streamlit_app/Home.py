@@ -19,7 +19,7 @@ with st.container(border=True):
     with right:
         selected, params = view.filter_controls("overview", m, start, end, "ov", ncols=2)
 
-chat.sidebar(context_line("Overview", start, end, selected))
+chat.sidebar(context_line("Overview", start, end, selected), "overview")
 
 results = view.guarded(view.panels, "overview", tuple(params))
 prior = None

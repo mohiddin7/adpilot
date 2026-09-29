@@ -1,5 +1,5 @@
-"""One chat for the whole app: the sidebar box on every data page and the Chat page share one session id and one
-history, so a question asked from the Overview sidebar continues on the Chat page."""
+"""Chats. Each data page's sidebar has its own conversation (history `messages_<page>`, server session
+`session_id_<page>`), and the Chat page has its own (`chat`). "Show thinking" is one preference for all of them."""
 
 from __future__ import annotations
 
@@ -22,12 +22,17 @@ PHASES = {
 }
 
 
-def session_id() -> str:
-    return st.session_state.setdefault("session_id", uuid4().hex)
+def session_id(page: str) -> str:
+    return st.session_state.setdefault(f"session_id_{page}", uuid4().hex)
 
 
-def history() -> list[dict]:
-    return st.session_state.setdefault("messages", [])
+def history(page: str) -> list[dict]:
+    return st.session_state.setdefault(f"messages_{page}", [])
+
+
+def clear(page: str) -> None:
+    st.session_state.pop(f"messages_{page}", None)
+    st.session_state.pop(f"session_id_{page}", None)
 
 
 def thinking_toggle() -> None:
@@ -43,16 +48,16 @@ def thinking_toggle() -> None:
     )
 
 
-def run_ask(question: str, context: str = "") -> dict:
+def run_ask(question: str, context: str, page: str) -> dict:
     """Blocking /ask, or /ask/stream with live steps when "Show thinking" is on. Callers never know which ran."""
     sent = with_context(question, context)
     if not st.session_state.get("show_thinking"):
         with st.spinner("Thinking…"):
-            return api_client.ask(sent, session_id())
+            return api_client.ask(sent, session_id(page))
     answer = None
     with st.status(PHASES["thinking"], expanded=True) as box:
         try:
-            for name, payload in api_client.ask_stream(sent, session_id()):
+            for name, payload in api_client.ask_stream(sent, session_id(page)):
                 if name == "status":
                     box.update(label=PHASES.get(payload.get("phase"), "Working…"))
                     if payload.get("phase") == "sql" and payload.get("detail"):
@@ -84,12 +89,12 @@ def render_answer(answer: dict, compact: bool = False) -> None:
             st.code(answer["sql"], language="sql")
 
 
-def ask_and_record(question: str, context: str = "") -> dict | None:
-    """Ask, keep both turns in the shared history, and show the reason on failure. Returns the answer or None."""
-    turns = history()
+def ask_and_record(question: str, context: str, page: str) -> dict | None:
+    """Ask, keep both turns in this page's history, and show the reason on failure. Returns the answer or None."""
+    turns = history(page)
     turns.append({"role": "user", "content": question})
     try:
-        answer = run_ask(question, context)
+        answer = run_ask(question, context, page)
     except ApiError as exc:
         turns.append({"role": "assistant", "content": exc.message, "error": exc.kind})
         show_error(exc)
@@ -98,15 +103,29 @@ def ask_and_record(question: str, context: str = "") -> dict | None:
     return answer
 
 
-def sidebar(context: str) -> None:
-    """The compact chat on every data page: the thinking toggle, a box, and the latest answer."""
+def _thread(page: str) -> None:
+    for m in history(page):
+        if m["role"] == "user":
+            st.markdown(md(f"**You:** {m['content']}"))
+        elif "answer" in m:
+            render_answer(m["answer"], compact=True)
+        else:
+            st.caption(md(m["content"]))
+
+
+def sidebar(context: str, page: str, suggestions: list[str] | tuple = ()) -> None:
+    """This page's own chat: its whole thread (compact), suggestions, a box and a Clear button."""
     thinking_toggle()
     with st.sidebar:
         st.subheader("Ask about this view")
-        question = st.chat_input("Ask a question…", key="sidebar_chat")
+        _thread(page)
+        clicked = [s for i, s in enumerate(suggestions) if st.button(s, key=f"suggest_{page}_{i}")]  # draw them all
+        question = st.chat_input("Ask a question…", key=f"sidebar_chat_{page}") or (clicked[0] if clicked else None)
         if question:
-            ask_and_record(question, context)
-        last = next((m for m in reversed(history()) if m["role"] == "assistant"), None)
-        if last is not None and "answer" in last:  # a failed ask already showed its banner
-            render_answer(last["answer"], compact=True)
-        st.caption("The full conversation is on the Chat page.")
+            st.markdown(md(f"**You:** {question}"))
+            answer = ask_and_record(question, context, page)
+            if answer is not None:
+                render_answer(answer, compact=True)
+        if history(page) and st.button("Clear", key=f"clear_{page}"):
+            clear(page)
+            st.rerun()

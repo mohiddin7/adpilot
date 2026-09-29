@@ -20,7 +20,7 @@ def test_chat_page_answers_and_keeps_history(dash_api):
     at = run("pages/3_Chat.py")
     at.chat_input[0].set_value(QUESTION).run()
     assert not at.exception
-    messages = at.session_state["messages"]
+    messages = at.session_state["messages_chat"]
     assert [m["role"] for m in messages] == ["user", "assistant"]
     assert "pre-defined query" in messages[1]["answer"]["answer_md"]
 
@@ -29,18 +29,18 @@ def test_show_thinking_streams_and_still_answers(dash_api):
     at = run("pages/3_Chat.py", show_thinking=True)
     at.chat_input[0].set_value(QUESTION).run()
     assert not at.exception
-    assert at.session_state["messages"][-1]["answer"]["answer_md"]
+    assert at.session_state["messages_chat"][-1]["answer"]["answer_md"]
 
 
 def test_a_new_conversation_forgets_the_old_one(dash_api):
     at = run("pages/3_Chat.py")
     at.chat_input[0].set_value(QUESTION).run()
-    first_session = at.session_state["session_id"]
-    at.button[0].click().run()
+    first_session = at.session_state["session_id_chat"]
+    at.button(key="new_chat").click().run()
     assert not at.exception
-    assert at.session_state["messages"] == []
+    assert at.session_state["messages_chat"] == []
     at.chat_input[0].set_value(QUESTION).run()  # the next question starts a new server-side session
-    assert at.session_state["session_id"] != first_session
+    assert at.session_state["session_id_chat"] != first_session
 
 
 PAGES = ["Home.py", "pages/1_Channel_Deep_Dive.py", "pages/2_AI_Insights.py", "pages/3_Chat.py"]
@@ -81,12 +81,29 @@ def test_switching_platform_drops_a_campaign_from_the_old_one(dash_api):
     assert facebook_campaign not in at.multiselect(key="dd_campaign_name").value
 
 
-def test_sidebar_chat_on_overview_writes_the_shared_history(dash_api):
+def test_page_chats_are_independent(dash_api):
     at = run("Home.py")
     at.chat_input[0].set_value(QUESTION).run()
     assert not at.exception
-    messages = at.session_state["messages"]
-    assert messages[0]["content"] == QUESTION and "answer" in messages[1]
+    overview = at.session_state["messages_overview"]
+    assert overview[0]["content"] == QUESTION and "answer" in overview[1]
+    assert "messages_chat" not in at.session_state or at.session_state["messages_chat"] == []
+    at.switch_page("pages/3_Chat.py").run()
+    assert not at.exception
+    assert not any(QUESTION in m.value for m in at.markdown)  # the Chat page does not show the Overview's thread
+    at.chat_input[0].set_value("Which platform had the best CPA?").run()
+    assert len(at.session_state["messages_chat"]) == 2 and len(at.session_state["messages_overview"]) == 2
+    assert at.session_state["session_id_chat"] != at.session_state["session_id_overview"]
+
+
+def test_the_sidebar_shows_the_whole_thread_and_clears_it(dash_api):
+    at = run("Home.py")
+    at.chat_input[0].set_value(QUESTION).run()
+    at.chat_input[0].set_value("And conversions?").run()
+    assert not at.exception
+    assert sum(QUESTION in m.value or "And conversions?" in m.value for m in at.sidebar.markdown) == 2
+    at.sidebar.button(key="clear_overview").click().run()
+    assert at.session_state["messages_overview"] == []
 
 
 def test_a_rejected_key_shows_a_banner_not_a_traceback(dash_api, monkeypatch):

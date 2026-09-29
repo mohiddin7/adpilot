@@ -13,7 +13,7 @@ m = view.guarded(view.meta)
 st.title("AI insights")
 start, end = preset_range("Last 30 days", date.fromisoformat(m["date_min"]), date.fromisoformat(m["date_max"]))
 context = context_line("AI insights", start, end, {})
-chat.sidebar(context)
+chat.sidebar(context, "insights")
 st.caption(f"Each card asks the analyst one question about {start} to {end}. Free models answer, so each takes a while.")
 
 answers = st.session_state.setdefault("insight_answers", {})
@@ -25,7 +25,7 @@ for i, question in enumerate(m["insights"]):
         st.markdown(f"**{question}**")
         if ask_all or st.button("Ask", key=f"insight_{i}"):
             try:
-                answers[question] = chat.run_ask(question, context)
+                answers[question] = chat.run_ask(question, context, "insights")
             except ApiError as exc:
                 view.show_error(exc)
         if question in answers:
