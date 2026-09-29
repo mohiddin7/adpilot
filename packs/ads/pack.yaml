@@ -149,6 +149,12 @@ briefing:
     tracking_drop_ratio: 0.5   # sales at or below half of normal with normal clicks = tracking or landing page
     double_count_ratio: 3.0    # sales at 3x normal with normal clicks = double counting
     max_items: 3
+    mover_min_usd: 500         # /insights: a spend or cost-per-sale move needs this much at stake...
+    mover_min_pct: 20          # /insights: ...and at least this relative change
+    mover_min_conversions: 10  # /insights: a cost-per-sale move needs this many sales in both windows
+    outlier_min_share_pct: 5   # /insights: an efficiency outlier takes at least this share of the window's spend...
+    outlier_cpa_pct: 25        # /insights: ...at a cost per sale at least this far above the account's
+    mix_gap_pts: 10            # /insights: share of spend minus share of sales, in points
 
 # The dashboard (streamlit_app/, via adpilot-api /dashboard, /filters, /panels, /pacing). Pack-authored SQL only.
 # {where} becomes: the viewer's date range + every filter they set that lists the panel's `table`. A panel without

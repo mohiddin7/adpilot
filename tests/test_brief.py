@@ -391,3 +391,72 @@ def test_pace_numbers_projects_month_end_from_the_run_rate():
     assert g["projected"] == 1000.0 + 20 * 100.0  # 7-day run rate is $100/day
     assert g["basis"] == "last 7 days" and g["budget"] == 3000.0
     assert out["Bing"]["budget"] is None and out["Bing"]["projected"] is None
+
+
+# ---------- window-vs-window analyses (the dashboard's /insights) ----------
+
+
+def camp(rows):
+    """rows: (platform, campaign_id, spend, conversions) → one day of gold rows."""
+    return pd.DataFrame([dict(date=LATEST, platform=p, campaign_id=c, campaign_name=f"{c}_name", impressions=1e5,
+                              clicks=2e3, spend=float(s), conversions=float(v)) for p, c, s, v in rows])
+
+
+def test_top_movers_ranks_by_dollars_and_counts_new_and_stopped_campaigns():
+    prev = camp([("Google", "g1", 1000, 100), ("Google", "g2", 5000, 100), ("TikTok", "t1", 2000, 50)])
+    cur = camp([("Google", "g1", 1050, 100), ("Google", "g2", 9000, 100), ("Facebook", "f1", 3000, 60)])
+    items = a.top_movers(cur, prev, T)
+    assert [i.id for i in items] == ["mover:Google:g2:spend", "mover:Google:g2:cpa", "mover:Facebook:f1:spend"]
+    assert [i.stake for i in items] == pytest.approx([4000, (90 - 50) * 100, 3000])  # a stable sort keeps ties in order
+    assert all(i.stake >= T["mover_min_usd"] for i in items)
+    assert "mover:Google:g1:spend" not in {i.id for i in items}  # +5 % and $50: below both thresholds
+
+
+def test_top_movers_needs_enough_sales_for_a_cpa_move():
+    prev, cur = camp([("Google", "g1", 1000, 5)]), camp([("Google", "g1", 1000, 2)])
+    assert [i.id for i in a.top_movers(cur, prev, T)] == []
+
+
+def test_efficiency_outliers_flag_expensive_campaigns_with_real_spend():
+    cur = camp([("Google", "g1", 10_000, 1000), ("Google", "g2", 4000, 100), ("TikTok", "t1", 100, 1)])
+    items = a.efficiency_outliers(cur, T)
+    assert [i.id for i in items] == ["outlier:Google:g2"]  # t1 is pricier but under 5 % of spend
+    account = 14_100 / 1101
+    assert items[0].stake == pytest.approx(4000 - account * 100)
+
+
+def test_efficiency_outliers_zero_sales_is_an_outlier_without_a_cpa():
+    items = a.efficiency_outliers(camp([("Google", "g1", 10_000, 1000), ("Google", "g2", 2000, 0)]), T)
+    assert items[0].check["cpa"] is None and "no sales" in items[0].happened
+    assert items[0].stake == pytest.approx(2000)
+
+
+def test_mix_gaps_flag_platforms_whose_spend_share_outruns_their_sales_share():
+    cur = camp([("Google", "g1", 6000, 100), ("TikTok", "t1", 4000, 300)])
+    items = a.mix_gaps(cur, T)
+    assert [i.id for i in items] == ["mix:Google"]
+    assert "60%" in items[0].happened and "25%" in items[0].happened
+
+
+def test_mix_gaps_needs_two_platforms():
+    assert a.mix_gaps(camp([("Google", "g1", 6000, 100)]), T) == []
+
+
+def test_new_analyses_with_zero_conversions_everywhere_return_nothing():
+    cur = camp([("Google", "g1", 6000, 0), ("TikTok", "t1", 4000, 0)])
+    assert a.efficiency_outliers(cur, T) == [] and a.mix_gaps(cur, T) == []
+    assert all(i.id.endswith(":spend") for i in a.top_movers(cur, camp([("Google", "g1", 1000, 0)]), T))
+
+
+def test_all_values_equal_flags_nothing():
+    same = camp([("Google", "g1", 1000, 100), ("TikTok", "t1", 1000, 100)])
+    assert a.top_movers(same, same, T) == [] and a.efficiency_outliers(same, T) == [] and a.mix_gaps(same, T) == []
+
+
+def test_writer_records_the_callers_source(deps):
+    item = a.mix_gaps(camp([("Google", "g1", 6000, 100), ("TikTok", "t1", 4000, 300)]), T)[0]
+    fn = FunctionModel(lambda m, info: ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {
+        "headline": "One thing.", "items": [], "story": ""})]))
+    write(deps, fn, [item], [], [], "run1", source="dashboard", case_name="insights_writer")
+    rec = deps.audit.calls[-1]
+    assert (rec.source, rec.case_name) == ("dashboard", "insights_writer")

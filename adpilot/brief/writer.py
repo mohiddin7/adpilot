@@ -99,8 +99,8 @@ def facts(items: list[Item], ahead: list[str], followed: list[str]) -> dict:
     }
 
 
-def write(deps: AgentDeps, model: Model | None, items: list[Item], ahead: list[str], followed: list[str], run_id: str
-          ) -> tuple[dict, str | None, list[str]]:
+def write(deps: AgentDeps, model: Model | None, items: list[Item], ahead: list[str], followed: list[str], run_id: str,
+          *, source: str = "brief", case_name: str = "writer") -> tuple[dict, str | None, list[str]]:
     """Returns ({"headline", "story", item_id: {"title", "checked", "do"}}, model used, caveats)."""
     out: dict = {"headline": template_headline(len(items)), "story": ""}
     out.update({i.id: {"title": i.title, "checked": i.checked, "do": i.do} for i in items})
@@ -125,7 +125,7 @@ def write(deps: AgentDeps, model: Model | None, items: list[Item], ahead: list[s
         answer_md=redact_output(written.model_dump_json())[0] if written else "", sql=None, refused=False,
         confidence=1.0 if written else 0.0, caveats=[f"{kind}: brief writer failed ({detail[:160]})"] if kind else [],
         messages=messages, usage=usage, model_requested=primary_model_name(model),
-        context=RunContextInfo(source="brief", run_id=run_id, case_name="writer"),
+        context=RunContextInfo(source=source, run_id=run_id, case_name=case_name),
         pack_name=deps.pack.name, prompt_hash=deps.pack.prompt_hash,
     ))
     if written is None:
