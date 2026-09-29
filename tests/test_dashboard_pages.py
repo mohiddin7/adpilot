@@ -1,5 +1,6 @@
 """Every page, run headless with streamlit.testing AppTest against the real API app (DuckDB, no model)."""
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -52,13 +53,24 @@ def test_every_page_renders_without_an_exception(dash_api, page):
     assert not at.exception, at.exception
 
 
-def test_overview_shows_kpis_pacing_and_panels(dash_api):
+def test_overview_leads_with_kpis_and_charts(dash_api):
     at = run("Home.py")
+    assert not at.exception, at.exception
     assert [m.label for m in at.metric] == ["Spend", "Conversions", "Cost per acquisition", "ROAS (Google)",
-                                           "Click-through rate", "Cvr"]
-    assert at.metric[0].value.startswith("$")
+                                           "Click-through rate", "Conversion rate"]
+    assert at.metric[0].value.startswith("$") and at.metric[4].value.endswith("%")
     text = " ".join(m.value for m in at.markdown)
-    assert "Daily trend" in text and "Month-end pacing" in text
+    for title in ("Daily trend", "Cost per acquisition by platform", "Efficiency map", "Share of spend vs share of conversions",
+                  "Funnel", "Month-end pacing", "Needs attention", "What changed"):
+        assert title in text, title
+    assert not at.dataframe  # chart-first: no table on the Overview
+
+
+def test_compare_at_the_start_of_the_data_draws_without_deltas(dash_api):
+    """Review focus 2: the comparison period lies before date_min, so there is nothing to compare against."""
+    at = run("Home.py", ov_preset="Custom", ov_custom=(date(2024, 1, 1), date(2024, 1, 7)))
+    assert not at.exception, at.exception
+    assert at.metric and not any(m.delta for m in at.metric)
 
 
 def test_deep_dive_for_google_shows_google_panels_and_filters(dash_api):
@@ -159,30 +171,38 @@ def test_a_failed_filter_option_query_keeps_the_choice_and_says_why(dash_api, mo
     assert any("spend bounds could not be read" in c for c in captions)
 
 
-def test_needs_attention_opens_the_flagged_campaign_in_the_deep_dive(dash_api, monkeypatch):
-    """DuckDB's anomalies table is empty, so one flagged row is injected into the overview's anomalies panel."""
+def _flag(monkeypatch, dash_api, platform="Google"):
+    """DuckDB has no anomaly rows, so one flagged campaign is injected into the attention panel."""
     from lib import view
 
     ac, _, _ = dash_api
-    campaign = ac.filter_options("deep_dive", [("date_from", "2024-01-01"), ("date_to", "2024-01-30"),
-                                              ("platform", "Google")])["campaign_name"]["values"][0]
+    # a campaign active in the last 14 days, so every window the tests use still offers it
+    campaign = ac.filter_options("deep_dive", [("date_from", "2024-01-17"), ("date_to", "2024-01-30"),
+                                              ("platform", platform)])["campaign_name"]["values"][0]
     real = view.panels
 
     def flagged(page, params):
         out = real(page, params)
         for p in out:
-            if p["table"] == "anomalies":
-                p["rows"] = [{"date": "2024-01-30", "platform": "Google", "campaign_name": campaign,
-                              "observed_cpa": 90.0, "usual_cpa": 30.0, "severity": "SEVERE", "confidence": "high"}]
+            if p["role"] == "attention":
+                p["rows"] = [{"platform": platform, "campaign_name": campaign, "worst": "CRITICAL", "flagged_days": 2,
+                              "last_flagged": "2024-01-29", "excess_cost": 812.5}]
         return out
 
     monkeypatch.setattr(view, "panels", flagged)
-    at = run("Home.py")
+    return campaign
+
+
+def test_needs_attention_opens_the_campaign_in_the_deep_dive_with_the_same_dates(dash_api, monkeypatch):
+    campaign = _flag(monkeypatch, dash_api)
+    at = run("Home.py", ov_preset="Last 14 days")
     assert not at.exception, at.exception
-    at.button(key="open_flagged").click().run()
+    assert any(campaign in m.value and "CRITICAL" in m.value for m in at.markdown)
+    at.button(key="open_0").click().run()
     assert not at.exception, at.exception
-    assert at.session_state["dd_platform"] == "Google"
-    assert at.session_state["dd_campaign_name"] == [campaign]
+    assert at.session_state["dd_platform"] == "Google" and at.session_state["dd_campaign_name"] == [campaign]
+    assert at.session_state["dd_preset"] == "Custom"
+    assert tuple(at.session_state["dd_custom"]) == (date(2024, 1, 17), date(2024, 1, 30))
     assert at.multiselect(key="dd_campaign_name").value == [campaign]  # AppTest followed switch_page
 
 

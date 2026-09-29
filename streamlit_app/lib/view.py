@@ -9,7 +9,7 @@ import streamlit as st
 
 from . import api_client
 from .api_client import ApiError
-from .charts import build_figure
+from .charts import add_markers, add_prior, build_figure, pacing_bullets
 from .controls import (
     LOWER_IS_BETTER,
     MAX_RANGE_DAYS,
@@ -21,9 +21,11 @@ from .controls import (
     keep_valid,
     md,
     preset_range,
+    prior_range,
     to_params,
+    with_dates,
 )
-from .formatters import fmt_currency, fmt_number, fmt_pct, label
+from .formatters import fmt, fmt_currency, fmt_number, fmt_pct, label
 from .glossary import METRIC_DEFINITIONS
 from .page_style import inject_page_style
 from .theme import COLORS
@@ -98,11 +100,16 @@ KPI_HELP = {"cpa": METRIC_DEFINITIONS.get("CPA"), "ctr": METRIC_DEFINITIONS.get(
 
 
 def date_controls(m: dict, key: str) -> tuple[date, date]:
+    """A page can preset the range (session_state[f"{key}_preset"]/f"{key}_custom") before calling this: passing
+    index/value only when the key is unset avoids Streamlit's "widget created with a default value but also has its
+    value set via the Session State API" warning."""
     dmin, dmax = date.fromisoformat(m["date_min"]), date.fromisoformat(m["date_max"])
-    preset = st.selectbox("Date range", PRESETS, index=PRESETS.index("Last 30 days"), key=f"{key}_preset")
+    preset_kwargs = {} if f"{key}_preset" in st.session_state else {"index": PRESETS.index("Last 30 days")}
+    preset = st.selectbox("Date range", PRESETS, key=f"{key}_preset", **preset_kwargs)
     if preset == "Custom":
-        picked = st.date_input("From / to", value=(max(dmin, dmax - timedelta(days=29)), dmax),
-                               min_value=dmin, max_value=dmax, key=f"{key}_custom")
+        custom_kwargs = {} if f"{key}_custom" in st.session_state else \
+            {"value": (max(dmin, dmax - timedelta(days=29)), dmax)}
+        picked = st.date_input("From / to", min_value=dmin, max_value=dmax, key=f"{key}_custom", **custom_kwargs)
         if not isinstance(picked, (tuple, list)) or len(picked) != 2:
             st.info("Pick an end date to apply the range.")
             st.stop()
@@ -113,6 +120,184 @@ def date_controls(m: dict, key: str) -> tuple[date, date]:
     if clamped:
         st.caption(f"Ranges are capped at {MAX_RANGE_DAYS} days: showing {start} to {end}.")
     return start, end
+
+
+PRIOR_ROLES = ("kpi", "kpi_series", "trend")
+
+
+def by_role(results: list[dict], role: str) -> list[dict]:
+    return [p for p in results if p.get("role") == role]
+
+
+def one(results: list[dict], role: str) -> dict | None:
+    return next(iter(by_role(results, role)), None)
+
+
+def prior_panels(page: str, m: dict, params: list, start: date, end: date) -> dict[str, dict]:
+    """The previous period of the same length for the KPI, series and trend panels. A failure drops the deltas and
+    the dashed lines, never the page."""
+    ids = [("panel", p["id"]) for p in m["panels"][page] if p.get("role") in PRIOR_ROLES]
+    if not ids:
+        return {}
+    ps, pe = prior_range(start, end)
+    try:
+        out = {p["id"]: p for p in panels(page, tuple(with_dates(params, ps, pe) + ids))}
+    except ApiError:
+        return {}
+    st.caption(f"Changes compare with {ps} to {pe}.")
+    return out
+
+
+def drawable(p: dict | None) -> bool:
+    if p is None:
+        return False
+    if p["error"]:
+        st.error(p["error"])
+        return False
+    if not p["rows"]:
+        st.caption(p["note"] or "No rows for this selection.")
+        return False
+    return True
+
+
+def kpi_strip(results: list[dict], prior: dict[str, dict]) -> None:
+    """One tile per KPI column: the value, the change against the previous period (an arrow and a sign; red or green
+    by whether up is good) and a sparkline from the page's kpi_series panel."""
+    series = one(results, "kpi_series")
+    spark_rows = series["rows"] if series and not series["error"] else []
+    for p in by_role(results, "kpi"):
+        if p["error"]:
+            st.error(f"{p['title']}: {p['error']}")
+            continue
+        now = p["rows"][0] if p["rows"] else {}
+        pp = prior.get(p["id"])
+        before = pp["rows"][0] if pp and not pp["error"] and pp["rows"] else {}
+        for col, field in zip(st.columns(len(p["columns"])), p["columns"], strict=True):
+            d = delta_pct(now.get(field), before.get(field)) if before else None
+            spark = [r[field] for r in spark_rows if r.get(field) is not None]
+            col.metric(label(field), fmt(now.get(field), p["formats"].get(field)), None if d is None else f"{d:+.1f}%",
+                       delta_color="inverse" if field in LOWER_IS_BETTER else "normal", help=KPI_HELP.get(field),
+                       border=True, chart_data=spark if len(spark) > 1 else None)
+
+
+def trend_card(p: dict | None, colors: dict, prior: dict[str, dict], metrics: tuple[str, ...], key: str,
+               shift_days: int, markers: dict | None = None) -> None:
+    if p is None:
+        return
+    with st.container(border=True):
+        st.markdown(f"**{p['title']}**")
+        if not drawable(p):
+            return
+        options = [c for c in metrics if c in p["columns"]]
+        y = st.selectbox("Metric", options, format_func=label, key=key) if len(options) > 1 else options[0]
+        fig = build_figure({**p["chart"], "y": y}, p["rows"], p["formats"], colors)
+        if fig is None:
+            return
+        pp = prior.get(p["id"])
+        if pp and not pp["error"]:
+            add_prior(fig, pp["rows"], p["chart"]["x"], y, shift_days)
+        if markers and not markers["error"]:
+            add_markers(fig, markers["rows"], p["rows"], p["chart"]["x"], y)
+        st.plotly_chart(fig, key=f"fig_{key}")
+
+
+def chart_card(p: dict | None, colors: dict, key: str | None = None, pick_z: bool = False) -> None:
+    if p is None:
+        return
+    with st.container(border=True):
+        st.markdown(f"**{p['title']}**")
+        if not drawable(p):
+            return
+        chart = dict(p["chart"])
+        if pick_z:
+            zs = [c for c in p["columns"] if c in p["formats"] and c not in (chart["x"], chart["y"])]
+            chart["z"] = st.selectbox("Metric", zs, format_func=label, key=f"z_{p['id']}") if len(zs) > 1 else chart["z"]
+        fig = build_figure(chart, p["rows"], p["formats"], colors)
+        if fig is not None:
+            st.plotly_chart(fig, key=key or f"fig_{p['id']}")
+        if p["truncated"]:
+            st.caption("Showing the first rows only. Narrow the dates or filters to see the rest.")
+
+
+def table_card(p: dict | None, flagged: frozenset[str] = frozenset()) -> None:
+    """A formatted table; campaigns in the flag set get a text label (colour is never the only signal)."""
+    if p is None:
+        return
+    st.markdown(f"**{p['title']}**")
+    if not drawable(p):
+        return
+    df = pd.DataFrame(p["rows"])
+    if flagged and "campaign_name" in df.columns:
+        df.insert(0, "flag", ["⚠ flagged" if c in flagged else "" for c in df["campaign_name"]])
+    st.dataframe(df, hide_index=True, column_config=column_config(p["formats"]))
+
+
+def flag_set(p: dict | None) -> frozenset[str]:
+    """Spec 3.1.5: the flag set is the attention panel's rows and nothing else."""
+    if not p or p["error"]:
+        return frozenset()
+    return frozenset(r["campaign_name"] for r in p["rows"] if r.get("campaign_name"))
+
+
+def attention_list(p: dict | None, start: date, end: date, limit: int = 5) -> None:
+    if p is None:
+        return
+    with st.container(border=True):
+        st.markdown(f"**{p['title']}**")
+        st.caption("Campaigns with a SEVERE or CRITICAL cost-per-acquisition day in the last 7 days of data, "
+                   "ranked by excess cost.")
+        if not drawable(p):
+            return
+        for i, r in enumerate(p["rows"][:limit]):
+            text, action = st.columns([5, 1])
+            text.markdown(md(f"**{r['campaign_name']}** · {r['platform']} · {r['worst']} · "
+                             f"{r['flagged_days']} flagged day{'s' if r['flagged_days'] != 1 else ''} · "
+                             f"about {fmt_currency(r['excess_cost'])} excess cost"))
+            if action.button("Open in deep dive", key=f"open_{i}"):
+                st.session_state.update({"dd_platform": r["platform"], "dd_campaign_name": [r["campaign_name"]],
+                                         "dd_preset": "Custom", "dd_custom": (start, end)})
+                st.switch_page("pages/1_Channel_Deep_Dive.py")
+
+
+def pacing_card(pc: dict) -> None:
+    with st.container(border=True):
+        st.markdown(f"**Month-end pacing** · as of {pc.get('as_of') or '—'} · whole account, filters don't apply")
+        for problem in pc.get("problems") or []:
+            st.caption(md(problem))
+        fig = pacing_bullets(pc.get("rows") or [])
+        if fig is not None:
+            st.plotly_chart(fig, key="fig_pacing")
+        for r in pc.get("rows") or []:
+            if r["budget"] is None:
+                st.caption(f"{r['platform']}: no budget set")
+            elif r.get("off_pct") is not None:
+                st.caption(md(f"{r['platform']}: projection {fmt_currency(r['projected'])} "
+                              f"({r['off_pct']:+.0f}% vs budget)"))
+
+
+SEVERITY_BADGE = {"high": "🔴 HIGH", "medium": "🟠 MEDIUM", "low": "⚪ LOW"}
+
+
+def insight_params(start: date, end: date, selected: dict[str, list[str]]) -> tuple[tuple[str, str], ...]:
+    """/insights takes the dates and at most one platform (the whole account otherwise)."""
+    params = [("date_from", start.isoformat()), ("date_to", end.isoformat())]
+    platforms = selected.get("platform") or []
+    return tuple(params + ([("platform", platforms[0])] if len(platforms) == 1 else []))
+
+
+def what_changed(start: date, end: date, selected: dict[str, list[str]]) -> None:
+    with st.container(border=True):
+        st.markdown("**What changed**")
+        try:
+            out = insights(insight_params(start, end, selected))
+        except ApiError as exc:
+            show_error(exc)
+            return
+        for c in out["cards"][:3]:
+            st.markdown(md(f"{SEVERITY_BADGE[c['severity']]} · {c['headline']} (about {fmt_currency(c['stake'])} at stake)"))
+        if not out["cards"]:
+            st.caption("Nothing needs attention in this period.")
+        st.page_link("pages/2_AI_Insights.py", label="All findings and why →")
 
 
 def filter_controls(page: str, m: dict, start: date, end: date, key: str,
@@ -243,22 +428,6 @@ def table(rows: list[dict], flagged: frozenset[str]):
     df.insert(0, "flag", ["⚠ flagged" if c in flagged else "" for c in df["campaign_name"]])
     tint = f"background-color: {COLORS['open']}22"
     return df.style.apply(lambda r: [tint if r["flag"] else ""] * len(r), axis=1)
-
-
-def pacing_card(pc: dict) -> None:
-    with st.container(border=True):
-        st.markdown(f"**Month-end pacing** · as of {pc.get('as_of') or '—'} · whole account, filters don't apply")
-        for problem in pc.get("problems") or []:
-            st.caption(md(problem))
-        for r in pc.get("rows") or []:
-            if r["budget"] is None:
-                st.caption(f"{r['platform']}: no budget set")
-                continue
-            st.progress(
-                min(max(r["spent_mtd"] / r["budget"], 0.0), 1.0),
-                text=md(f"{r['platform']}: {fmt_currency(r['spent_mtd'])} of {fmt_currency(r['budget'])} spent · "
-                        f"month-end projection {fmt_currency(r['projected'])} ({r['off_pct']:+.0f}% vs budget)"),
-            )
 
 
 def render_page(results: list[dict], prior_kpi: dict | None, after_kpis=None) -> None:

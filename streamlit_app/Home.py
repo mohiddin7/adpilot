@@ -1,53 +1,68 @@
-"""Overview: what a paid-media lead checks first. Headline numbers against the previous period, month-end pacing,
-trends, what needs attention and what the optimizer would change. Every figure comes from adpilot-api."""
+"""Overview: the media buyer's cockpit. Headline numbers against the previous period, what changed, trends, where
+the money works, mix and funnel, pacing and the optimizer, and the campaigns that need attention. Every figure comes
+from adpilot-api."""
 
 import streamlit as st
 from lib import chat, view
 from lib.api_client import ApiError
-from lib.controls import context_line, prior_range, with_dates
+from lib.controls import context_line
+from lib.theme import platform_colors
 
 view.start("Overview", "📊")
 m = view.guarded(view.meta)
+colors = platform_colors(m.get("colors") or {})
 st.title("Overview")
-st.caption(f"Data available {m['date_min']} to {m['date_max']}")
 
 with st.container(border=True):
-    left, right = st.columns([1, 3])
+    left, middle, right = st.columns([1.2, 3, 1])
     with left:
         start, end = view.date_controls(m, "ov")
-        compare = st.toggle("Compare with the previous period", value=True, key="ov_compare")
-    with right:
+    with middle:
         selected, params = view.filter_controls("overview", m, start, end, "ov", ncols=2)
-
+    with right:
+        compare = st.toggle("Compare with the previous period", value=True, key="ov_compare")
+st.caption(f"Data available {m['date_min']} to {m['date_max']}")
 chat.sidebar(context_line("Overview", start, end, selected), "overview")
 
 results = view.guarded(view.panels, "overview", tuple(params))
-prior = None
-ids = view.kpi_ids(m, "overview")
-if compare and ids:
-    prior_start, prior_end = prior_range(start, end)
-    try:
-        prior_results = view.panels("overview", tuple(with_dates(params, prior_start, prior_end) + ids))
-    except ApiError:
-        prior_results = []  # no deltas; the page still draws
-    prior = prior_results[0] if prior_results else None
-    st.caption(f"Changes compare with {prior_start} to {prior_end}.")
+prior = view.prior_panels("overview", m, params, start, end) if compare else {}
+days = (end - start).days + 1
 
+view.kpi_strip(results, prior)
+changed = st.container()  # filled last: a slow /insights never holds up the charts below
 
-def pacing_section() -> None:
+st.subheader("Trends")
+left, right = st.columns(2)
+with left:
+    view.trend_card(view.one(results, "kpi_series"), colors, prior, ("spend", "conversions"), "ov_trend", days)
+with right:
+    for p in view.by_role(results, "trend"):
+        view.chart_card(p, colors)
+
+st.subheader("Where the money works")
+for p in view.by_role(results, "map"):
+    view.chart_card(p, colors)
+left, right = st.columns(2)
+with left:
+    for p in view.by_role(results, "compare"):
+        if p["table"] != "budget":
+            view.chart_card(p, colors)
+with right:
+    view.chart_card(view.one(results, "funnel"), colors)
+
+st.subheader("Budget")
+left, right = st.columns(2)
+with left:
     try:
         view.pacing_card(view.pacing())
     except ApiError as exc:
         view.show_error(exc)
+with right:
+    for p in view.by_role(results, "compare"):
+        if p["table"] == "budget":
+            view.chart_card(p, colors)
 
+view.attention_list(view.one(results, "attention"), start, end)
 
-view.render_page(results, prior, after_kpis=pacing_section)
-
-attention = next((p for p in results if p["table"] == "anomalies" and p["rows"]), None)
-flagged = list(dict.fromkeys((r["platform"], r["campaign_name"]) for r in attention["rows"]
-                             if r.get("platform") and r.get("campaign_name"))) if attention else []
-if flagged:
-    pick = st.selectbox("Flagged campaign", flagged, format_func=lambda pc: f"{pc[1]} ({pc[0]})", key="ov_flagged")
-    if st.button("Open in channel deep dive", key="open_flagged"):
-        st.session_state["dd_platform"], st.session_state["dd_campaign_name"] = pick[0], [pick[1]]
-        st.switch_page("pages/1_Channel_Deep_Dive.py")
+with changed:
+    view.what_changed(start, end, selected)
