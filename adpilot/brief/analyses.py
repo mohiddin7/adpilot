@@ -28,7 +28,7 @@ CAUSES = {
 @dataclass
 class Item:
     id: str  # stable across briefs: the follow-up key
-    kind: str  # cost | anomaly | pace | move
+    kind: str  # cost | anomaly | pace | move | mover | outlier | mix
     subject: str
     stake: float  # USD at stake; the ranking key
     happened: str
@@ -441,7 +441,12 @@ def follow_up(stored: list[dict], today: dict[str, Item], gold: pd.DataFrame, as
 
 
 def _by_campaign(df: pd.DataFrame) -> pd.DataFrame:
-    return df.groupby(["platform", "campaign_id", "campaign_name"])[["spend", "conversions"]].sum()
+    """Sums per (platform, campaign_id). campaign_name is carried as a data column, not grouped on, so a rename
+    mid-window or between windows doesn't split one campaign into two rows."""
+    g = df.groupby(["platform", "campaign_id"])
+    out = g[["spend", "conversions"]].sum()
+    out["campaign_name"] = g["campaign_name"].last()
+    return out
 
 
 def _period_numbers(before: tuple[float, float], after: tuple[float, float]) -> list[dict]:
@@ -453,10 +458,12 @@ def top_movers(cur: pd.DataFrame, prev: pd.DataFrame, t: dict) -> list[Item]:
     """Campaigns whose spend or cost per sale moved most against the previous window, by dollars at stake. A campaign
     new to this window counts from zero spend, a stopped one to zero; a cost-per-sale move needs enough sales in both
     windows to mean anything."""
-    both = _by_campaign(cur).join(_by_campaign(prev), rsuffix="_prev", how="outer").fillna(0.0)
+    both = _by_campaign(cur).join(_by_campaign(prev), rsuffix="_prev", how="outer")
+    names = both["campaign_name"].fillna(both["campaign_name_prev"])  # this window's name, else the previous one's
+    both = both.drop(columns=["campaign_name", "campaign_name_prev"]).fillna(0.0)
     items = []
-    for (plat, cid, name), r in both.iterrows():
-        subject = f'{plat} campaign "{name}"'
+    for (plat, cid), r in both.iterrows():
+        subject = f'{plat} campaign "{names[plat, cid]}"'
         s0, s1, v0, v1 = r["spend_prev"], r["spend"], r["conversions_prev"], r["conversions"]
         nums = _period_numbers((s0, v0), (s1, v1))
         d = s1 - s0
@@ -499,14 +506,14 @@ def efficiency_outliers(cur: pd.DataFrame, t: dict) -> list[Item]:
         return []
     account = spend / sales
     items = []
-    for (plat, cid, name), r in c.iterrows():
+    for (plat, cid), r in c.iterrows():
         s, v = float(r["spend"]), float(r["conversions"])
         if s < spend * t["outlier_min_share_pct"] / 100:
             continue
         cpa = s / v if v else None
         if cpa is not None and cpa < account * (1 + t["outlier_cpa_pct"] / 100):
             continue
-        subject = f'{plat} campaign "{name}"'
+        subject = f'{plat} campaign "{r["campaign_name"]}"'
         happened = (f"{subject} spent {money(s)} with no sales." if cpa is None else
                     f"{subject} paid {money(cpa)} per sale on {money(s)} of spend; the account average is {money(account)}.")
         items.append(Item(

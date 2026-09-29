@@ -417,6 +417,19 @@ def test_top_movers_needs_enough_sales_for_a_cpa_move():
     assert [i.id for i in a.top_movers(cur, prev, T)] == []
 
 
+def test_top_movers_survives_a_campaign_rename_between_windows():
+    """A rename must not make the outer join see a "new" row and a "stopped" row for the same campaign."""
+    prev = camp([("Google", "g1", 1000, 100), ("Google", "g2", 5000, 100)])
+    prev.loc[prev["campaign_id"] == "g1", "campaign_name"] = "Summer Sale"
+    cur = camp([("Google", "g1", 1050, 100), ("Google", "g2", 9000, 100)])
+    cur.loc[cur["campaign_id"] == "g1", "campaign_name"] = "Autumn Sale"
+    items = a.top_movers(cur, prev, T)
+    ids = [i.id for i in items]
+    assert "mover:Google:g1:spend" not in ids  # $50 / 5%: below both thresholds, rename or not
+    assert ids == ["mover:Google:g2:spend", "mover:Google:g2:cpa"]  # g1's rename must not fake a "started"+"stopped" pair
+    assert len(ids) == len(set(ids))  # at most one item per id
+
+
 def test_efficiency_outliers_flag_expensive_campaigns_with_real_spend():
     cur = camp([("Google", "g1", 10_000, 1000), ("Google", "g2", 4000, 100), ("TikTok", "t1", 100, 1)])
     items = a.efficiency_outliers(cur, T)
