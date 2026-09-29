@@ -130,10 +130,11 @@ default 120/min) so browsing never uses up the chat's `ADPILOT_API_RPM`. All fou
 
 | Endpoint | Returns |
 |---|---|
-| `GET /dashboard` | `pack`, `date_min`/`date_max` (the data window — date presets count back from `date_max`, not from today), the declared `filters`, panel titles per page, the `insights` questions. Panel SQL never leaves the server. |
+| `GET /dashboard` | `pack`, `date_min`/`date_max` (the data window — date presets count back from `date_max`, not from today), the declared `filters`, panel titles per page, the `insights` questions, `colors` (one series colour per platform). Panel SQL never leaves the server. |
 | `GET /filters?page=…&<filters>` | per filter on the page: `{"values": [...]}` or `{"min", "max"}`. Categorical options narrow by the date range and the filter's ancestors only (platform → campaign → ad set). |
-| `GET /panels?page=…&<filters>[&panel=<id>…]` | the page's panels that apply to the selection, each `{id, title, kind, table, chart, columns, rows, truncated, note, error}`. `panel=` limits the run (the comparison period's KPIs). |
+| `GET /panels?page=…&<filters>[&panel=<id>…]` | the page's panels that apply to the selection, each `{id, title, kind, table, role, chart, columns, rows, truncated, note, error, formats}`. `panel=` limits the run (the comparison period's KPIs). |
 | `GET /pacing` | month-end pacing per platform from the daily brief's own projection, as of the newest day in the data. Whole account: filters do not apply. |
+| `GET /insights?date_from&date_to[&platform]` | `{cards, checked, problems, writer}`. Each card: `{id, kind, severity: "high"\|"medium"\|"low", stake, title, headline, action, why, confidence, numbers, chart: {spec, rows, formats} \| None, facts}`. Cards are the daily brief's own checks (cost per sale, unusual days and tracking, month-end pacing, the budget optimizer's move) plus three window-vs-previous-window ones (top movers, efficiency outliers, channel mix), ranked by the dollars at stake and capped at 8. `checked` names every analysis that ran; `problems` names any that failed or any input table that could not be read. Cached for `dashboard.cache_ttl_s` per window and platform, never when a problem is reported. Only `date_from`, `date_to` and `platform` are accepted; anything else is a `422`. |
 
 **Filter parameters:** `date_from`, `date_to` (required, `YYYY-MM-DD`, at most 366 days), `<column>` (repeatable) for a
 categorical filter, `<column>_min` / `<column>_max` for a range. An unknown key, a bad date, a non-finite number, a
@@ -149,6 +150,8 @@ Shipping Sale", "Call - US" or "LIMIT 99999 deal" reaches the query unchanged an
 pipeline table gives a `note` instead. Results are cached in-process for `dashboard.cache_ttl_s` (900 s), never when a
 panel failed.
 
-**Audit:** every successful read writes one `agent_calls` row (`source='dashboard'`, `case_name` = the endpoint).
-Rows are not flushed per read — a load job per click would hit BigQuery's 1,500 load jobs per table per day — they
-ride the next `/ask` flush or the shutdown flush.
+**Audit:** every successful read writes one `agent_calls` row (`source='dashboard'`, `case_name` = the endpoint, so
+`/insights` writes `case_name='insights'`). Rows are not flushed per read — a load job per click would hit
+BigQuery's 1,500 load jobs per table per day — they ride the next `/ask` flush or the shutdown flush. `/insights`
+also writes the brief writer's own row when a model is configured (`case_name='insights_writer'`); with no model,
+every card's wording comes from the fixed templates and no writer row is written.

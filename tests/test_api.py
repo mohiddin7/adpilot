@@ -617,3 +617,22 @@ def test_the_dashboard_has_its_own_rate_bucket(api):
     assert r.status_code == 429 and int(r.headers["Retry-After"]) >= 1
     assert sink.calls == []
     assert client.get("/schema", headers=H).status_code == 200  # the chat's bucket is untouched
+
+
+def test_insights_endpoint_returns_cards_and_is_audited(api):
+    client, sink = api
+    r = client.get("/insights", params={"date_from": "2024-01-16", "date_to": "2024-01-30"}, headers=H)
+    assert r.status_code == 200 and set(r.json()) >= {"cards", "checked", "problems"}
+    assert any(rec.case_name == "insights" for rec in sink.calls)
+
+
+@pytest.mark.parametrize("extra", [{"campaign_name": "x"}, {"severity": "SEVERE"}, {"date_to": "nope"}])
+def test_insights_rejects_anything_but_dates_and_platform(api, extra):
+    client, _ = api
+    params = {"date_from": "2024-01-16", "date_to": "2024-01-30", **extra}
+    assert client.get("/insights", params=params, headers=H).status_code == 422
+
+
+def test_insights_needs_the_key(api):
+    client, _ = api
+    assert client.get("/insights", params={"date_from": "2024-01-16", "date_to": "2024-01-30"}).status_code == 401
