@@ -23,7 +23,7 @@ from .controls import (
     preset_range,
     to_params,
 )
-from .formatters import fmt_currency, fmt_number, fmt_pct
+from .formatters import fmt_currency, fmt_number, fmt_pct, label
 from .glossary import METRIC_DEFINITIONS
 from .page_style import inject_page_style
 from .theme import COLORS
@@ -76,6 +76,17 @@ def panels(page: str, params: tuple[tuple[str, str], ...]) -> list[dict]:
 @st.cache_data(ttl=300, max_entries=200, show_spinner=False)
 def pacing() -> dict:
     return api_client.pacing()
+
+
+@st.cache_data(ttl=300, max_entries=100, show_spinner=False)
+def insights(params: tuple[tuple[str, str], ...]) -> dict:
+    return api_client.insights(list(params))
+
+
+def column_config(formats: dict) -> dict:
+    """Tables formatted from the panel's `formats`: dollars with separators, percent with 2 decimals, ROAS as 1.79x."""
+    kinds = {"currency": "dollar", "percent": "percent", "multiple": "%.2fx", "number": "localized"}
+    return {c: st.column_config.NumberColumn(label(c), format=kinds[k]) for c, k in formats.items() if k in kinds}
 
 
 KPI_LABELS = {"spend": "Spend", "conversions": "Conversions", "cpa": "Cost per acquisition",
@@ -192,9 +203,10 @@ def kpi_row(panel: dict, prior: dict | None) -> None:
 
 
 def chart_panel(p: dict) -> None:
-    """A chart card; one with several numeric columns (the daily trend) gets a metric picker."""
+    """A chart card; one with several numeric columns (the daily trend) gets a metric picker. A heatmap's `y` is a
+    category (its `z` is the metric), so it never gets one."""
     y = None
-    if p["chart"] and not p["error"] and p["rows"]:
+    if p["chart"] and p["chart"]["chart_type"] != "heatmap" and not p["error"] and p["rows"]:
         skip = {p["chart"]["x"], p["chart"].get("color")}
         numeric = [c for c in p["columns"] if c not in skip
                    and any(isinstance(r.get(c), (int, float)) for r in p["rows"])]

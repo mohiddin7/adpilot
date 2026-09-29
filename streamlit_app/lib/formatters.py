@@ -1,5 +1,4 @@
-"""
-lib/formatters.py — Display formatting for dashboard values.
+"""Formats values for tiles, tables and charts.
 
 Why this module exists:
   Big raw numbers ($130,244.90) look amateur. Senior analyst dashboards
@@ -88,3 +87,26 @@ def fmt_pct(value: float | None, decimals: int = 1, already_pct: bool = False) -
     if not already_pct:
         v = v * 100
     return f"{v:.{decimals}f}%"
+
+
+LABELS = {"spend": "Spend", "conversions": "Conversions", "cpa": "Cost per acquisition", "ctr": "Click-through rate",
+          "cvr": "Conversion rate", "roas_google": "ROAS (Google)", "roas": "ROAS", "cpc": "Cost per click",
+          "cpm": "Cost per 1,000 impressions", "impressions": "Impressions", "clicks": "Clicks",
+          "quality_score": "Quality score", "impression_share": "Search impression share",
+          "search_impression_share": "Search impression share", "frequency": "Frequency",
+          "excess_cost": "Excess cost", "flagged_days": "Flagged days"}
+
+
+def label(column: str) -> str:
+    return LABELS.get(column, column.replace("_", " ").capitalize())
+
+
+def fmt(value, kind: str | None) -> str:
+    """One value in the style its panel's `formats` names; an unknown or missing kind is a plain number."""
+    if kind == "currency":
+        return fmt_currency(value)
+    if kind == "percent":
+        return fmt_pct(value, decimals=2)
+    if kind == "multiple":
+        return "—" if value is None else f"{float(value):.2f}x"
+    return fmt_number(value)

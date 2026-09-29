@@ -42,6 +42,10 @@ def pacing() -> dict:
     return _json(_request("GET", "/pacing"))
 
 
+def insights(params: list[tuple[str, str]]) -> dict:
+    return _json(_request("GET", "/insights", params=params))
+
+
 def ask(question: str, session_id: str) -> dict:
     # retry_all=False: a POST that reached the server may already have started the model. Retrying it blind
     # could run the question twice, so only a connection that never got there (ConnectTimeout) is retried.

@@ -230,3 +230,9 @@ def test_an_empty_api_key_is_an_auth_error_without_a_request(monkeypatch):
     with pytest.raises(ApiError) as err:
         api_client.dashboard()
     assert err.value.kind == "auth" and session.calls == 0
+
+
+def test_insights_round_trips_through_the_real_app(dash_api):
+    ac, _, _ = dash_api
+    out = ac.insights([("date_from", "2024-01-16"), ("date_to", "2024-01-30")])
+    assert set(out) >= {"cards", "checked", "problems"}
