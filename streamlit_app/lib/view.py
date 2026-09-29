@@ -25,10 +25,10 @@ from .controls import (
     to_params,
     with_dates,
 )
-from .formatters import fmt, fmt_currency, fmt_number, fmt_pct, label
+from .formatters import fmt, fmt_currency, label
 from .glossary import METRIC_DEFINITIONS
 from .page_style import inject_page_style
-from .theme import COLORS
+from .theme import SEVERITY, SYMBOLS
 
 
 def start(title: str, icon: str) -> None:
@@ -91,10 +91,6 @@ def column_config(formats: dict) -> dict:
     return {c: st.column_config.NumberColumn(label(c), format=kinds[k]) for c, k in formats.items() if k in kinds}
 
 
-KPI_LABELS = {"spend": "Spend", "conversions": "Conversions", "cpa": "Cost per acquisition",
-              "ctr": "Click-through rate", "roas_google": "ROAS (Google)"}
-KPI_FORMATS = {"spend": fmt_currency, "cpa": fmt_currency, "ctr": lambda v: fmt_pct(v, decimals=2),
-               "roas_google": lambda v: "—" if v is None else f"{v:.2f}x"}
 KPI_HELP = {"cpa": METRIC_DEFINITIONS.get("CPA"), "ctr": METRIC_DEFINITIONS.get("CTR"),
             "roas_google": METRIC_DEFINITIONS.get("ROAS")}
 
@@ -232,6 +228,54 @@ def table_card(p: dict | None, flagged: frozenset[str] = frozenset()) -> None:
     st.dataframe(df, hide_index=True, column_config=column_config(p["formats"]))
 
 
+def leaderboard(p: dict | None, colors: dict) -> None:
+    """Top 15 campaigns by the chosen metric; "best" is the lowest for cost metrics, the highest otherwise."""
+    with st.container(border=True):
+        st.markdown("**Campaign leaderboard**")
+        if not drawable(p):
+            return
+        left, right = st.columns(2)
+        metrics = [c for c in ("spend", "conversions", "cpa", "ctr", "roas") if c in p["columns"]]
+        metric = left.selectbox("Rank by", metrics, format_func=label, key="dd_lb_metric")
+        worst = right.segmented_control("Show", ["Best", "Worst"], default="Best", key="dd_lb_side") == "Worst"
+        rows = sorted((r for r in p["rows"] if r.get(metric) is not None), key=lambda r: r[metric],
+                      reverse=(metric in LOWER_IS_BETTER) == worst)[:15]
+        fig = build_figure({"chart_type": "bar_h", "x": "campaign_name", "y": metric, "color": "platform"}, rows,
+                           p["formats"], colors)
+        if fig is not None:
+            st.plotly_chart(fig, key="fig_leaderboard")
+
+
+def efficiency_map(details: list[dict], colors: dict) -> None:
+    with st.container(border=True):
+        st.markdown("**Efficiency map** (spend vs cost per acquisition, sized by conversions)")
+        if not details:
+            return
+        level = st.segmented_control("Level", ["Campaigns", "Ad sets"], default="Campaigns", key="dd_map_level")
+        p = details[1] if level == "Ad sets" and len(details) > 1 else details[0]
+        if not drawable(p):
+            return
+        rows = [r for r in p["rows"] if r.get("cpa") is not None and (r.get("conversions") or 0) > 0]
+        fig = build_figure({"chart_type": "bubble", "x": "spend", "y": "cpa", "size": "conversions", "color": "platform",
+                            "reference": "mean_y"}, rows, p["formats"], colors)
+        if fig is not None:
+            st.plotly_chart(fig, key="fig_dd_map")
+
+
+def timeline(p: dict | None) -> None:
+    """Flagged days per campaign over time, coloured and shaped by severity."""
+    with st.container(border=True):
+        st.markdown("**Anomaly timeline**")
+        if not drawable(p):
+            return
+        fig = build_figure(p["chart"], p["rows"], p["formats"], SEVERITY)
+        if fig is not None:
+            fig.update_traces(marker={"size": 11})
+            for trace in fig.data:
+                trace.marker.symbol = SYMBOLS.get(trace.name, "circle")
+            st.plotly_chart(fig, key="fig_timeline")
+
+
 def flag_set(p: dict | None) -> frozenset[str]:
     """Spec 3.1.5: the flag set is the attention panel's rows and nothing else."""
     if not p or p["error"]:
@@ -364,87 +408,3 @@ def filter_controls(page: str, m: dict, start: date, end: date, key: str,
     return selected, to_params(start, end, selected, ranges, bounds)
 
 
-def kpi_ids(m: dict, page: str) -> list[tuple[str, str]]:
-    """`panel=` pairs for the page's KPI panels: the comparison period needs only those."""
-    return [("panel", p["id"]) for p in m["panels"][page] if p["kind"] == "kpi"]
-
-
-def kpi_row(panel: dict, prior: dict | None) -> None:
-    if panel["error"]:
-        st.error(f"{panel['title']}: {panel['error']}")
-        return
-    now = panel["rows"][0] if panel["rows"] else {}
-    before = prior["rows"][0] if prior and not prior["error"] and prior["rows"] else {}
-    fields = panel["columns"]
-    for col, field in zip(st.columns(len(fields)), fields, strict=True):
-        d = delta_pct(now.get(field), before.get(field)) if before else None
-        col.metric(
-            KPI_LABELS.get(field, field.replace("_", " ").capitalize()),
-            KPI_FORMATS.get(field, fmt_number)(now.get(field)),
-            None if d is None else f"{d:+.1f}%",
-            delta_color="inverse" if field in LOWER_IS_BETTER else "normal",
-            help=KPI_HELP.get(field), border=True,
-        )
-
-
-def chart_panel(p: dict) -> None:
-    """A chart card; one with several numeric columns (the daily trend) gets a metric picker. A heatmap's `y` is a
-    category (its `z` is the metric), so it never gets one."""
-    y = None
-    if p["chart"] and p["chart"]["chart_type"] != "heatmap" and not p["error"] and p["rows"]:
-        skip = {p["chart"]["x"], p["chart"].get("color")}
-        numeric = [c for c in p["columns"] if c not in skip
-                   and any(isinstance(r.get(c), (int, float)) for r in p["rows"])]
-        if len(numeric) > 1:
-            default = numeric.index(p["chart"]["y"]) if p["chart"]["y"] in numeric else 0
-            y = st.selectbox("Metric", numeric, index=default, key=f"metric_{p['id']}")
-    panel_card(p, y=y)
-
-
-def panel_card(p: dict, y: str | None = None, flagged: frozenset[str] = frozenset()) -> None:
-    with st.container(border=True):
-        st.markdown(f"**{p['title']}**")
-        if p["error"]:
-            st.error(p["error"])
-            return
-        if not p["rows"]:
-            st.caption(p["note"] or "No rows for this selection.")
-            return
-        if p["kind"] == "chart":
-            fig = build_figure({**p["chart"], **({"y": y} if y else {})}, p["rows"])
-            if fig is not None:
-                st.plotly_chart(fig, key=f"panel_{p['id']}")
-        else:
-            st.dataframe(table(p["rows"], flagged), hide_index=True)
-        if p["truncated"]:
-            st.caption("Showing the first rows only. Narrow the dates or filters to see the rest.")
-
-
-def table(rows: list[dict], flagged: frozenset[str]):
-    """Flagged campaigns get a text label and a tint: colour is never the only signal (palette.json constraints)."""
-    df = pd.DataFrame(rows)
-    if not flagged or "campaign_name" not in df.columns:
-        return df
-    df.insert(0, "flag", ["⚠ flagged" if c in flagged else "" for c in df["campaign_name"]])
-    tint = f"background-color: {COLORS['open']}22"
-    return df.style.apply(lambda r: [tint if r["flag"] else ""] * len(r), axis=1)
-
-
-def render_page(results: list[dict], prior_kpi: dict | None, after_kpis=None) -> None:
-    """Pack order, laid out by kind: KPI rows, then `after_kpis` (the overview's pacing card), then charts two to a
-    row, then tables full width. Campaigns that appear in an anomalies panel are flagged in the other tables."""
-    flagged = frozenset(r["campaign_name"] for p in results if p["table"] == "anomalies"
-                        for r in p["rows"] if r.get("campaign_name"))
-    for p in results:
-        if p["kind"] == "kpi":
-            kpi_row(p, prior_kpi)
-    if after_kpis is not None:
-        after_kpis()
-    charts = [p for p in results if p["kind"] == "chart"]
-    for i in range(0, len(charts), 2):
-        for col, p in zip(st.columns(2), charts[i : i + 2], strict=False):
-            with col:
-                chart_panel(p)
-    for p in results:
-        if p["kind"] == "table":
-            panel_card(p, flagged=frozenset() if p["table"] == "anomalies" else flagged)

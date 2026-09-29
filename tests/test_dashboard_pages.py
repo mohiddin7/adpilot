@@ -73,12 +73,37 @@ def test_compare_at_the_start_of_the_data_draws_without_deltas(dash_api):
     assert at.metric and not any(m.delta for m in at.metric)
 
 
-def test_deep_dive_for_google_shows_google_panels_and_filters(dash_api):
-    at = run("pages/1_Channel_Deep_Dive.py", dd_platform="Google")
+@pytest.mark.parametrize("platform,has,lacks", [
+    ("Google", ["Spend by quality score", "Search impression share", "Quality score"], ["Video completion funnel"]),
+    ("Facebook", ["Ad fatigue", "Frequency"], ["Spend by quality score"]),
+    ("TikTok", ["Video completion funnel"], ["Ad fatigue"]),
+    ("All", ["Trend explorer", "Campaign leaderboard", "Efficiency map", "Day of week", "Anomaly timeline"], ["Ad fatigue"]),
+])
+def test_deep_dive_per_platform(dash_api, platform, has, lacks):
+    """Review focus 3: one platform in play still draws every section."""
+    at = run("pages/1_Channel_Deep_Dive.py", dd_platform=platform)
+    assert not at.exception, at.exception
+    text = " ".join([m.value for m in at.markdown] + [m.label for m in at.metric])
+    assert all(h in text for h in has), [h for h in has if h not in text]
+    assert not any(x in text for x in lacks)
+
+
+def test_the_leaderboard_ranks_best_and_worst(dash_api):
+    at = run("pages/1_Channel_Deep_Dive.py")
+    at.selectbox(key="dd_lb_metric").set_value("cpa").run()
     assert not at.exception
-    text = " ".join(m.value for m in at.markdown)
-    assert "Spend by quality score" in text and "Video completion funnel" not in text
-    assert "Quality score (1-10)" in [s.label for s in at.slider]
+    at.session_state["dd_lb_side"] = "Worst"  # a segmented control is set through its state key, as dd_platform is
+    at.run()
+    assert not at.exception
+
+
+def test_campaign_details_are_formatted_and_flagged(dash_api, monkeypatch):
+    campaign = _flag(monkeypatch, dash_api)
+    at = run("pages/1_Channel_Deep_Dive.py")
+    assert not at.exception, at.exception
+    df = at.dataframe[0].value
+    assert "flag" in df.columns and set(df.loc[df["campaign_name"] == campaign, "flag"]) == {"⚠ flagged"}
+    assert set(df.loc[df["campaign_name"] != campaign, "flag"]) <= {""}  # only the attention panel's rows are flagged
 
 
 def test_switching_platform_drops_a_campaign_from_the_old_one(dash_api):
