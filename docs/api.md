@@ -73,7 +73,7 @@ Event types:
 |---|---|---|
 | `status` | first, then once per tool call/repair/final-result | `{"phase", "tool", "detail"}` |
 | `answer` | once, before `done` | the same `AnswerBody` as `POST /ask` |
-| `error` | only on a transport/threading failure — `ask()`'s own failures already come back as a refused `answer` | `{"kind", "message"}` |
+| `error` | only on a transport/threading failure — `ask()`'s own failures already come back as a refused `answer` | `{"kind", "message"}`: `message` is always "The answer failed on the server. Try again."; the exception text goes to the server log only |
 | `done` | always last | `{}` |
 
 `phase` is one of `thinking | tool | sql | repair | answering`. `thinking` is emitted immediately, before the
@@ -141,10 +141,9 @@ value outside a filter's fixed `values`, more than 25 values or a control charac
 
 **How values reach SQL:** `DataSource.query()` takes plain text, so values are quoted per dialect (`''` for DuckDB;
 backslash escapes for BigQuery, which has no `''`), the WHERE expression is capped at 1,500 characters, and the
-finished statement still passes `validate_sql`. Known ceiling: `validate_sql` also scans string literals, so a value
-containing a write keyword ("Drop Shipping Sale") or matching one as a whole word ("Call", a Google campaign type)
-fails the panels it reaches with `SqlPolicy`; the rest of the page still loads. A value containing "LIMIT 99999" is
-not caught — it is rewritten inside the literal instead, so that panel silently shows "No rows" rather than failing.
+finished statement still passes `validate_sql`. Quoted values are data: `validate_sql` lexes the statement per
+dialect and runs its keyword, table and LIMIT checks with string-literal contents blanked, so a value such as "Drop
+Shipping Sale", "Call - US" or "LIMIT 99999 deal" reaches the query unchanged and never trips a check.
 
 **Failures are per panel:** `error` is set and `rows` is empty, so one bad panel never blanks a page; an empty
 pipeline table gives a `note` instead. Results are cached in-process for `dashboard.cache_ttl_s` (900 s), never when a

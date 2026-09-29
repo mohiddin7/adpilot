@@ -190,7 +190,9 @@ def _classify(exc: Exception) -> tuple[ErrorKind, str]:
         return "ModelUnavailable", str(exc)
     if isinstance(exc, AdPilotError):
         return exc.kind, exc.message
-    return "ModelUnavailable", f"{exc.__class__.__name__}: {exc}"
+    # Unexpected: its text can name projects, tables or paths, and detail reaches the answer's caveat.
+    log.warning("unexpected agent failure: %s: %s", exc.__class__.__name__, str(exc)[:300])
+    return "ModelUnavailable", exc.__class__.__name__
 
 
 @contextmanager

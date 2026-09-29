@@ -8,8 +8,8 @@ cannot catch, and the eval asserts on the *system* refusing, never on which laye
 | 0 | Deterministic input gate | `sanitize_question` in `adpilot/core/guardrails.py` | `InputPolicy` |
 | 1 | Semantic input classifier | `classify_question` in `adpilot/core/guardrails.py` — Jev Choice behind `ADPILOT_INPUT_CLASSIFIER=jev`, off by default | `InputPolicy` + caveat `classifier:jev` |
 | 2 | LLM + system prompt | `packs/ads/prompts/` | `OutOfScope` (model `Refusal`) |
-| 3 | Execution validator | `validate_sql` — SELECT-only, table allowlist, one statement, row cap | `SqlPolicy` |
-| 4 | Least-privilege credentials | service account is `READER` on data, `WRITER` on the audit dataset only ([observability.md](observability.md)) | — |
+| 3 | Execution validator | `validate_sql` — SELECT-only, one statement, row cap; every FROM/JOIN item (comma lists, subqueries, CTEs) must be an allowlisted table, and a string, table function or LATERAL there is refused | `SqlPolicy` |
+| 4 | Least-privilege credentials | service account is `READER` on data, `WRITER` on the audit dataset only ([observability.md](observability.md)). DuckDB: data is loaded at connect, then `enable_external_access = false` and `lock_configuration = true`, so no query reads a file | — |
 | 5 | Output rail | `redact_output` — masks PII / secret shapes in `answer_md` | `OutputPolicy` |
 
 Layers 3 and 4 are the wall: even if every text layer fails, the database receives one read-only SELECT
