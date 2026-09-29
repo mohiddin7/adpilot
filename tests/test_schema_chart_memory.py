@@ -27,3 +27,27 @@ def test_heuristic_chart():
     assert heuristic_chart(["platform", "spend"], ["spend"]).x == "platform"
     assert heuristic_chart(["campaign_name", "cpa"], ["cpa"]).x == "campaign_name"
     assert heuristic_chart(["a"], []) is None
+
+
+def test_the_models_chart_types_are_unchanged():
+    assert ChartSpec.model_json_schema()["properties"]["chart_type"]["enum"] == ["bar", "line", "scatter", "pie", "area"]
+
+
+def test_panel_chart_types_need_their_extra_columns():
+    from adpilot.core.chart import PanelChartSpec
+    with pytest.raises(ValueError, match="size"):
+        PanelChartSpec(chart_type="bubble", x="spend", y="cpa")
+    with pytest.raises(ValueError, match="z"):
+        PanelChartSpec(chart_type="heatmap", x="weekday", y="platform")
+    assert PanelChartSpec(chart_type="funnel", x="stage", y="value").reference is None
+
+
+def test_validate_spec_checks_size_and_z_and_keeps_the_class():
+    from adpilot.core.chart import PanelChartSpec
+    spec = PanelChartSpec(chart_type="bubble", x="spend", y="cpa", size="conversions", reference="mean_y")
+    assert isinstance(validate_spec(spec, ["spend", "cpa", "conversions"]), PanelChartSpec)
+    with pytest.raises(ValueError, match="conversions"):
+        validate_spec(spec, ["spend", "cpa"])
+    heat = PanelChartSpec(chart_type="heatmap", x="weekday", y="platform", z="spend")
+    with pytest.raises(ValueError, match="spend"):
+        validate_spec(heat, ["weekday", "platform"])
