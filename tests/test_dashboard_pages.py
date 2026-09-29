@@ -272,3 +272,65 @@ def test_a_failed_sidebar_ask_shows_its_error_once(dash_api, monkeypatch):
     assert not at.exception
     shown = [e.value for e in at.error] + [c.value for c in at.caption]
     assert shown.count("The analyst hit a snag.") == 1
+
+
+def _cards(monkeypatch, cards, checked=("cost per sale",)):
+    from lib import view
+
+    monkeypatch.setattr(view, "insights", lambda params: {"cards": cards, "checked": list(checked), "problems": [],
+                                                          "writer": "templates"})
+
+
+CARD = {"id": "mix:Google", "kind": "mix", "severity": "high", "stake": 1234.5, "title": "Rebalance spend away from Google",
+        "headline": "Google took 60% of spend but brought 25% of sales for $1.2K.", "action": "Move a slice.",
+        "why": "Its cost per sale is $60.", "confidence": "high (300 sales)",
+        "numbers": [{"platform": "Google", "share of spend": "60%"}],
+        "chart": {"spec": {"chart_type": "bar", "x": "platform", "y": "share", "color": "measure"},
+                  "rows": [{"platform": "Google", "measure": "Share of spend", "share": 0.6}], "formats": {"share": "percent"}},
+        "facts": "Google took 60% of spend but brought 25% of sales."}
+
+
+def test_insight_cards_render_ranked_with_charts(dash_api):
+    at = run("pages/2_AI_Insights.py", ins_preset="Last 14 days")
+    assert not at.exception, at.exception
+    assert any("finding" in m.value or "Nothing needs attention" in m.value for m in at.markdown)
+
+
+def test_card_text_shows_dollar_amounts_literally(dash_api, monkeypatch):
+    """Review focus 4."""
+    _cards(monkeypatch, [CARD])
+    at = run("pages/2_AI_Insights.py")
+    assert not at.exception, at.exception
+    assert any("\\$1.2K" in m.value for m in at.markdown)
+    assert any("HIGH" in m.value for m in at.markdown)  # a text badge, not colour alone
+
+
+def test_investigate_why_answers_under_the_card_and_keeps_it(dash_api, monkeypatch):
+    _cards(monkeypatch, [CARD])
+    at = run("pages/2_AI_Insights.py")
+    at.button(key="inv_mix:Google").click().run()
+    assert not at.exception, at.exception
+    assert "answer" in at.session_state["investigations"]["mix:Google"]
+    assert at.session_state.get("messages_insights", []) == []  # an investigation is not the sidebar chat
+    at.run()
+    assert "answer" in at.session_state["investigations"]["mix:Google"]
+
+
+def test_ask_in_chat_goes_to_this_pages_chat(dash_api, monkeypatch):
+    _cards(monkeypatch, [CARD])
+    at = run("pages/2_AI_Insights.py")
+    at.button(key="chat_mix:Google").click().run()
+    assert not at.exception, at.exception
+    assert at.session_state["messages_insights"][0]["role"] == "user"
+
+
+def test_no_findings_says_so_and_lists_the_checks(dash_api, monkeypatch):
+    _cards(monkeypatch, [], checked=("cost per sale", "channel mix"))
+    at = run("pages/2_AI_Insights.py")
+    text = " ".join(m.value for m in at.markdown)
+    assert "Nothing needs attention in this period" in text and "channel mix" in text
+
+
+def test_the_packs_questions_are_chat_suggestions(dash_api):
+    at = run("pages/2_AI_Insights.py")
+    assert any("best cost per acquisition" in b.label for b in at.sidebar.button)

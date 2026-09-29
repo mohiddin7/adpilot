@@ -101,6 +101,15 @@ def with_context(question: str, context: str) -> str:
     return full if len(full) <= QUESTION_LIMIT else q
 
 
+INVESTIGATE = "Why did this happen, and what should I check first? "
+
+
+def investigate_question(facts: str, limit: int = QUESTION_LIMIT) -> str:
+    """A card's facts as a question to the analyst, trimmed to fit; with_context then drops the page context first."""
+    q = INVESTIGATE + " ".join(facts.split())
+    return q if len(q) <= limit else q[: limit - 3].rstrip() + "..."
+
+
 def md(text: str) -> str:
     """Streamlit markdown renders $...$ as LaTeX; dollar amounts must stay dollar amounts."""
     return text.replace("$", "\\$")

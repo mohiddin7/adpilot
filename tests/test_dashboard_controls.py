@@ -4,11 +4,13 @@ from datetime import date
 
 import pytest
 from lib.controls import (
+    QUESTION_LIMIT,
     applies_to,
     clamp_pair,
     clamp_range,
     context_line,
     delta_pct,
+    investigate_question,
     keep_valid,
     md,
     preset_range,
@@ -84,3 +86,12 @@ def test_context_is_dropped_rather_than_push_a_question_over_the_limit():
 def test_md_escapes_dollar_signs():
     """Review focus 4: Streamlit markdown renders $...$ as LaTeX."""
     assert md("spent $5K of $7K") == "spent \\$5K of \\$7K"
+
+
+def test_investigate_question_fits_the_limit():
+    """Review focus 5: facts plus context over 600 characters still send a question."""
+    q = investigate_question("x" * 2000)
+    assert len(q) <= QUESTION_LIMIT and q.startswith("Why did this happen")
+    assert with_context(q, "Overview page; 2024-01-01 to 2024-01-30") == q  # no room: context dropped first
+    short = investigate_question("Google paid $90 per sale.")
+    assert short == "Why did this happen, and what should I check first? Google paid $90 per sale."
