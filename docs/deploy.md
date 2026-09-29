@@ -144,6 +144,15 @@ Two Secret Manager secrets, referenced with `--set-secrets` above, never with `-
 There is no dual-key grace period — swapping the secret rotates instantly for every request the new
 revision serves. Roll out gradually with Cloud Run traffic splitting if that matters.
 
+## Streamlit Cloud (dashboard)
+
+A merge to `main` deploys automatically. Streamlit Community Cloud installs the root `requirements.txt`,
+which holds only what `streamlit_app/` imports (Streamlit, pandas, Plotly, requests, python-dotenv) — the
+dashboard is a thin client of `adpilot-api` and never installs the agent, connectors or pipeline
+dependencies. Point it at the deployed API through Streamlit Cloud's app secrets, `[api]` section:
+`ADPILOT_API_URL` (the Cloud Run URL) and `ADPILOT_API_KEY` (the same key from `adpilot-api-key`, above).
+Renaming either config key means updating the Cloud secrets to match.
+
 ## Daily data (Phase 3D)
 
 **No GCP resource is created by this branch.** Everything below is documentation for a later,
@@ -166,8 +175,9 @@ run_pipeline (event fn, max-instances 1, timeout 540 s)
    write landing/<as_of>/_status.json {ok, run_id, steps, seconds, planted, flagged, error}
 ```
 
-Both entry points live in `pipelines/main.py`, deployed twice from `--source pipelines` with
-`pipelines/requirements.txt` (the pipeline subset of the root file plus `functions-framework`). Retries stay
+Both entry points live in `pipelines/main.py`, deployed twice from `--source pipelines` with its own
+`pipelines/requirements.txt` (BigQuery, Cloud Storage and the pinned pandas/numpy, plus `functions-framework`
+— independent of the dashboard's root `requirements.txt`). Retries stay
 off on purpose: recovery is catch-up on the next run, never a redelivery of a stale batch. Project, dataset
 and bucket names never enter the repo — everything below reads them from `$BQ_PROJECT_ID`,
 `$BQ_BRONZE_DATASET`, `$BQ_STAGING_DATASET`, `$BQ_PRODUCTION_DATASET` and `$RAW_BUCKET`.

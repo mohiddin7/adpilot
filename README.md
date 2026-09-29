@@ -12,7 +12,7 @@
 - **Packs** (`packs/ads/`): everything domain-specific — table allowlist, column descriptions, glossary, system prompt, canned fallback queries and a DuckDB bootstrap. Swap the directory to point the same agent at different data.
 - **Connectors**: BigQuery (bytes-billed cap) and DuckDB over the raw CSVs, so the agent and tests run with zero credentials.
 - **Pipeline** (`pipelines/`, daily at 02:00 UTC on Cloud Run functions — see docs/deploy.md): calibrated synthetic source → validate → Bronze MERGE → Gold MERGE (30-column contract) → anomaly flags (MAD z-score) → budget optimizer (LP) → 14-day forecast (Holt-Winters) → QA reconciliation. Idempotent, audited, cost-capped.
-- **Dashboard** (`streamlit_app/`): pack-driven overview, channel deep dive with every filter the pack declares, AI insight cards, and a chat on every page (with a "show thinking" toggle). It holds no database or model credentials: every number and answer comes from the API (`/dashboard`, `/filters`, `/panels`, `/pacing`, `/ask`).
+- **Dashboard** (`streamlit_app/`): four pages over the same pack-driven data — an Overview cockpit (KPIs, trends, efficiency, mix, funnel, pacing, needs attention), a channel deep dive, an AI Insights page (a feed of findings ranked by dollars at stake, each with an evidence chart, "investigate why" and "ask in chat"), and a Chat page. Each page's sidebar chat keeps its own history and session (a "show thinking" toggle streams each step). It holds no database or model credentials: every number and answer comes from the API (`/dashboard`, `/filters`, `/panels`, `/pacing`, `/insights`, `/ask`).
 
 ## Roadmap
 
