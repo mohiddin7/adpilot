@@ -124,7 +124,7 @@ def test_filter_options_cascade(deps, cfg):
 def test_meta_reports_the_data_window_and_hides_sql(deps, cfg):
     m = dashboard_meta(deps, cfg, TtlCache(0))
     assert (m["date_min"], m["date_max"]) == ("2024-01-01", "2024-01-30")
-    assert all(set(p) == {"id", "title", "kind", "table", "platforms"} for p in m["panels"]["overview"])
+    assert all(set(p) == {"id", "title", "kind", "table", "platforms", "role"} for p in m["panels"]["overview"])
     assert m["insights"] and {f["column"] for f in m["filters"]} >= {"platform", "severity"}
 
 
@@ -206,3 +206,25 @@ def test_a_failed_panel_does_not_stop_others_from_caching(deps, cfg, monkeypatch
     results = run_page(deps, local_cfg, "overview", FLT, cache, ids=("kpis", "spend_trend"))
     assert len(calls) == first + 1  # only spend_trend (still failing) re-ran; kpis served from cache
     assert next(r for r in results if r.id == "spend_trend").error is not None
+
+
+def test_a_format_on_a_missing_column_fails_only_that_panel(deps, cfg):
+    kpis = next(p for p in cfg.panels if p.id == "kpis")
+    r = run_panel(deps, cfg, kpis.model_copy(update={"formats": {"nope": "currency"}}), FLT)
+    assert r.error.startswith("formats:") and r.rows == []
+
+
+def test_results_carry_role_and_formats(deps, cfg):
+    r = run_page(deps, cfg, "overview", FLT, TtlCache(0), ids=("kpis",))[0]
+    assert r.role == "kpi" and r.formats["spend"] == "currency"
+
+
+def test_meta_returns_roles_and_colours(deps, cfg):
+    m = dashboard_meta(deps, cfg, TtlCache(0))
+    assert m["colors"]["Google"] == "forecast"
+    assert all("role" in p for page in m["panels"].values() for p in page)
+
+
+def test_format_date_is_the_same_on_duckdb(deps):
+    sql = deps.pack.render("SELECT FORMAT_DATE('%a', DATE '2024-01-01') AS d FROM {gold} LIMIT 1", "duckdb")
+    assert execute(deps, sql).rows == [{"d": "Mon"}]

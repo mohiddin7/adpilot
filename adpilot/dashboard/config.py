@@ -1,9 +1,9 @@
 """The pack's `dashboard:` section, parsed and checked once, when the API starts.
 
 A typo in pack.yaml — a filter on a column the table does not have, a chart on a `kind: kpi` panel, a placeholder the
-SQL cannot fill — fails the API at boot, not on somebody's first page load. Whether a chart's columns match what its
-SQL returns can only be known by running it, so that is checked per request (panels.run_panel) and by
-tests/test_dashboard_panels.py, which runs every panel of the ads pack on DuckDB in CI.
+SQL cannot fill — fails the API at boot, not on somebody's first page load. Whether a chart's columns (or a panel's
+`formats` keys) match what its SQL returns can only be known by running it, so that is checked per request
+(panels.run_panel) and by tests/test_dashboard_panels.py, which runs every panel of the ads pack on DuckDB in CI.
 """
 
 from __future__ import annotations
@@ -12,11 +12,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from adpilot.core.chart import ChartSpec
+from adpilot.core.chart import PanelChartSpec
 from adpilot.packs.loader import Pack
 
 Page = Literal["overview", "deep_dive"]
 IDENT = r"^[A-Za-z_][A-Za-z0-9_]*$"
+Role = Literal["kpi", "kpi_series", "trend", "map", "compare", "funnel", "heatmap", "platform", "attention",
+               "markers", "details"]
+Format = Literal["currency", "percent", "multiple", "number"]
+SeriesColor = Literal["brand", "forecast", "audited", "resolved"]  # never the alarm colours (critical, open)
 
 
 class FilterDef(BaseModel):
@@ -39,9 +43,11 @@ class PanelDef(BaseModel):
     title: str
     page: Page
     kind: Literal["kpi", "chart", "table"]
+    role: Role
     table: str = "gold"  # decides which filters {where} applies
     sql: str
-    chart: ChartSpec | None = None
+    chart: PanelChartSpec | None = None
+    formats: dict[str, Format] = {}
     platforms: list[str] | None = None  # a platform-specific panel (quality score, video funnel)
 
     @model_validator(mode="after")
@@ -59,6 +65,7 @@ class DashboardConfig(BaseModel):
     filters: list[FilterDef]
     panels: list[PanelDef]
     insights: list[str] = []
+    colors: dict[str, SeriesColor] = {}
 
     def filter(self, column: str) -> FilterDef:
         return next(f for f in self.filters if f.column == column)
@@ -91,6 +98,9 @@ def _check_against_pack(cfg: DashboardConfig, pack: Pack) -> None:
     # A typo in a `platforms:` list ("Gogle") would otherwise just hide that filter/panel forever.
     platform_filter = next((f for f in cfg.filters if f.column == "platform"), None)
     allowed_platforms = set(platform_filter.values) if platform_filter and platform_filter.values else None
+    for plat in cfg.colors:
+        if allowed_platforms is not None and plat not in allowed_platforms:
+            raise ValueError(f"dashboard colors: platform {plat!r} is not one of {sorted(allowed_platforms)}")
     for f in cfg.filters:
         for t in f.tables:
             if t not in tables:

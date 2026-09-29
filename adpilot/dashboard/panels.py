@@ -8,12 +8,13 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Hashable
+from datetime import date, timedelta
 
 from pydantic import BaseModel
 
 from adpilot.brief import load, settings
 from adpilot.brief.analyses import pace_numbers
-from adpilot.core.chart import ChartSpec, validate_spec
+from adpilot.core.chart import PanelChartSpec, validate_spec
 from adpilot.core.errors import AdPilotError
 from adpilot.core.runtime import fresh_deps
 from adpilot.core.tools import AgentDeps, SqlError, execute
@@ -64,12 +65,14 @@ class PanelResult(BaseModel):
     title: str
     kind: str
     table: str
-    chart: ChartSpec | None = None
+    role: str
+    chart: PanelChartSpec | None = None
     columns: list[str] = []
     rows: list[dict] = []
     truncated: bool = False
     note: str = ""
     error: str | None = None
+    formats: dict[str, str] = {}
 
 
 def panel_applies(panel: PanelDef, flt: Filters) -> bool:
@@ -86,11 +89,15 @@ def run_panel(template: AgentDeps, cfg: DashboardConfig, panel: PanelDef, flt: F
     query did not return — comes back as this panel's `error`, so one bad panel never blanks the page."""
     deps = fresh_deps(template)  # a fresh SQL budget per panel: a page has more panels than a question has queries
     dialect = deps.connector.dialect
-    result = PanelResult(id=panel.id, title=panel.title, kind=panel.kind, table=panel.table)
+    result = PanelResult(id=panel.id, title=panel.title, kind=panel.kind, table=panel.table, role=panel.role,
+                          formats=dict(panel.formats))
     where = build_where(cfg, panel.table, deps.pack.raw["date_column"], flt, dialect)
     res = execute(deps, deps.pack.render(panel.sql, dialect, where=where), max_rows=cfg.max_rows)
     if isinstance(res, SqlError):
         return result.model_copy(update={"error": _safe_error(res.kind, res.message)})
+    missing = sorted(set(panel.formats) - set(res.columns))
+    if missing:
+        return result.model_copy(update={"error": f"formats: column(s) {missing} not in result"})
     chart = None
     if panel.chart is not None:
         try:
@@ -103,17 +110,34 @@ def run_panel(template: AgentDeps, cfg: DashboardConfig, panel: PanelDef, flt: F
     })
 
 
+def last_week(template: AgentDeps, cfg: DashboardConfig, cache: TtlCache, flt: Filters) -> Filters:
+    """The flag rule (spec 3.1.5): an attention panel reads the last 7 days of data, anchored on the newest day,
+    whatever window the viewer picked. Platform and campaign choices still apply."""
+    hi = date.fromisoformat(dashboard_meta(template, cfg, cache)["date_max"])
+    return dataclasses.replace(flt, date_from=hi - timedelta(days=6), date_to=hi)
+
+
 def run_page(template: AgentDeps, cfg: DashboardConfig, page: str, flt: Filters, cache: TtlCache,
              ids: tuple[str, ...] = ()) -> list[PanelResult]:
     """The page's panels that apply to this selection (or only `ids`), in pack order. Cached per panel, and only
-    when that panel succeeded, so one always-failing panel is retried every load without evicting the rest."""
+    when that panel succeeded, so one always-failing panel is retried every load without evicting the rest.
+    A `role: attention` panel ignores the viewer's date range and reads the last 7 days instead (last_week)."""
     wanted = [p for p in cfg.panels_for(page) if (not ids or p.id in ids) and panel_applies(p, flt)]
     out = []
     for p in wanted:
-        key = ("panel", p.id, flt)
+        pflt = flt
+        if p.role == "attention":
+            try:
+                pflt = last_week(template, cfg, cache, flt)
+            except AdPilotError as exc:
+                log.warning("attention anchor failed: %s: %s", exc.kind, exc.message)
+                out.append(PanelResult(id=p.id, title=p.title, kind=p.kind, table=p.table, role=p.role,
+                                        error=f"{exc.kind}: this panel could not be read"))
+                continue
+        key = ("panel", p.id, pflt)
         result = cache.get(key)
         if result is None:
-            result = run_panel(template, cfg, p, flt)
+            result = run_panel(template, cfg, p, pflt)
             if result.error is None:
                 cache.put(key, result)
         out.append(result)
@@ -191,11 +215,12 @@ def dashboard_meta(template: AgentDeps, cfg: DashboardConfig, cache: TtlCache) -
         "date_max": str(res.rows[0]["hi"])[:10],
         "filters": [f.model_dump(exclude_none=True) for f in cfg.filters],
         "panels": {
-            page: [{"id": p.id, "title": p.title, "kind": p.kind, "table": p.table, "platforms": p.platforms}
-                   for p in cfg.panels_for(page)]
+            page: [{"id": p.id, "title": p.title, "kind": p.kind, "table": p.table, "platforms": p.platforms,
+                    "role": p.role} for p in cfg.panels_for(page)]
             for page in ("overview", "deep_dive")
         },
         "insights": list(cfg.insights),
+        "colors": dict(cfg.colors),
     }
     cache.put(("meta",), meta)
     return meta

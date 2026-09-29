@@ -51,8 +51,8 @@ def test_an_unknown_placeholder_fails(pack):
 
 def test_where_on_a_table_without_a_date_column_fails(pack):
     def mutate(d):
-        d["panels"].append({"id": "x", "title": "x", "page": "overview", "kind": "table", "table": "budget",
-                            "sql": "SELECT platform FROM {budget} WHERE {where}"})
+        d["panels"].append({"id": "x", "title": "x", "page": "overview", "kind": "table", "role": "details",
+                            "table": "budget", "sql": "SELECT platform FROM {budget} WHERE {where}"})
 
     with pytest.raises(ValueError, match="no 'date' column"):
         load_dashboard(_with(pack, mutate))
@@ -80,3 +80,36 @@ def test_an_unknown_platform_on_a_panel_fails(pack):
 
     with pytest.raises(ValueError, match="platform"):
         load_dashboard(_with(pack, mutate))
+
+
+def test_every_panel_needs_a_known_role(pack):
+    def missing(d):
+        d["panels"][0].pop("role")
+
+    def unknown(d):
+        d["panels"][0]["role"] = "hero"
+
+    for mutate in (missing, unknown):
+        with pytest.raises(ValueError, match="role"):
+            load_dashboard(_with(pack, mutate))
+
+
+def test_an_unknown_format_fails(pack):
+    def mutate(d):
+        d["panels"][0]["formats"] = {"spend": "euros"}
+
+    with pytest.raises(ValueError, match="formats"):
+        load_dashboard(_with(pack, mutate))
+
+
+@pytest.mark.parametrize("colors,match", [({"Facebook": "critical"}, "colors"), ({"Gogle": "brand"}, "Gogle")])
+def test_platform_colours_must_be_series_colours_for_known_platforms(pack, colors, match):
+    def mutate(d):
+        d["colors"] = colors
+
+    with pytest.raises(ValueError, match=match):
+        load_dashboard(_with(pack, mutate))
+
+
+def test_the_ads_pack_pins_one_colour_per_platform(pack):
+    assert load_dashboard(pack).colors == {"Facebook": "brand", "Google": "forecast", "TikTok": "audited"}

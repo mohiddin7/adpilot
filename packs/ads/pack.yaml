@@ -154,11 +154,13 @@ briefing:
 # {where} becomes: the viewer's date range + every filter they set that lists the panel's `table`. A panel without
 # {where} ignores filters (pipeline outputs that are already one snapshot). Values are validated, then quoted per
 # dialect (adpilot/dashboard/filters.py); the finished SQL still goes through validate_sql. SQL here must run on
-# both DuckDB and BigQuery: no EXTRACT(... FROM ...) (validate_sql reads the FROM as a table), SAFE_DIVIDE is a
-# DuckDB macro in duckdb_setup.sql.
+# both DuckDB and BigQuery: no EXTRACT(... FROM ...) (validate_sql reads the FROM as a table); SAFE_DIVIDE and
+# FORMAT_DATE are DuckDB macros in duckdb_setup.sql. Every panel names a `role` (how the UI lays it out) and may
+# name `formats` (how its numeric columns are displayed). `colors` pins one series colour per platform.
 dashboard:
   max_rows: 2000
   cache_ttl_s: 900
+  colors: {Facebook: brand, Google: forecast, TikTok: audited}
   insights:
     - Which platform had the best cost per acquisition in this period, and by how much?
     - Which three campaigns spent the most for the fewest conversions?
@@ -186,6 +188,8 @@ dashboard:
       title: Headline numbers
       page: overview
       kind: kpi
+      role: kpi
+      formats: {spend: currency, conversions: number, cpa: currency, ctr: percent, roas_google: multiple}
       sql: >-
         SELECT ROUND(SUM(spend), 2) AS spend, SUM(conversions) AS conversions,
         ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa,
@@ -197,6 +201,8 @@ dashboard:
       title: Daily spend by platform
       page: overview
       kind: chart
+      role: trend
+      formats: {spend: currency}
       chart: {chart_type: line, x: date, y: spend, color: platform}
       sql: >-
         SELECT date, platform, ROUND(SUM(spend), 2) AS spend FROM {gold} WHERE {where}
@@ -205,6 +211,8 @@ dashboard:
       title: Daily cost per acquisition by platform
       page: overview
       kind: chart
+      role: trend
+      formats: {cpa: currency}
       chart: {chart_type: line, x: date, y: cpa, color: platform}
       sql: >-
         SELECT date, platform, ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa FROM {gold}
@@ -213,13 +221,17 @@ dashboard:
       title: Share of spend
       page: overview
       kind: chart
+      role: compare
+      formats: {spend: currency}
       chart: {chart_type: pie, x: platform, y: spend}
       sql: SELECT platform, ROUND(SUM(spend), 2) AS spend FROM {gold} WHERE {where} GROUP BY platform ORDER BY spend DESC
     - id: needs_attention
       title: Needs attention (most unusual cost per acquisition)
       page: overview
       kind: table
+      role: attention
       table: anomalies
+      formats: {observed_cpa: currency, usual_cpa: currency}
       sql: >-
         SELECT date, platform, campaign_name, ROUND(observed_cpa, 2) AS observed_cpa,
         ROUND(rolling_mean_cpa, 2) AS usual_cpa, severity, confidence
@@ -228,7 +240,9 @@ dashboard:
       title: Budget optimizer, current vs recommended spend
       page: overview
       kind: chart
+      role: compare
       table: budget
+      formats: {spend: currency}
       chart: {chart_type: bar, x: platform, y: spend, color: plan}
       sql: >-
         SELECT platform, 'current' AS plan, ROUND(current_spend, 2) AS spend FROM {budget}
@@ -241,7 +255,9 @@ dashboard:
       title: 14-day spend forecast
       page: overview
       kind: chart
+      role: trend
       table: forecast
+      formats: {predicted_value: currency}
       chart: {chart_type: line, x: target_date, y: predicted_value, color: platform}
       sql: >-
         SELECT target_date, platform, ROUND(predicted_value, 2) AS predicted_value FROM {forecast}
@@ -252,6 +268,8 @@ dashboard:
       title: Headline numbers
       page: deep_dive
       kind: kpi
+      role: kpi
+      formats: {spend: currency, conversions: number, cpa: currency, ctr: percent, roas_google: multiple}
       sql: >-
         SELECT ROUND(SUM(spend), 2) AS spend, SUM(conversions) AS conversions,
         ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa,
@@ -263,6 +281,9 @@ dashboard:
       title: Daily trend
       page: deep_dive
       kind: chart
+      role: trend
+      formats: {spend: currency, impressions: number, clicks: number, conversions: number, cpa: currency,
+                ctr: percent, cpc: currency, cpm: currency}
       chart: {chart_type: line, x: date, y: spend}
       sql: >-
         SELECT date, ROUND(SUM(spend), 2) AS spend, SUM(impressions) AS impressions, SUM(clicks) AS clicks,
@@ -275,6 +296,9 @@ dashboard:
       title: Campaigns
       page: deep_dive
       kind: table
+      role: details
+      formats: {spend: currency, impressions: number, clicks: number, conversions: number, cpa: currency,
+                ctr: percent, roas: multiple}
       sql: >-
         SELECT platform, campaign_name, ROUND(SUM(spend), 2) AS spend, SUM(impressions) AS impressions,
         SUM(clicks) AS clicks, SUM(conversions) AS conversions,
@@ -286,6 +310,8 @@ dashboard:
       title: Ad sets / ad groups
       page: deep_dive
       kind: table
+      role: details
+      formats: {spend: currency, clicks: number, conversions: number, cpa: currency}
       sql: >-
         SELECT platform, campaign_name, sub_group_name, ROUND(SUM(spend), 2) AS spend, SUM(clicks) AS clicks,
         SUM(conversions) AS conversions, ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa
@@ -294,7 +320,9 @@ dashboard:
       title: Flagged days
       page: deep_dive
       kind: table
+      role: markers
       table: anomalies
+      formats: {observed_cpa: currency, usual_cpa: currency, z_score: number}
       sql: >-
         SELECT date, platform, campaign_name, ROUND(observed_cpa, 2) AS observed_cpa,
         ROUND(rolling_mean_cpa, 2) AS usual_cpa, ROUND(z_score, 1) AS z_score, anomaly_direction, severity, confidence
@@ -303,7 +331,9 @@ dashboard:
       title: Video completion funnel
       page: deep_dive
       kind: chart
+      role: platform
       platforms: [TikTok]
+      formats: {viewers: number}
       chart: {chart_type: bar, x: stage, y: viewers}
       sql: >-
         WITH funnel AS (SELECT SUM(video_views) AS v0, SUM(video_watch_25) AS v25, SUM(video_watch_50) AS v50,
@@ -318,7 +348,9 @@ dashboard:
       title: Average quality score
       page: deep_dive
       kind: chart
+      role: platform
       platforms: [Google]
+      formats: {quality_score: number}
       chart: {chart_type: line, x: date, y: quality_score}
       sql: >-
         SELECT date, ROUND(AVG(CASE WHEN quality_score > 0 THEN quality_score END), 2) AS quality_score
@@ -327,7 +359,9 @@ dashboard:
       title: Search impression share
       page: deep_dive
       kind: chart
+      role: platform
       platforms: [Google]
+      formats: {search_impression_share: percent}
       chart: {chart_type: line, x: date, y: search_impression_share}
       sql: >-
         SELECT date, ROUND(AVG(search_impression_share), 3) AS search_impression_share
@@ -336,6 +370,8 @@ dashboard:
       title: Frequency (impressions per person)
       page: deep_dive
       kind: chart
+      role: platform
       platforms: [Facebook]
+      formats: {frequency: number}
       chart: {chart_type: line, x: date, y: frequency}
       sql: SELECT date, ROUND(AVG(frequency), 2) AS frequency FROM {gold} WHERE {where} GROUP BY date ORDER BY date

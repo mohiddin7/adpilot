@@ -488,7 +488,7 @@ def test_dashboard_meta_gives_the_data_window_and_no_sql(api):
     body = client.get("/dashboard", headers=H).json()
     assert (body["date_min"], body["date_max"]) == ("2024-01-01", "2024-01-30")
     assert {f["column"] for f in body["filters"]} >= {"platform", "campaign_name", "severity", "quality_score"}
-    assert all(set(p) == {"id", "title", "kind", "table", "platforms"} for p in body["panels"]["overview"])
+    assert all(set(p) == {"id", "title", "kind", "table", "platforms", "role"} for p in body["panels"]["overview"])
     assert body["insights"]
 
 
