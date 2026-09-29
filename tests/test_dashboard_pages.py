@@ -54,18 +54,18 @@ def test_every_page_renders_without_an_exception(dash_api, page):
 
 def test_overview_shows_kpis_pacing_and_panels(dash_api):
     at = run("Home.py")
-    assert [m.label for m in at.metric] == ["Spend", "Conversions", "Cost per acquisition", "Click-through rate",
-                                           "ROAS (Google)"]
+    assert [m.label for m in at.metric] == ["Spend", "Conversions", "Cost per acquisition", "ROAS (Google)",
+                                           "Click-through rate", "Cvr"]
     assert at.metric[0].value.startswith("$")
     text = " ".join(m.value for m in at.markdown)
-    assert "Daily spend by platform" in text and "Month-end pacing" in text
+    assert "Daily trend" in text and "Month-end pacing" in text
 
 
 def test_deep_dive_for_google_shows_google_panels_and_filters(dash_api):
     at = run("pages/1_Channel_Deep_Dive.py", dd_platform="Google")
     assert not at.exception
     text = " ".join(m.value for m in at.markdown)
-    assert "Average quality score" in text and "Video completion funnel" not in text
+    assert "Spend by quality score" in text and "Video completion funnel" not in text
     assert "Quality score (1-10)" in [s.label for s in at.slider]
 
 

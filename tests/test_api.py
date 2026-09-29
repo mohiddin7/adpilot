@@ -495,8 +495,8 @@ def test_dashboard_meta_gives_the_data_window_and_no_sql(api):
 def test_overview_panels_all_run(api):
     client, _ = api
     panels = _panels(client, page="overview", **WINDOW)
-    assert set(panels) == {"kpis", "spend_trend", "cpa_trend", "spend_share", "needs_attention", "budget_plan",
-                           "spend_forecast"}
+    assert set(panels) == {"kpis", "kpi_daily", "cpa_trend", "efficiency", "mix", "funnel", "budget_plan",
+                           "attention"}
     assert [p["id"] for p in panels.values() if p["error"]] == []
     assert panels["kpis"]["rows"][0]["spend"] > 0
     assert panels["budget_plan"]["rows"] == [] and panels["budget_plan"]["note"]  # empty pipeline table: a note
@@ -512,9 +512,9 @@ def test_a_platform_filter_narrows_the_numbers(api):
 def test_platform_panels_appear_only_for_their_platform(api):
     client, _ = api
     google = _panels(client, page="deep_dive", platform="Google", **WINDOW)
-    assert "google_quality" in google and "tiktok_video_funnel" not in google
-    assert "google_quality" not in _panels(client, page="deep_dive", platform=["Google", "TikTok"], **WINDOW)
-    assert "google_quality" not in _panels(client, page="deep_dive", **WINDOW)
+    assert "google_quality_dist" in google and "tiktok_video_funnel" not in google
+    assert "google_quality_dist" not in _panels(client, page="deep_dive", platform=["Google", "TikTok"], **WINDOW)
+    assert "google_quality_dist" not in _panels(client, page="deep_dive", **WINDOW)
 
 
 def test_the_panel_param_limits_the_run_and_rejects_unknown_ids(api):

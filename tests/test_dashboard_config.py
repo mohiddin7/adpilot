@@ -16,8 +16,10 @@ def _with(pack, mutate):
 
 def test_the_ads_pack_dashboard_loads(pack):
     cfg = load_dashboard(pack)
-    assert {p.id for p in cfg.panels_for("overview")} >= {"kpis", "spend_trend", "needs_attention", "budget_plan"}
-    assert {p.id for p in cfg.panels_for("deep_dive")} >= {"dd_kpis", "dd_trend", "dd_campaigns", "google_quality"}
+    assert {p.id for p in cfg.panels_for("overview")} >= {"kpis", "kpi_daily", "cpa_trend", "efficiency", "mix",
+                                                           "funnel", "budget_plan", "attention"}
+    assert {p.id for p in cfg.panels_for("deep_dive")} >= {"dd_kpis", "dd_daily", "dd_markers", "dd_campaigns",
+                                                            "dd_weekday", "google_quality_dist"}
     assert cfg.filter("platform").values == ["Facebook", "Google", "TikTok"]
     assert "sub_group_name" not in {f.column for f in cfg.filters_for("overview")}
     assert cfg.insights
@@ -76,7 +78,7 @@ def test_a_misspelt_key_fails_instead_of_being_ignored(pack):
 
 def test_an_unknown_platform_on_a_panel_fails(pack):
     def mutate(d):
-        next(p for p in d["panels"] if p["id"] == "google_quality")["platforms"] = ["Gogle"]
+        next(p for p in d["panels"] if p["id"] == "google_quality_dist")["platforms"] = ["Gogle"]
 
     with pytest.raises(ValueError, match="platform"):
         load_dashboard(_with(pack, mutate))

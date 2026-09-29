@@ -18,7 +18,7 @@ def test_parse_sse_skips_keepalives_and_needs_no_blank_lines():
 def test_reads_round_trip_through_the_real_app(dash_api):
     ac, _, _ = dash_api
     assert ac.dashboard()["date_max"] == "2024-01-30"
-    assert {p["id"] for p in ac.panels("overview", [*WINDOW, ("platform", "Google")])} >= {"kpis", "spend_trend"}
+    assert {p["id"] for p in ac.panels("overview", [*WINDOW, ("platform", "Google")])} >= {"kpis", "kpi_daily"}
     assert ac.filter_options("deep_dive", WINDOW)["platform"]["values"] == ["Facebook", "Google", "TikTok"]
     assert ac.pacing()["as_of"] == "2024-01-30"
 

@@ -52,14 +52,14 @@ def test_every_ads_panel_runs_cleanly_on_duckdb(deps, cfg, page, platform):
 
 
 def test_platform_specific_panels_follow_the_platform_selection(cfg):
-    google = next(p for p in cfg.panels if p.id == "google_quality")
+    google = next(p for p in cfg.panels if p.id == "google_quality_dist")
     assert panel_applies(google, _flt("Google"))
     assert not panel_applies(google, _flt())
     assert not panel_applies(google, _flt("Google", "TikTok"))
 
 
 def test_a_chart_naming_a_missing_column_fails_only_that_panel(deps, cfg):
-    trend = next(p for p in cfg.panels if p.id == "spend_trend")
+    trend = next(p for p in cfg.panels if p.id == "kpi_daily")
     bad = trend.model_copy(update={"chart": ChartSpec(chart_type="line", x="date", y="nope")})
     r = run_panel(deps, cfg, bad, FLT)
     assert r.error.startswith("chart:") and r.rows == []
@@ -194,18 +194,18 @@ def test_filter_options_cache_key_ignores_range_values(deps, cfg, monkeypatch):
 def test_a_failed_panel_does_not_stop_others_from_caching(deps, cfg, monkeypatch):
     """Final-review finding 3: page caching is per panel, so an always-failing panel is retried every load without
     evicting the panels next to it from the cache."""
-    trend = next(p for p in cfg.panels if p.id == "spend_trend")
+    trend = next(p for p in cfg.panels if p.id == "kpi_daily")
     bad = trend.model_copy(update={"chart": ChartSpec(chart_type="line", x="date", y="nope")})
-    local_cfg = cfg.model_copy(update={"panels": [bad if p.id == "spend_trend" else p for p in cfg.panels]})
+    local_cfg = cfg.model_copy(update={"panels": [bad if p.id == "kpi_daily" else p for p in cfg.panels]})
     calls = []
     real = panels.execute
     monkeypatch.setattr(panels, "execute", lambda *a, **k: calls.append(1) or real(*a, **k))
     cache = TtlCache(60)
-    run_page(deps, local_cfg, "overview", FLT, cache, ids=("kpis", "spend_trend"))
+    run_page(deps, local_cfg, "overview", FLT, cache, ids=("kpis", "kpi_daily"))
     first = len(calls)
-    results = run_page(deps, local_cfg, "overview", FLT, cache, ids=("kpis", "spend_trend"))
-    assert len(calls) == first + 1  # only spend_trend (still failing) re-ran; kpis served from cache
-    assert next(r for r in results if r.id == "spend_trend").error is not None
+    results = run_page(deps, local_cfg, "overview", FLT, cache, ids=("kpis", "kpi_daily"))
+    assert len(calls) == first + 1  # only kpi_daily (still failing) re-ran; kpis served from cache
+    assert next(r for r in results if r.id == "kpi_daily").error is not None
 
 
 def test_a_format_on_a_missing_column_fails_only_that_panel(deps, cfg):
@@ -228,3 +228,51 @@ def test_meta_returns_roles_and_colours(deps, cfg):
 def test_format_date_is_the_same_on_duckdb(deps):
     sql = deps.pack.render("SELECT FORMAT_DATE('%a', DATE '2024-01-01') AS d FROM {gold} LIMIT 1", "duckdb")
     assert execute(deps, sql).rows == [{"d": "Mon"}]
+
+
+def _numeric_columns(result):
+    return {c for r in result.rows for c, v in r.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+
+@pytest.mark.parametrize("page", ["overview", "deep_dive"])
+@pytest.mark.parametrize("platform", [(), ("Facebook",), ("Google",), ("TikTok",)])
+def test_every_numeric_column_has_a_format(eval_deps, cfg, page, platform):
+    """Spec 5: a missing format falls back to plain numbers, and this test flags it. eval_deps has pipeline rows."""
+    for r in run_page(eval_deps, cfg, page, _flt(*platform), TtlCache(0)):
+        assert _numeric_columns(r) <= set(r.formats), (r.id, _numeric_columns(r) - set(r.formats))
+
+
+def test_every_role_the_pages_lay_out_is_present(cfg):
+    roles = {page: {p.role for p in cfg.panels_for(page)} for page in ("overview", "deep_dive")}
+    assert roles["overview"] >= {"kpi", "kpi_series", "trend", "map", "compare", "funnel", "attention"}
+    assert roles["deep_dive"] >= {"kpi", "kpi_series", "markers", "attention", "details", "heatmap", "platform"}
+
+
+def _flagged_con(pack, rows):
+    """A private DuckDB with anomaly rows on real gold campaigns (the shared fixture must stay empty)."""
+    from adpilot.connectors import get_connector
+    from adpilot.core import schema
+    from adpilot.core.audit import MemorySink
+    from adpilot.core.tools import AgentDeps
+
+    con = get_connector("duckdb", pack)
+    camp = con.query("SELECT DISTINCT platform, campaign_id, campaign_name FROM fct_unified_marketing_performance "
+                     "WHERE platform = 'Google' ORDER BY campaign_id LIMIT 3")
+    values = []
+    for (day, sev, observed, usual), c in zip(rows, camp.itertuples(), strict=False):
+        values.append(f"('{day}', 'Google', '{c.campaign_id}', '{c.campaign_name}', {observed}, {usual}, 1.0, 5.0, 1, "
+                      f"'HIGH_CPA', 5.0, '{sev}', 'rolling_14d', 14, 'high', 20)")
+    con.execute_script("INSERT INTO fct_anomaly_flags VALUES " + ", ".join(values))
+    return AgentDeps(connector=con, pack=pack, schema_text=schema.summary(con, pack), audit=MemorySink()), camp
+
+
+def test_the_flag_rule_is_severe_or_critical_in_the_last_7_days_of_data(pack, cfg):
+    """date_max is 2024-01-30, so the anchor is 01-24..01-30 whatever window the viewer picked."""
+    deps, camp = _flagged_con(pack, [("2024-01-29", "CRITICAL", 90, 30),   # in: last 7 days, critical
+                                     ("2024-01-25", "MODERATE", 90, 30),   # out: moderate
+                                     ("2024-01-10", "SEVERE", 90, 30)])    # out: older than 7 days
+    viewer = Filters(date(2024, 1, 1), date(2024, 1, 15))  # the anchor ignores this window
+    r = next(x for x in run_page(deps, cfg, "overview", viewer, TtlCache(0)) if x.role == "attention")
+    assert r.error is None
+    assert [row["campaign_name"] for row in r.rows] == [camp.campaign_name.iloc[0]]
+    assert r.rows[0]["worst"] == "CRITICAL" and r.rows[0]["flagged_days"] == 1 and r.rows[0]["excess_cost"] > 0
