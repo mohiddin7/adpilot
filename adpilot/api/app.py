@@ -247,8 +247,8 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
                 )
                 events.put(("answer", answer_body(answer, trace_id).model_dump(mode="json")))
             except Exception as exc:  # ask() maps its own failures; anything reaching here is transport or threading
-                log.exception("stream run failed")
-                events.put(("error", {"kind": exc.__class__.__name__, "message": str(exc)[:200]}))
+                log.exception("stream run failed")  # the full text stays here; the client gets a fixed sentence
+                events.put(("error", {"kind": exc.__class__.__name__, "message": "The answer failed on the server. Try again."}))
             finally:
                 events.put(("done", {}))
                 flush_audit(sink)

@@ -36,41 +36,305 @@ _FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 _SUSPICIOUS = re.compile(
-    r"(INFORMATION_SCHEMA|__TABLES__|__SCHEMA__|@@version|pg_catalog|sqlite_master|duckdb_\w+\(|read_\w+\()",
+    r"(INFORMATION_SCHEMA|__TABLES__|__SCHEMA__|@@version|pg_catalog|sqlite_master|duckdb_\w+\s*\(|read_\w+\s*\()",
     re.IGNORECASE,
 )
-_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
-_LINE_COMMENT = re.compile(r"--[^\n]*")
-_FENCE = re.compile(r"^```(?:sql)?\s*|\s*```$", re.IGNORECASE)
-_TABLE_REF = re.compile(r"\b(?:FROM|JOIN)\s+[`\"]?([\w.\-]+)[`\"]?", re.IGNORECASE)
-_CTE_NAME = re.compile(r"\b(?:WITH|,)\s*([\w]+)\s+AS\s*\(", re.IGNORECASE)
-_LIMIT = re.compile(r"\bLIMIT\s+(\d+)\b", re.IGNORECASE)
+# SQL only (the question gate keeps _SUSPICIOUS: "query (" is English). Enumerated from DuckDB 1.5.5's
+# duckdb_functions(): anything that reads files, network, environment or configuration, runs nested SQL, has a side
+# effect or sleeps, called by name (quoted or not, any whitespace, method syntax too); and every catalog name
+# (pg_*, duckdb_*, pragma_*, sqlite_*, information_schema) as an identifier anywhere in code.
+_ENGINE = re.compile(
+    r"\b(?:information_schema|__tables__|__schema__|pg_\w*|duckdb_\w*|pragma_\w*|sqlite_\w*|"
+    r"current_(?:setting|query|catalog|database|schemas?|user|role)|session_user)\b|@@version|"
+    r"\b(?:read_\w+|glob|sniff_csv|parquet_\w+|query|query_table|getenv|getvariable|which_secret|\w+_scan|"
+    r"python_map_function|json_execute_serialized_sql|json_serialize_plan|json_(?:de)?serialize_sql|checkpoint|"
+    r"force_checkpoint|(?:en|dis)able_(?:logging|profiling)|truncate_duckdb_logs|write_log|in_search_path|"
+    r"has_\w+_privilege|txid_current|current_\w+_id|"
+    r"sleep|sleep_ms)[\"`]?\s*\(",  # a sleep holds _EXEC_LOCK for every caller; pg_sleep is caught by pg_\w*
+    re.IGNORECASE,
+)
+_FENCE = re.compile(r"^```(?:sql)?[ \t\r\n]*|[ \t\r\n]*```$", re.IGNORECASE)
+_WS = " \t\r\n"  # ASCII only: str.strip() would also drop the Unicode spaces _CODE_NON_ASCII refuses
+# Tokens of the "code" text (masked, quoted-identifier contents as _): a string, a (dotted) word, or one symbol.
+_TOKEN = re.compile(r"(?P<s>'[ ]*'|\"[ ]*\")|(?P<w>(?:\"_+\"|`_+`|\w+)(?:\.(?:\"_+\"|`_+`|\w+))*)|(?P<p>\S)")
+# A table name: dotted parts, each a bare word or a quoted part with no escapes (an escape is refused, not guessed).
+# DuckDB has no backtick identifiers (a backtick name is a syntax error there), accepted as the old check did.
+_NAME = {
+    "duckdb": re.compile(r'(?:[\w\-]+|"[^"]+"|`[\w.\-]+`)(?:\.(?:[\w\-]+|"[^"]+"|`[\w.\-]+`))*'),
+    "bigquery": re.compile(r"(?:[\w\-]+|`[^`\\]+`)(?:\.(?:[\w\-]+|`[^`\\]+`))*"),
+}
+# Reserved in both dialects, and each starts a comma list that is not a FROM list.
+_FROM_ENDS = {"SELECT", "GROUP", "ORDER", "WINDOW"}
+# The only words that may follow a table item (after an optional [AS] alias), besides "," ")" and the end. Anything
+# else is refused: DuckDB reads `FROM a: b` as table b under the alias a, and a new trick needs no new rule here.
+_AFTER_TABLE = {"JOIN", "NATURAL", "LEFT", "RIGHT", "FULL", "INNER", "CROSS", "SEMI", "ANTI", "OUTER", "ON", "USING",
+                "WHERE", "GROUP", "HAVING", "QUALIFY", "WINDOW", "ORDER", "LIMIT", "OFFSET", "UNION", "EXCEPT",
+                "INTERSECT", "SELECT"}  # SELECT: DuckDB's FROM-first `FROM t SELECT ...`
+# Read a table (or the catalog) with no FROM: TABLE t, (DESCRIBE t), (SUMMARIZE t), (SHOW TABLES), PIVOT_WIDER t ...
+_NO_FROM_READS = {"TABLE", "DESCRIBE", "SUMMARIZE", "SHOW", "EXPLAIN", "PIVOT_WIDER", "PIVOT_LONGER"}
+# Only a LIMIT that ends the statement caps the outermost query; one inside parentheses caps a subquery.
+_TRAILING_LIMIT = re.compile(r"\bLIMIT\s+(\d+)(?:\s+OFFSET\s+\d+)?\s*$", re.IGNORECASE)
+# Characters the engines may not agree on as line ends (DuckDB ends a -- comment at a lone \r, not at \v or
+# U+2028; GoogleSQL has no local oracle), so a comment boundary could differ. Never needed in a query.
+_AMBIGUOUS_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x85\u2028\u2029]|\r(?!\n)")
+# In code (not in strings, comments or quoted identifiers, where DuckDB keeps them as data): any non-ASCII
+# character Python does not call a word character. DuckDB 1.5.5's parser turns 18 such code points into ASCII
+# spaces before it scans (U+00A0, U+2000-U+200B, U+202F, U+205F, U+2060, U+3000, U+FEFF; its tokenize() does not
+# show this); others (U+1680, symbols) are whitespace or punctuation to Python but part of a name to DuckDB.
+_CODE_NON_ASCII = re.compile(r"[^\w\x00-\x7f]")
 
 
-def validate_sql(sql: str, allowed_tables: set[str], max_rows: int) -> str:
-    """Return cleaned SQL (fences stripped, LIMIT enforced) or raise AdPilotError(kind="SqlPolicy")."""
+def _refuse(why: str) -> AdPilotError:
+    return AdPilotError("SqlPolicy", f"{why} This SQL form is not supported.")
+
+
+def _close(sql: str, i: int, backslash: bool) -> int:
+    """Index of the quote that closes the quoted run opening at sql[i]. DuckDB doubles the quote to escape it;
+    GoogleSQL escapes with a backslash and refuses a raw newline inside a (non-triple) quote."""
+    q, j = sql[i], i + 1
+    while j < len(sql):
+        ch = sql[j]
+        if backslash and ch in "\r\n":
+            break
+        if backslash and ch == "\\" and sql[j + 1 : j + 2] not in "\r\n":  # at the very end the slice is "", also "in"
+            j += 2
+        elif ch == q and not backslash and sql[j + 1 : j + 2] == q:
+            j += 2
+        elif ch == q:
+            return j
+        else:
+            j += 1
+    raise _refuse("Unterminated or multi-line quoted text.")
+
+
+def _lex(sql: str, dialect: str) -> tuple[str, list[tuple[int, int]], list[tuple[int, int]]]:
+    """One left-to-right pass → (masked, string-content spans, quoted-identifier-content spans). Same length as
+    `sql`, so offsets map 1:1:
+    string contents become spaces (the quotes stay), comments become spaces, quoted identifiers stay as they are.
+    Any form outside the supported set raises SqlPolicy; an unknown dialect raises ValueError."""
+    if dialect == "duckdb":
+        strings, idents, bq = "'", '"', False
+    elif dialect == "bigquery":
+        strings, idents, bq = "'\"", "`", True
+    else:
+        raise ValueError(f"No SQL lexer for dialect {dialect!r}.")
+    if _AMBIGUOUS_CHARS.search(sql):
+        raise _refuse("Control characters are not allowed in SQL.")
+    out, spans, idents_at, i, n, after_string = list(sql), [], [], 0, len(sql), False
+    while i < n:
+        c = sql[i]
+        if sql.startswith("/*", i):
+            j = i + 2
+            while not sql.startswith("*/", j):
+                if j >= n:
+                    raise _refuse("Unterminated block comment.")
+                if sql.startswith("/*", j):  # DuckDB nests block comments, GoogleSQL does not
+                    raise _refuse("Nested block comments are not allowed.")
+                j += 1
+            out[i : j + 2] = " " * (j + 2 - i)
+            i = j + 2
+        elif sql.startswith("--", i) or (bq and c == "#"):
+            if bq and sql[i : i + 10].lower() == "#legacysql":
+                raise _refuse("Legacy SQL is not allowed.")
+            j = i
+            while j < n and sql[j] not in "\r\n":
+                j += 1
+            out[i:j] = " " * (j - i)
+            i = j
+        elif c in strings:
+            if after_string:  # 'a' 'b' / 'a'\n'b': DuckDB concatenates across a newline, GoogleSQL varies
+                raise _refuse("Adjacent string literals are not allowed.")
+            if i and (sql[i - 1].isalnum() or sql[i - 1] in "_&"):  # E'' x'' b'' N'' U&'' r'' rb'' ...
+                raise _refuse("Prefixed string literals are not allowed.")
+            if bq and sql[i + 1 : i + 3] == c * 2:
+                raise _refuse("Triple-quoted strings are not allowed.")
+            j = _close(sql, i, bq)
+            out[i + 1 : j] = " " * (j - i - 1)
+            spans.append((i + 1, j))
+            i, after_string = j + 1, True
+        elif c in idents:
+            if after_string and c == '"':  # 'a'"b": refused rather than trusted to split into literal + identifier
+                raise _refuse("A quote straight after a string literal is not allowed.")
+            j = _close(sql, i, bq)
+            if j == i + 1:  # both engines refuse a zero-length quoted identifier
+                raise _refuse("Empty quoted identifier.")
+            idents_at.append((i + 1, j))
+            i, after_string = j + 1, False
+        else:
+            if c == "$" and not bq:
+                raise _refuse("Dollar-quoted strings are not allowed.")
+            after_string = after_string and c.isspace()
+            i += 1
+    return "".join(out), spans, idents_at
+
+
+def mask_sql(sql: str, dialect: str) -> str:
+    """`sql` with string-literal contents and comments blanked to spaces, offsets unchanged (see _lex)."""
+    return _lex(sql, dialect)[0]
+
+
+def _tables(masked: str, code: str, dialect: str) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    """Every table the statement reads, as (name, offset), and the leading WITH's CTEs, as (name, visible_from).
+    Walks `code` (masked, quoted-identifier contents as _), so no quoted text can move the walk. A FROM/JOIN item
+    that is not a plain (dotted) table name or a parenthesised query is refused, never guessed at."""
+    toks = [(m.lastgroup, m.group().upper(), m.start()) for m in _TOKEN.finditer(code)]
+    refs: list[tuple[str, int]] = []
+    ctes: list[tuple[str, int]] = []
+
+    def word(i: int) -> str:
+        return toks[i][1] if 0 <= i < len(toks) else ""
+
+    def name(i: int) -> tuple[str, int]:  # the table name starting at toks[i] → (name, index of the next token)
+        s = toks[i][2]
+        m, c = _NAME[dialect].match(masked, s), _NAME[dialect].match(code, s)
+        after = code[m.end() : m.end() + 1] if m else ""
+        if not m or not c or m.end() != c.end() or after == "*" or not after.isascii():  # escapes, wildcards,
+            raise _refuse("This table name is not supported.")  # a name the engine would read on past \w
+        return re.sub(r'["`]', "", masked[s : m.end()]), next((k for k in range(i, len(toks)) if toks[k][2] >= m.end()), len(toks))
+
+    def group_end(i: int) -> int:  # toks[i] is "(": the index after its matching ")"
+        depth = 0
+        for j in range(i, len(toks)):
+            depth += (toks[j][1] == "(") - (toks[j][1] == ")")
+            if depth == 0:
+                return j + 1
+        raise _refuse("Unbalanced parentheses.")
+
+    def alias_word(j: int) -> bool:
+        return j < len(toks) and toks[j][0] == "w" and "." not in toks[j][1] and word(j) not in _AFTER_TABLE
+
+    def after(j: int) -> int:  # toks[j] follows a table item: [AS] alias, then only an allowlisted token
+        if word(j) == "AS" or alias_word(j):
+            j += word(j) == "AS"
+            if not alias_word(j):
+                raise _refuse("This alias is not supported.")
+            j += 1
+        if j < len(toks) and word(j) not in _AFTER_TABLE and word(j) not in (",", ")"):
+            raise _refuse(f"{toks[j][1]!r} after a table is not supported.")
+        return j
+
+    def item(i: int) -> int:  # one FROM/JOIN item starts at toks[i]: the index to walk on from
+        kind, t = toks[i][:2] if i < len(toks) else ("", "")
+        if kind == "s":
+            raise _refuse("A string in table position is a file path, never a table.")
+        if t == "(" and word(i + 1) in ("SELECT", "FROM", "WITH"):
+            after(group_end(i))
+            return i  # a subquery: the walk checks the FROM lists inside it
+        if kind != "w" and t != "`":
+            raise _refuse("This FROM item is not supported; name an allowed table or use a subquery.")
+        table, j = name(i)
+        if word(j) == "(":
+            raise _refuse("Table functions, UNNEST and LATERAL are not allowed in FROM.")
+        refs.append((table, toks[i][2]))
+        return after(j)
+
+    i = 0
+    if word(0) == "WITH":  # only a leading WITH names CTEs, each visible after its own body (not RECURSIVE)
+        i = 1
+        if word(1) == "RECURSIVE":
+            raise _refuse("WITH RECURSIVE is not allowed.")
+        while True:
+            if i >= len(toks) or toks[i][0] != "w" or "." in toks[i][1]:
+                raise _refuse("This WITH clause is not supported.")
+            cte, i = name(i)
+            if word(i) == "(":
+                i = group_end(i)
+            if word(i) != "AS":
+                raise _refuse("This WITH clause is not supported.")
+            i += 1 + (word(i + 1) == "NOT")
+            i += word(i) == "MATERIALIZED"
+            if word(i) != "(":
+                raise _refuse("This WITH clause is not supported.")
+            i = group_end(i)
+            ctes.append((cte, toks[i - 1][2]))
+            if word(i) != ",":
+                break
+            i += 1
+    if word(i) not in ("SELECT", "FROM", "("):
+        raise _refuse("Only SELECT queries are allowed.")
+
+    # A FROM that is not a table list: `x IS [NOT] DISTINCT FROM y`, and FROM directly inside EXTRACT/SUBSTRING/
+    # TRIM/OVERLAY(...), whose grammar takes expressions only, so any table read there is a nested (query), walked.
+    # Not "any group that does not start with SELECT": ((SELECT 1) UNION SELECT * FROM t) starts with "(".
+    k, depth, open_from, groups = 0, 0, set(), []
+    while k < len(toks):
+        t = toks[k][1]
+        if t == "FROM" and (
+            (groups and groups[-1])
+            or (word(k - 1) == "DISTINCT" and (word(k - 2) == "IS" or (word(k - 2) == "NOT" and word(k - 3) == "IS")))
+        ):
+            k += 1
+            continue
+        if t in _NO_FROM_READS or (t == "DESC" and word(k - 1) in ("(", "")) or (
+            t in ("PIVOT", "UNPIVOT") and k + 1 < len(toks) and toks[k + 1][0] == "w" and word(k + 1) not in ("INCLUDE", "EXCLUDE")
+        ):
+            raise _refuse(f"{t} is not allowed; read tables with SELECT ... FROM.")
+        if t in ("(", "[", "{"):
+            depth += 1
+            groups.append(t == "(" and word(k - 1) in ("EXTRACT", "SUBSTRING", "TRIM", "OVERLAY"))
+        elif t in (")", "]", "}"):
+            open_from.discard(depth)
+            depth -= 1
+            groups = groups[:-1]
+            if depth < 0:
+                raise _refuse("Unbalanced parentheses.")
+        elif t in ("FROM", "JOIN") or (t == "," and depth in open_from):
+            open_from.add(depth)
+            k = item(k + 1)
+            continue
+        elif t in _FROM_ENDS:
+            open_from.discard(depth)
+        k += 1
+    return refs, ctes
+
+
+def validate_sql(sql: str, allowed_tables: set[str], max_rows: int, *, dialect: str) -> str:
+    """Return the SQL to run (fences stripped, trailing ; removed, LIMIT enforced on the outermost query) or raise
+    AdPilotError(kind="SqlPolicy"). Every structural check reads the masked text, so a quoted value is data; the
+    returned SQL is the original text, literal values never altered."""
     if not sql or not sql.strip():
         raise AdPilotError("SqlPolicy", "Empty SQL.")
     if len(sql) > MAX_SQL_LENGTH:
         raise AdPilotError("SqlPolicy", f"SQL is too long ({len(sql)} chars; max {MAX_SQL_LENGTH}).")
 
-    sql = _FENCE.sub("", sql.strip()).strip().rstrip(";").strip()
-    bare = _LINE_COMMENT.sub(" ", _BLOCK_COMMENT.sub(" ", sql))
+    sql = _FENCE.sub("", sql.strip(_WS)).strip(_WS)
+    masked, spans, idents = _lex(sql, dialect)
+    end = len(masked.rstrip(_WS)) - 1
+    if end >= 0 and masked[end] == ";":  # the one trailing ; goes, in both texts, so offsets stay 1:1
+        sql, masked = sql[:end] + " " + sql[end + 1 :], masked[:end] + " " + masked[end + 1 :]
+    sql = sql.rstrip(_WS)
+    masked = masked[: len(sql)]
+    code = list(masked)  # masked, quoted-identifier contents as _: only code is left
+    for s, e in idents:
+        code[s:e] = "_" * (e - s)
+    code = "".join(code)
+    if _CODE_NON_ASCII.search(code):
+        raise _refuse("Non-ASCII spaces and symbols are not allowed outside quotes.")
 
-    if _FORBIDDEN.search(bare) or _FORBIDDEN.search(sql):
+    # The old raw-text _FORBIDDEN scan existed only because regex comment stripping could be fooled (a quote in
+    # a comment, a -- in a string); the single lexer pass removes that reason. Comments still count for this
+    # one scan (a write keyword in a comment is refused, as before); only string contents are data.
+    no_strings = list(sql)
+    for s, e in spans:
+        no_strings[s:e] = " " * (e - s)
+    if _FORBIDDEN.search("".join(no_strings)):
         raise AdPilotError("SqlPolicy", "Only read-only SELECT statements are allowed.")
-    if _SUSPICIOUS.search(bare):
+    if _SUSPICIOUS.search(masked) or _ENGINE.search(masked):
         raise AdPilotError("SqlPolicy", "Metadata and file-reading functions are not allowed.")
+    if ";" in masked:
+        raise AdPilotError("SqlPolicy", "Exactly one statement is allowed.")
 
-    statements = [s for s in sqlparse.parse(bare) if str(s).strip()]
+    statements = [s for s in sqlparse.parse(masked) if str(s).strip()]
     if len(statements) != 1:
         raise AdPilotError("SqlPolicy", f"Exactly one statement is allowed (got {len(statements)}).")
     stmt_type = statements[0].get_type()
     if stmt_type not in ("SELECT", "UNKNOWN"):  # sqlparse reports WITH ... SELECT as UNKNOWN
         raise AdPilotError("SqlPolicy", f"Statement type {stmt_type} is not allowed; only SELECT.")
 
-    ctes = {m.lower() for m in _CTE_NAME.findall(bare)}
-    referenced = {t for t in _TABLE_REF.findall(bare) if t.lower() not in ctes}
+    refs, ctes = _tables(masked, code, dialect)
+    # A name is a CTE only after that CTE's body ends (CTE names are case-insensitive in both engines; a dotted name
+    # is never a CTE); anywhere else it is a real table.
+    referenced = {t for t, at in refs if not any(t.lower() == c.lower() and at >= seen for c, seen in ctes)}
     if not referenced:
         raise AdPilotError("SqlPolicy", "No table reference found.", hint=f"Allowed tables: {sorted(allowed_tables)}")
     unknown = sorted(t for t in referenced if t not in allowed_tables)
@@ -81,11 +345,11 @@ def validate_sql(sql: str, allowed_tables: set[str], max_rows: int) -> str:
             hint=f"Allowed tables: {sorted(allowed_tables)}",
         )
 
-    m = _LIMIT.search(sql)
-    if not m:
-        return f"{sql} LIMIT {max_rows}"
-    if int(m.group(1)) > max_rows:
-        return _LIMIT.sub(f"LIMIT {max_rows}", sql)
+    m = _TRAILING_LIMIT.search(masked)
+    if not m:  # a new line when the SQL ends in a comment, or the LIMIT would be commented out
+        return sql + ("\n" if sql[len(masked.rstrip(_WS)) :].strip(_WS) else " ") + f"LIMIT {max_rows}"
+    if int(m.group(1)) > max_rows:  # the match span holds in the original: same length, and the digits are code
+        return sql[: m.start(1)] + str(max_rows) + sql[m.end(1) :]
     return sql
 
 

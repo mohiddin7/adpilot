@@ -180,7 +180,7 @@ def run(
         return AgentDeps(connector=RecordingSource(connector), pack=pack, schema_text=schema_text, audit=sink)
 
     family_of = {c.name: c.family for c in cases}
-    evaluators = [Factual(connector, pack), Refuses(), SafeSql(pack), Trajectory(), CalibratedJudge(judge_model, connector, pack, audit=sink, run_id=run_id, agent_models=agent_models)]
+    evaluators = [Factual(connector, pack), Refuses(), SafeSql(pack, connector.dialect), Trajectory(), CalibratedJudge(judge_model, connector, pack, audit=sink, run_id=run_id, agent_models=agent_models)]
     task = make_task(agent, deps_factory, model_for, run_id=run_id, family_of=family_of)
 
     sample = [c for c in cases if c.consistency]

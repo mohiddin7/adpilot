@@ -165,6 +165,17 @@ def test_rule_based_answer_when_all_models_fail(agent, deps):
     assert answer.chart and answer.chart.chart_type == "bar"
 
 
+def test_an_unexpected_error_is_logged_and_the_answer_names_only_its_type(agent, deps, caplog):
+    def boom(messages, info):
+        raise RuntimeError("403 on some-project.hidden_dataset.table")
+
+    answer, _, _ = ask(agent, deps, "What was spend by platform?", model=FunctionModel(boom))
+    shown = answer.answer_md + " ".join(answer.caveats)
+    assert answer.caveats[0].startswith("ModelUnavailable") and "RuntimeError" in answer.caveats[0]
+    assert "hidden_dataset" not in shown
+    assert "hidden_dataset" in caplog.text
+
+
 def test_no_match_when_all_models_fail(agent, deps):
     chain = FallbackModel(FunctionModel(rate_limited, model_name="a"), FunctionModel(rate_limited, model_name="b"))
     answer, _, _ = ask(agent, deps, "Which campaign names contain Q1?", model=chain)

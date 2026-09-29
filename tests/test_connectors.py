@@ -48,6 +48,17 @@ def test_list_tables_and_columns(source):
     assert source.columns("t") == [("platform", "VARCHAR"), ("spend", "DOUBLE")]
 
 
+def test_no_file_is_readable_after_init(source, tmp_path):
+    """Defence in depth behind validate_sql: straight at the connector, no query reads a file or re-opens access."""
+    (tmp_path / "other.csv").write_text("secret\n42\n")
+    path = (tmp_path / "other.csv").as_posix()
+    for sql in [f"SELECT * FROM '{path}'", f"SELECT * FROM read_csv('{path}')", f"SELECT * FROM read_text('{path}')",
+                "SET enable_external_access = true", "SET lock_configuration = false"]:
+        with pytest.raises(AdPilotError):
+            source.query(sql)
+    assert list(source.query("SELECT platform FROM t ORDER BY 1")["platform"]) == ["A", "B"]  # loaded at init
+
+
 def test_bq_error_mapping():
     from google.api_core import exceptions as gexc
 
