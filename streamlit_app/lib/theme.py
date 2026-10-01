@@ -1,8 +1,9 @@
 """AdPilot colours, read from assets/palette.json (OKLCH-derived, WCAG-checked light values; see that file).
 
-Status colours mean a status. Chart series use brand, forecast and audited first — never critical or open — so no
-platform's line reads as an alarm. Colour is never the only signal (palette.json constraints): flagged rows also carry
-a text label."""
+Status colours mean a status. Platform series use brand, forecast and audited first — never critical or open — so no
+platform's line reads as an alarm. Series that are not platforms (OTHER) and severity (SEVERITY) take palette values no
+platform has, so nothing but a platform ever wears a platform's colour. Colour is never the only signal (palette.json
+constraints): flagged rows also carry a text label, and severity markers a shape."""
 
 from __future__ import annotations
 
@@ -11,9 +12,15 @@ from pathlib import Path
 
 PALETTE = json.loads((Path(__file__).resolve().parents[1] / "assets" / "palette.json").read_text())
 COLORS = {name: spec["light"] for name, spec in PALETTE["colors"].items()}
+_DARK = {name: spec["dark"] for name, spec in PALETTE["colors"].items()}  # the brighter tier: 3.6:1 on the light surface
 GROUNDS = PALETTE["grounds"]["light"]
 SERIES = [COLORS["brand"], COLORS["forecast"], COLORS["audited"], COLORS["resolved"]]
-SEVERITY = {"MODERATE": COLORS["open"], "SEVERE": COLORS["forecast"], "CRITICAL": COLORS["critical"]}
+# Warm and ordered: amber, orange, deep red. No platform has any of them.
+SEVERITY = {"MODERATE": _DARK["open"], "SEVERE": _DARK["critical"], "CRITICAL": COLORS["critical"]}
+# ponytail: the palette has four values that are neither a platform's nor a red, so a fifth non-platform series
+# repeats the first (as SERIES did); add a palette colour when a chart needs five. The fourth is MODERATE's amber,
+# which never shares a chart with severity markers.
+OTHER = [COLORS["open"], _DARK["resolved"], COLORS["resolved"], _DARK["open"]]
 SYMBOLS = {"MODERATE": "circle", "SEVERE": "diamond", "CRITICAL": "x"}  # colour is never the only signal
 GRID = "#ebe5dc"
 MUTED = "#8c8177"

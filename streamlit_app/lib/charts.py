@@ -9,12 +9,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from .formatters import fmt, fmt_currency, label
-from .theme import COLORS, GRID, GROUNDS, MUTED, SERIES, SEVERITY, SYMBOLS
+from .theme import COLORS, GRID, GROUNDS, MUTED, OTHER, SERIES, SEVERITY, SYMBOLS
 
 HEIGHT = 320
 AXIS = {"currency": ("$,.0f", "$,.2f", ""), "percent": (".1%", ".2%", ""), "multiple": (".1f", ".2f", "x"),
         "number": (",.0f", ",.0f", "")}
 WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+UNTITLED_X = {"date", "name", "period", "series", "measure", "week", "plan"}  # category holders: the ticks say it all
 # x = spend, y = cost per acquisition: bottom is cheap, right is big.
 QUADRANTS = (("scale", 0.01, 0.02, "left", "bottom"), ("watch", 0.99, 0.02, "right", "bottom"),
              ("fix", 0.01, 0.98, "left", "top"), ("cut", 0.99, 0.98, "right", "top"))
@@ -24,8 +25,8 @@ def style(fig: go.Figure, formats: dict | None = None, x: str | None = None, y: 
     fig.update_layout(template="plotly_white", height=HEIGHT, margin={"l": 8, "r": 8, "t": 8, "b": 8},
                       paper_bgcolor=GROUNDS["surface"], plot_bgcolor=GROUNDS["surface"],
                       font={"family": "Inter, system-ui, sans-serif", "size": 12}, legend_title_text="",
-                      legend={"orientation": "h", "y": -0.18})
-    fig.update_xaxes(gridcolor=GRID, title_text=label(x) if x and x != "date" else "")
+                      legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0})  # above: clear of the x title
+    fig.update_xaxes(gridcolor=GRID, title_text=label(x) if x and x not in UNTITLED_X else "")
     fig.update_yaxes(gridcolor=GRID, title_text=label(y) if y else "")
     for update, column in ((fig.update_xaxes, x), (fig.update_yaxes, y)):
         kind = (formats or {}).get(column)
@@ -35,15 +36,20 @@ def style(fig: go.Figure, formats: dict | None = None, x: str | None = None, y: 
     return fig
 
 
-def _colour(df: pd.DataFrame, column: str | None, colors: dict | None) -> dict:
-    """Platform (or severity) colours when every value has one; otherwise the brand series. Never by position."""
-    if column and colors and set(df[column].dropna().astype(str)) <= set(colors):
+def _colour(df: pd.DataFrame, column: str | None, colors: dict | None, single: str | None) -> dict:
+    """Platform (or severity) colours when every value has one. Any other set of series gets OTHER, which no platform
+    wears. One series alone is `single` (the one platform in view) or the brand."""
+    if not column:
+        return {"color_discrete_sequence": [single] if single else SERIES}
+    if colors and set(df[column].dropna().astype(str)) <= set(colors):
         return {"color_discrete_map": colors}
-    return {"color_discrete_sequence": SERIES}
+    return {"color_discrete_sequence": OTHER}
 
 
-def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, colors: dict | None = None) -> go.Figure | None:
-    """None when there is nothing to draw; the caller shows the panel's note instead."""
+def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, colors: dict | None = None,
+                 single: str | None = None) -> go.Figure | None:
+    """None when there is nothing to draw; the caller shows the panel's note instead. `single` is the colour of the
+    one platform in view, for charts with a single series."""
     if not rows:
         return None
     df = pd.DataFrame(rows)
@@ -54,23 +60,23 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
     color = chart.get("color") if chart.get("color") in df.columns else None
     hover = next((c for c in ("sub_group_name", "campaign_name") if c in df.columns), None)
     if kind == "pie":
-        fig = px.pie(df, names=x, values=y, color=x, **_colour(df, x, colors))
+        fig = px.pie(df, names=x, values=y, color=x, **_colour(df, x, colors, single))
     elif kind == "bar":
-        fig = px.bar(df, x=x, y=y, color=color, barmode="group", **_colour(df, color, colors))
+        fig = px.bar(df, x=x, y=y, color=color, barmode="group", **_colour(df, color, colors, single))
     elif kind == "bar_h":
-        fig = px.bar(df, x=y, y=x, color=color, orientation="h", **_colour(df, color, colors))
+        fig = px.bar(df, x=y, y=x, color=color, orientation="h", **_colour(df, color, colors, single))
         fig.update_yaxes(autorange="reversed")
         return style(fig, formats, x=y)
     elif kind == "line":
-        fig = px.line(df, x=x, y=y, color=color, markers=True, **_colour(df, color, colors))
+        fig = px.line(df, x=x, y=y, color=color, markers=True, **_colour(df, color, colors, single))
     elif kind == "area":
-        fig = px.area(df, x=x, y=y, color=color, **_colour(df, color, colors))
+        fig = px.area(df, x=x, y=y, color=color, **_colour(df, color, colors, single))
     elif kind in ("scatter", "bubble"):
         fig = px.scatter(df, x=x, y=y, color=color, size=size if kind == "bubble" else None, size_max=40,
-                         hover_name=hover, **_colour(df, color, colors))
+                         hover_name=hover, **_colour(df, color, colors, single))
     elif kind == "funnel":
-        fig = go.Figure(go.Funnel(y=df[x], x=df[y], textinfo="value+percent previous",
-                                  marker={"color": COLORS["brand"]}))
+        fig = go.Figure(go.Funnel(y=df[x], x=df[y], text=[fmt(v, (formats or {}).get(y)) for v in df[y]],
+                                  textinfo="text+percent previous", marker={"color": single or COLORS["brand"]}))
         return style(fig)
     elif kind == "heatmap":
         grid = df.pivot_table(index=y, columns=x, values=z, aggfunc="sum")
@@ -78,7 +84,7 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
             grid = grid[[d for d in WEEK if d in grid.columns]]
         tick, hover, suffix = AXIS.get((formats or {}).get(z), ("", "", ""))
         fig = go.Figure(go.Heatmap(z=grid.values, x=list(grid.columns), y=list(grid.index),
-                                   colorscale=[[0, GROUNDS["bg"]], [1, COLORS["brand"]]],
+                                   colorscale=[[0, GROUNDS["bg"]], [1, single or COLORS["brand"]]],
                                    colorbar={"tickformat": tick, "ticksuffix": suffix},
                                    hovertemplate=f"%{{y}} · %{{x}}: %{{z{':' + hover if hover else ''}}}{suffix}"
                                                  "<extra></extra>"))

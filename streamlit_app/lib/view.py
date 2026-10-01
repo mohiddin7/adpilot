@@ -177,7 +177,7 @@ def kpi_strip(results: list[dict], prior: dict[str, dict]) -> None:
 
 
 def trend_card(p: dict | None, colors: dict, prior: dict[str, dict], metrics: tuple[str, ...], key: str,
-               shift_days: int, markers: dict | None = None) -> None:
+               shift_days: int, markers: dict | None = None, single: str | None = None) -> None:
     if p is None:
         return
     with st.container(border=True):
@@ -186,7 +186,7 @@ def trend_card(p: dict | None, colors: dict, prior: dict[str, dict], metrics: tu
             return
         options = [c for c in metrics if c in p["columns"]]
         y = st.selectbox("Metric", options, format_func=label, key=key) if len(options) > 1 else options[0]
-        fig = build_figure({**p["chart"], "y": y}, p["rows"], p["formats"], colors)
+        fig = build_figure({**p["chart"], "y": y}, p["rows"], p["formats"], colors, single)
         if fig is None:
             return
         pp = prior.get(p["id"])
@@ -197,7 +197,9 @@ def trend_card(p: dict | None, colors: dict, prior: dict[str, dict], metrics: tu
         st.plotly_chart(fig, key=f"fig_{key}")
 
 
-def chart_card(p: dict | None, colors: dict, key: str | None = None, pick_z: bool = False) -> None:
+def chart_card(p: dict | None, colors: dict, key: str | None = None, pick_z: bool = False,
+               single: str | None = None) -> None:
+    """`single`: the colour of the one platform in view, for a chart with a single series."""
     if p is None:
         return
     with st.container(border=True):
@@ -208,7 +210,7 @@ def chart_card(p: dict | None, colors: dict, key: str | None = None, pick_z: boo
         if pick_z:
             zs = [c for c in p["columns"] if c in p["formats"] and c not in (chart["x"], chart["y"])]
             chart["z"] = st.selectbox("Metric", zs, format_func=label, key=f"z_{p['id']}") if len(zs) > 1 else chart["z"]
-        fig = build_figure(chart, p["rows"], p["formats"], colors)
+        fig = build_figure(chart, p["rows"], p["formats"], colors, single)
         if fig is not None:
             st.plotly_chart(fig, key=key or f"fig_{p['id']}")
         if p["truncated"]:

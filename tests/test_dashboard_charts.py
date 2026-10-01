@@ -1,14 +1,20 @@
 """Charts from API chart specs, in AdPilot colours."""
 
+from pathlib import Path
+
 import pytest
+import yaml
 from lib.charts import add_markers, add_prior, build_figure, pacing_bullets
 from lib.formatters import fmt, label
-from lib.theme import COLORS, SERIES, SEVERITY, platform_colors
+from lib.theme import COLORS, OTHER, PALETTE, SERIES, SEVERITY, SYMBOLS, platform_colors
 
 ROWS = [{"platform": "Google", "spend": 1.0, "cpa": 2.0, "conversions": 3.0, "weekday": "Mon"},
         {"platform": "TikTok", "spend": 2.0, "cpa": 4.0, "conversions": 1.0, "weekday": "Tue"}]
 EXTRA = {"bubble": {"size": "conversions"}, "heatmap": {"x": "weekday", "y": "platform", "z": "spend"}}
 COLORS_BY_PLATFORM = platform_colors({"Facebook": "brand", "Google": "forecast", "TikTok": "audited"})
+PACK = yaml.safe_load((Path(__file__).resolve().parents[1] / "packs" / "ads" / "pack.yaml").read_text())
+PLATFORM_HEX = set(platform_colors(PACK["dashboard"]["colors"]).values())  # what the pack really assigns
+PALETTE_HUE = {spec[tier]: spec["hue"] for spec in PALETTE["colors"].values() for tier in ("light", "dark")}
 
 
 @pytest.mark.parametrize("kind", ["bar", "line", "scatter", "pie", "area", "bubble", "funnel", "heatmap", "bar_h"])
@@ -94,3 +100,67 @@ def test_a_heatmap_hover_and_colour_bar_follow_the_z_format():
     fig = build_figure({"chart_type": "heatmap", "x": "weekday", "y": "platform", "z": "spend"}, ROWS,
                        {"spend": "currency"})
     assert "$" in fig.data[0].hovertemplate and fig.data[0].colorbar.tickformat.startswith("$")
+
+
+def test_a_single_platform_view_draws_single_series_in_that_platforms_colour():
+    """Live pass, finding 2: brand red is Facebook's colour, so Google's own charts must not be red."""
+    google = COLORS_BY_PLATFORM["Google"]
+    line = build_figure({"chart_type": "line", "x": "weekday", "y": "cpa"}, ROWS, None, COLORS_BY_PLATFORM, single=google)
+    bar = build_figure({"chart_type": "bar", "x": "weekday", "y": "spend"}, ROWS, None, COLORS_BY_PLATFORM, single=google)
+    funnel = build_figure({"chart_type": "funnel", "x": "weekday", "y": "spend"}, ROWS, None, COLORS_BY_PLATFORM, single=google)
+    assert line.data[0].line.color == bar.data[0].marker.color == funnel.data[0].marker.color == google
+    default = build_figure({"chart_type": "line", "x": "weekday", "y": "cpa"}, ROWS, None, COLORS_BY_PLATFORM)
+    assert default.data[0].line.color == SERIES[0]  # "All": the default stays
+
+
+def test_severity_is_a_warm_ordered_scale_and_never_a_platform_colour():
+    """Live pass, finding 3: Severe was blue, which is Google."""
+    scale = [SEVERITY[s] for s in ("MODERATE", "SEVERE", "CRITICAL")]
+    assert len(set(scale)) == 3 and set(scale) <= set(PALETTE_HUE) and not set(scale) & PLATFORM_HEX
+    assert scale[-1] == COLORS["critical"]
+    hues = [PALETTE_HUE[c] for c in scale]
+    assert hues == sorted(hues, reverse=True) and max(hues) <= 90  # yellow toward red, nothing cool
+    assert len({SYMBOLS[s] for s in SEVERITY}) == 3  # colour is never the only signal
+
+
+@pytest.mark.parametrize("colors", [COLORS_BY_PLATFORM, None])
+@pytest.mark.parametrize("column,values", [("plan", ["current", "recommended"]), ("week", ["last week", "this week"]),
+                                           ("measure", ["Share of spend", "Share of sales"]),
+                                           ("series", ["spent", "budget pace"])])
+def test_series_that_are_not_platforms_never_wear_a_platform_colour(column, values, colors):
+    """Live pass, finding 4: red and blue read as Facebook and Google."""
+    rows = [{"platform": p, column: v, "spend": 1.0} for p in ("Facebook", "Google") for v in values]
+    fig = build_figure({"chart_type": "bar", "x": "platform", "y": "spend", "color": column}, rows, None, colors)
+    used = [t.marker.color for t in fig.data]
+    assert len(set(used)) == 2 and used == OTHER[:2]
+    assert len(set(OTHER)) == len(OTHER) and set(OTHER) <= set(PALETTE_HUE) and not set(OTHER) & PLATFORM_HEX
+    assert not {SEVERITY["SEVERE"], SEVERITY["CRITICAL"]} & set(OTHER)  # and never an alarm red
+
+
+def test_funnel_numbers_use_the_apps_format_and_keep_the_step_rates():
+    """Live pass, finding 6: the funnel said 31.05583M, 584.544k, 13.014k."""
+    rows = [{"stage": "1. Impressions", "value": 31055830}, {"stage": "2. Clicks", "value": 584544},
+            {"stage": "3. Conversions", "value": 13014}]
+    trace = build_figure({"chart_type": "funnel", "x": "stage", "y": "value"}, rows, {"value": "number"}).data[0]
+    assert list(trace.text) == ["31.1M", "584.5K", "13.0K"]
+    assert trace.textinfo == "text+percent previous"
+
+
+@pytest.mark.parametrize("x", ["name", "period", "series", "measure", "week", "plan", "date"])
+def test_a_category_holder_gets_no_x_axis_title(x):
+    """Live pass, finding 7: "Name" and "Period" under the bars say nothing."""
+    fig = build_figure({"chart_type": "bar", "x": x, "y": "cpa"}, [{x: "a", "cpa": 1.0}, {x: "b", "cpa": 2.0}], {"cpa": "currency"})
+    assert not fig.layout.xaxis.title.text and fig.layout.yaxis.title.text == "Cost per acquisition"
+
+
+def test_every_evidence_chart_axis_reads_as_a_metric():
+    assert [label(c) for c in ("cpa", "spend", "share", "platform")] == ["Cost per acquisition", "Spend", "Share", "Platform"]
+    fig = build_figure({"chart_type": "bar", "x": "platform", "y": "share", "color": "measure"},
+                       [{"platform": "Google", "measure": "Share of spend", "share": 0.6}], {"share": "percent"})
+    assert fig.layout.xaxis.title.text == "Platform" and fig.layout.yaxis.title.text == "Share"
+
+
+def test_the_legend_sits_above_the_plot_clear_of_the_x_axis_title():
+    """Live pass, finding 5: the legend sat on the "Platform" axis title. Pixels are checked by screenshot."""
+    fig = build_figure({"chart_type": "bar", "x": "platform", "y": "spend", "color": "weekday"}, ROWS)
+    assert fig.layout.legend.y >= 1 and fig.layout.legend.yanchor == "bottom"

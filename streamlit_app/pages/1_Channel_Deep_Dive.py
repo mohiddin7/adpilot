@@ -18,6 +18,7 @@ if segment:
     platform = st.segmented_control("Platform", ["All", *segment["values"]], default="All", required=True,
                                      key="dd_platform") or "All"
 fixed = {} if platform == "All" else {"platform": [platform]}
+single = colors.get(platform)  # one platform in view: its single-series charts wear its colour; None for "All"
 
 with st.expander("Filters", expanded=True):
     left, right = st.columns([1, 3])
@@ -39,7 +40,7 @@ details = view.by_role(results, "details")  # campaigns, then ad sets (pack orde
 
 view.kpi_strip(results, prior)
 view.trend_card(view.one(results, "kpi_series"), colors, prior,
-                ("spend", "conversions", "cpa", "ctr", "cpc", "cpm", "roas_google"), "dd_trend", days, markers)
+                ("spend", "conversions", "cpa", "ctr", "cpc", "cpm", "roas_google"), "dd_trend", days, markers, single)
 
 left, right = st.columns(2)
 with left:
@@ -47,13 +48,13 @@ with left:
 with right:
     view.efficiency_map(details, colors)
 
-view.chart_card(view.one(results, "heatmap"), colors, pick_z=True)
+view.chart_card(view.one(results, "heatmap"), colors, pick_z=True, single=single)
 
 own = view.by_role(results, "platform")
 for i in range(0, len(own), 2):
     for col, p in zip(st.columns(2), own[i : i + 2], strict=False):
         with col:
-            view.chart_card(p, colors)
+            view.chart_card(p, colors, single=single)
 
 view.timeline(markers)
 

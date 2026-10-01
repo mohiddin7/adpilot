@@ -1,5 +1,6 @@
 """Every page, run headless with streamlit.testing AppTest against the real API app (DuckDB, no model)."""
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -412,3 +413,30 @@ def test_the_comparison_fetch_asks_only_for_panels_a_page_overlays(monkeypatch):
                                  {"id": "t", "role": "trend"}]}}
     view.prior_panels("overview", m, [], date(2024, 1, 8), date(2024, 1, 14))
     assert asked == ["k", "s"]
+
+
+def _figures(at) -> dict:
+    """The page's Plotly figures by their st.plotly_chart key."""
+    return {c.proto.id.split("-", 2)[-1]: json.loads(c.proto.spec) for c in at.get("plotly_chart")}
+
+
+def test_one_platform_draws_its_own_charts_in_its_colour(dash_api):
+    """Live pass, finding 2."""
+    from lib.theme import COLORS
+
+    figs = _figures(run("pages/1_Channel_Deep_Dive.py", dd_platform="Google"))
+    google = COLORS["forecast"]  # the pack: Google = forecast
+    assert figs["fig_dd_trend"]["data"][0]["line"]["color"] == google
+    assert figs["fig_google_quality_dist"]["data"][0]["marker"]["color"] == google
+    assert figs["fig_google_impression_share"]["data"][0]["line"]["color"] == google
+    assert figs["fig_leaderboard"]["data"][0]["marker"]["color"] == google
+    everyone = _figures(run("pages/1_Channel_Deep_Dive.py", dd_platform="All"))
+    assert everyone["fig_dd_trend"]["data"][0]["line"]["color"] == COLORS["brand"]  # "All" keeps the default
+
+
+def test_the_overviews_comparisons_are_not_in_platform_colours(dash_api):
+    """Live pass, finding 4: share of spend vs share of conversions drew in Facebook red and Google blue."""
+    from lib.theme import OTHER
+
+    figs = _figures(run("Home.py"))
+    assert [t["marker"]["color"] for t in figs["fig_mix"]["data"]] == OTHER[:2]
