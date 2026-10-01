@@ -31,7 +31,7 @@ def eager(eval_deps):
     return dataclasses.replace(eval_deps, pack=dataclasses.replace(eval_deps.pack, raw=raw))
 
 
-def test_cards_are_ranked_by_stake_capped_and_chartable(eager, cfg):
+def test_cards_put_losses_first_one_per_campaign_capped_and_chartable(eager, cfg):
     out = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))
     cards = out["cards"]
     assert 1 <= len(cards) <= insights.MAX_CARDS and out["writer"] == "templates"
@@ -148,15 +148,19 @@ def _outlier(cid, stake, platform="Google"):
     return _item(f"outlier:{platform}:{cid}", stake, platform=platform, campaign_id=cid, cpa=20.0, account=10.0)
 
 
-def _mover(cid, metric, stake, platform="Google"):
+def _mover(cid, metric, stake, platform="Google", before=10.0, after=20.0):
     return _item(f"mover:{platform}:{cid}:{metric}", stake, platform=platform, campaign_id=cid, metric=metric,
-                 before=10.0, after=20.0)
+                 before=before, after=after)
+
+
+def _anomaly(cid, kind, stake, platform="Google"):
+    return _item(f"anomaly:{platform}:{cid}:{kind}", stake, platform=platform, campaign_id=cid, kind=kind)
 
 
 def test_each_kind_says_whether_its_stake_is_money_lost(eager, cfg, monkeypatch):
     """Live pass, finding 9: a change in spend and an amount to reallocate are not losses."""
     _only(monkeypatch, [
-        _item("cost:Google", 8, platform="Google"), _item("anomaly:Google:a1:high", 7, platform="Google", campaign_id="a1"),
+        _item("cost:Google", 8, platform="Google"), _anomaly("a1", "high", 7),
         _item("pace:Google:2024-01", 6, platform="Google"), _outlier("o1", 5), _mover("m1", "cpa", 4),
         _mover("m2", "spend", 3), _item("move:TikTok>Facebook", 2), _item("mix:TikTok", 1, platform="TikTok")])
     cards = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))["cards"]
@@ -166,6 +170,28 @@ def test_each_kind_says_whether_its_stake_is_money_lost(eager, cfg, monkeypatch)
         "mover:Google:m1:cpa": (True, "at stake"), "mover:Google:m2:spend": (False, "change in spend"),
         "move:TikTok>Facebook": (False, "to reallocate"), "mix:TikTok": (False, "to reallocate")}
     assert all(c["also"] == [] for c in cards)
+
+
+def test_an_improvement_is_an_opportunity_not_a_loss(eager, cfg, monkeypatch):
+    """Review R2: a cost per sale that fell, and a day cheaper than usual, are titled "Consider more budget for …"."""
+    _only(monkeypatch, [_mover("m1", "cpa", 900, before=20.0, after=10.0), _anomaly("a1", "low", 800),
+                        _anomaly("a2", "tracking", 70), _anomaly("a3", "double", 60), _outlier("o1", 50)])
+    out = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))
+    assert {c["id"]: (c["loss"], c["stake_label"]) for c in out["cards"]} == {
+        "mover:Google:m1:cpa": (False, "opportunity"), "anomaly:Google:a1:low": (False, "opportunity"),
+        "anomaly:Google:a2:tracking": (True, "at stake"), "anomaly:Google:a3:double": (True, "at stake"),
+        "outlier:Google:o1": (True, "at stake")}
+    assert [c["id"] for c in out["cards"]][:3] == ["anomaly:Google:a2:tracking", "anomaly:Google:a3:double", "outlier:Google:o1"]
+    assert out["at_stake"] == 180.0  # 70 + 60 + 50: the 1,700 of opportunity is not money lost
+
+
+def test_a_real_loss_is_not_folded_under_the_same_campaigns_improvement(eager, cfg, monkeypatch):
+    """Review R2: cost per sale fell from $60 to $30 against a $10 account average. Still a campaign to cut or fix."""
+    better = _item("mover:Google:c1:cpa", 3000, "It got cheaper.", platform="Google", campaign_id="c1", metric="cpa",
+                   before=60.0, after=30.0)
+    _only(monkeypatch, [better, _item("outlier:Google:c1", 2000, platform="Google", campaign_id="c1", cpa=30.0, account=10.0)])
+    cards = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))["cards"]
+    assert [c["id"] for c in cards] == ["outlier:Google:c1"] and cards[0]["loss"] and cards[0]["also"] == ["It got cheaper."]
 
 
 def test_a_smaller_loss_ranks_above_a_larger_reallocation_and_only_losses_are_at_stake(eager, cfg, monkeypatch):

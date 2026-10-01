@@ -64,10 +64,14 @@ def _severity(stake: float, spend: float) -> str:
 
 
 def _stake_label(i: a.Item) -> str:
-    """What the stake is. Only "at stake" is money lost: a spend mover is a change, a move or mix is reallocatable."""
+    """What the stake is. Only "at stake" is money lost or overpaid: a spend mover is a change, a move or mix is
+    reallocatable, and a cost per sale that fell (or a day cheaper than usual) is an opportunity."""
     if i.kind in ("move", "mix"):
         return "to reallocate"
-    return "change in spend" if i.kind == "mover" and i.id.endswith(":spend") else "at stake"
+    if i.kind == "mover" and i.id.endswith(":spend"):
+        return "change in spend"
+    cheaper = (i.kind == "mover" and i.check["after"] < i.check["before"]) or (i.kind == "anomaly" and i.check["kind"] == "low")
+    return "opportunity" if cheaper else "at stake"
 
 
 def _one_per_campaign(ranked: list[a.Item]) -> tuple[list[a.Item], dict[str, list[str]]]:

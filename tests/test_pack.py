@@ -96,7 +96,10 @@ def test_no_pack_query_aggregates_one_of_its_own_output_names(pack):
     """BigQuery resolves a name in HAVING / ORDER BY / QUALIFY to the SELECT alias first, so `SUM(conversions) AS
     conversions ... HAVING SUM(conversions) > 0` is SUM(SUM(...)): "Aggregations of aggregations are not allowed".
     DuckDB reads the table column, so only a live BigQuery run would catch it (it did: the efficiency map, 2026-10-01).
-    Qualify the column (`FROM {gold} AS g ... SUM(g.conversions)`) or filter in an outer query."""
+    Qualify the column (`FROM {gold} AS g ... SUM(g.conversions)`) or filter in an outer query.
+
+    A static check, so it does not catch: an expression argument such as `SUM(conversions * 1)`, an aggregate other
+    than SUM/AVG/MIN/MAX/COUNT, or an alias written without `AS`."""
     import re
 
     queries = _pack_sql(pack.raw)
