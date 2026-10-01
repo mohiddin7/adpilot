@@ -72,3 +72,42 @@ def test_a_bad_query_timeout_fails_at_load(pack, bad):
 
 def test_the_ads_pack_times_queries_out_at_30_seconds(pack):
     assert pack.query_timeout_s == 30
+
+
+def _pack_sql(raw) -> list[tuple[str, str]]:
+    """Every SQL string in the pack, with a label: any dict that carries an `sql` key, at any depth."""
+    found = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            if isinstance(node.get("sql"), str):
+                found.append((str(node.get("id") or node.get("title") or path), node["sql"]))
+            for key, value in node.items():
+                walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                walk(value, f"{path}[{i}]")
+
+    walk(raw, "pack")
+    return found
+
+
+def test_no_pack_query_aggregates_one_of_its_own_output_names(pack):
+    """BigQuery resolves a name in HAVING / ORDER BY / QUALIFY to the SELECT alias first, so `SUM(conversions) AS
+    conversions ... HAVING SUM(conversions) > 0` is SUM(SUM(...)): "Aggregations of aggregations are not allowed".
+    DuckDB reads the table column, so only a live BigQuery run would catch it (it did: the efficiency map, 2026-10-01).
+    Qualify the column (`FROM {gold} AS g ... SUM(g.conversions)`) or filter in an outer query."""
+    import re
+
+    queries = _pack_sql(pack.raw)
+    assert len(queries) > 20  # the walk found the panels and the fallback queries, not an empty list
+    offenders = []
+    for label, sql in queries:
+        aliases = {a.lower() for a in re.findall(r"\bAS\s+([A-Za-z_]\w*)", sql, re.IGNORECASE)}
+        for clause in re.findall(r"\b(?:HAVING|QUALIFY|ORDER\s+BY)\b(.*?)(?=\b(?:HAVING|QUALIFY|ORDER\s+BY|LIMIT|UNION)\b|$)",
+                                 sql, re.IGNORECASE | re.DOTALL):
+            for name in re.findall(r"\b(?:SUM|AVG|MIN|MAX|COUNT)\s*\(\s*(?:DISTINCT\s+)?([A-Za-z_]\w*)\s*\)", clause,
+                                   re.IGNORECASE):
+                if name.lower() in aliases:
+                    offenders.append((label, name))
+    assert offenders == []

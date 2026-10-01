@@ -120,8 +120,8 @@ fallback_queries:
     title: Campaigns ranked by cost per acquisition (worst first)
     sql: >-
       SELECT platform, campaign_name, ROUND(SUM(spend), 2) AS spend, SUM(conversions) AS conversions,
-      ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa FROM {gold}
-      GROUP BY platform, campaign_name HAVING SUM(conversions) > 0 ORDER BY cpa DESC LIMIT 10
+      ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa FROM {gold} AS g
+      GROUP BY platform, campaign_name HAVING SUM(g.conversions) > 0 ORDER BY cpa DESC LIMIT 10
   - keywords: ["cpa|cost per acquisition|acquisition"]
     title: Cost per acquisition by platform
     sql: >-
@@ -244,7 +244,7 @@ dashboard:
       sql: >-
         SELECT platform, campaign_name, ROUND(SUM(spend), 2) AS spend, SUM(conversions) AS conversions,
         ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa
-        FROM {gold} WHERE {where} GROUP BY platform, campaign_name HAVING SUM(conversions) > 0 ORDER BY spend DESC
+        FROM {gold} AS g WHERE {where} GROUP BY platform, campaign_name HAVING SUM(g.conversions) > 0 ORDER BY spend DESC
     - id: mix
       title: Share of spend vs share of conversions
       page: overview
