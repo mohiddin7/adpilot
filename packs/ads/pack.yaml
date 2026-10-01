@@ -5,6 +5,7 @@ connector: duckdb                 # default; env ADPILOT_CONNECTOR or --connecto
 date_column: date
 max_result_rows: 100
 max_bytes_billed: 10485760        # 10 MB per chat query (BigQuery only)
+query_timeout_s: 30               # every query, both engines; one shared query lock means a slow query stalls everyone
 
 duckdb:
   csv_dir: data/raw
