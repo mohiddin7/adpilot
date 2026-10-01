@@ -416,7 +416,7 @@ def test_the_overviews_comparisons_are_not_in_platform_colours(dash_api):
     from lib.theme import OTHER
 
     figs = _figures(run("Home.py"))
-    assert [t["marker"]["color"] for t in figs["fig_mix"]["data"]] == OTHER[:2]
+    assert {t["marker"]["color"] for t in figs["fig_mix"]["data"]} == set(OTHER[:2])
 
 
 def test_a_card_says_what_its_stake_is_and_only_losses_are_summed(dash_api, monkeypatch):
@@ -471,3 +471,48 @@ def test_a_card_from_an_api_without_the_why_still_renders(dash_api, monkeypatch)
     at = run("pages/2_AI_Insights.py")
     assert not at.exception, at.exception
     assert not [e for e in at.expander if e.label == "Why this happened"]
+
+
+BY_PLATFORM = {"answer_md": "Google spent the most.", "sql": "SELECT 1", "caveats": [], "trace_id": "t1",
+               "chart": {"chart_type": "bar", "x": "platform", "y": "spend", "color": "platform"},
+               "data": [{"platform": "TikTok", "spend": 3.0}, {"platform": "Google", "spend": 5.0},
+                        {"platform": "Facebook", "spend": 1.0}]}
+
+
+@pytest.mark.parametrize("page,key", [("pages/3_Chat.py", "answer_t1_m"), ("Home.py", "answer_t1_s"),
+                                      ("pages/1_Channel_Deep_Dive.py", "answer_t1_s"), ("pages/2_AI_Insights.py", "answer_t1_s")])
+def test_a_chat_chart_by_platform_wears_the_platform_colours(dash_api, monkeypatch, page, key):
+    """Review R1: chat passed no platform colours, so platforms fell through to the non-platform sequence."""
+    from lib import api_client
+    from lib.theme import COLORS
+
+    monkeypatch.setattr(api_client, "ask", lambda question, session_id: BY_PLATFORM)
+    at = run(page)
+    at.chat_input[0].set_value(QUESTION).run()
+    assert not at.exception, at.exception
+    colours = {t["name"]: t["marker"]["color"] for t in _figures(at)[key]["data"]}
+    assert colours == {"TikTok": COLORS["audited"], "Google": COLORS["forecast"], "Facebook": COLORS["brand"]}
+    at.run()  # and again from the history
+    assert {t["name"]: t["marker"]["color"] for t in _figures(at)[key]["data"]} == colours
+
+
+def test_a_findings_charts_wear_its_platforms_colour(dash_api, monkeypatch):
+    """Review R3: a Google campaign's evidence bars were Facebook red."""
+    from lib.theme import COLORS
+
+    bars = {"spec": {"chart_type": "bar", "x": "name", "y": "cpa"}, "formats": {"cpa": "currency"},
+            "rows": [{"name": "this campaign", "cpa": 24.8}, {"name": "account average", "cpa": 9.75}]}
+    _cards(monkeypatch, [{**LOSS, "platform": "Google", "chart": bars, "why_detail": WHY},
+                         {**LOSS, "id": "move:a>b", "platform": None, "chart": bars}], at_stake=5000.0)
+    figs = _figures(run("pages/2_AI_Insights.py"))
+    assert figs["card_outlier:Google:c1"]["data"][0]["marker"]["color"] == COLORS["forecast"]
+    assert figs["why_outlier:Google:c1"]["data"][0]["marker"]["color"] == COLORS["forecast"]
+    assert figs["card_move:a>b"]["data"][0]["marker"]["color"] == COLORS["brand"]  # no platform: the default
+
+
+def test_the_overview_pacing_bars_are_in_platform_colours(dash_api):
+    from lib.theme import COLORS
+
+    spent = next(t for t in _figures(run("Home.py"))["fig_pacing"]["data"] if t["name"] == "Spent so far")
+    assert set(spent["marker"]["color"]) <= {COLORS["brand"], COLORS["forecast"], COLORS["audited"]}
+    assert len(set(spent["marker"]["color"])) == len(spent["y"]) > 1  # one colour per platform, not one for all

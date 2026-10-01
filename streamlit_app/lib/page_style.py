@@ -10,6 +10,7 @@ from .theme import COLORS, GROUNDS
 _CSS = f"""
 <style>
 [data-testid="stMetric"] {{ background: {GROUNDS["surface"]}; border-top: 3px solid {COLORS["brand"]}; }}
+/* These selectors are Streamlit's own data-testid names (1.64): look at the tiles again after a Streamlit upgrade. */
 /* A tile never truncates. Streamlit's own style is one line with an ellipsis; here the label wraps (two lines are
    reserved, so the values line up) and both sizes follow the tile's width (cqw), not the window's. */
 [data-testid="stMetric"] {{ container-type: inline-size; }}

@@ -132,7 +132,7 @@ def test_series_that_are_not_platforms_never_wear_a_platform_colour(column, valu
     rows = [{"platform": p, column: v, "spend": 1.0} for p in ("Facebook", "Google") for v in values]
     fig = build_figure({"chart_type": "bar", "x": "platform", "y": "spend", "color": column}, rows, None, colors)
     used = [t.marker.color for t in fig.data]
-    assert len(set(used)) == 2 and used == OTHER[:2]
+    assert set(used) == set(OTHER[:2])  # which name gets which is by sorted name, see the stable-colour test
     assert len(set(OTHER)) == len(OTHER) and set(OTHER) <= set(PALETTE_HUE) and not set(OTHER) & PLATFORM_HEX
     assert not {SEVERITY["SEVERE"], SEVERITY["CRITICAL"]} & set(OTHER)  # and never an alarm red
 
@@ -164,3 +164,25 @@ def test_the_legend_sits_above_the_plot_clear_of_the_x_axis_title():
     """Live pass, finding 5: the legend sat on the "Platform" axis title. Pixels are checked by screenshot."""
     fig = build_figure({"chart_type": "bar", "x": "platform", "y": "spend", "color": "weekday"}, ROWS)
     assert fig.layout.legend.y >= 1 and fig.layout.legend.yanchor == "bottom"
+
+
+def test_a_series_keeps_its_colour_whatever_order_the_rows_come_in():
+    """Review R4: "Share of spend" was green on the Overview and ochre on the insights mix card."""
+    def chart(measures):
+        rows = [{"platform": p, "measure": m, "share": 0.5} for p in ("Facebook", "Google") for m in measures]
+        return build_figure({"chart_type": "bar", "x": "platform", "y": "share", "color": "measure"}, rows, None, COLORS_BY_PLATFORM)
+
+    overview = chart(["Share of conversions", "Share of spend"])
+    insights = chart(["Share of spend", "Share of sales"])
+    assert _trace_colour(overview, "Share of spend") == _trace_colour(insights, "Share of spend") == OTHER[1]
+    assert _trace_colour(overview, "Share of conversions") == _trace_colour(insights, "Share of sales") == OTHER[0]
+
+
+def test_each_pacing_bar_is_its_platforms_colour():
+    """Review R3: every platform's "spent so far" bar was brand red, which is Facebook."""
+    rows = [{"platform": "Google", "budget": 100.0, "spent_mtd": 40.0, "projected": 110.0},
+            {"platform": "TikTok", "budget": 90.0, "spent_mtd": 30.0, "projected": 80.0},
+            {"platform": "Snap", "budget": 50.0, "spent_mtd": 10.0, "projected": 40.0}]
+    spent = next(t for t in pacing_bullets(rows, COLORS_BY_PLATFORM).data if t.name == "Spent so far")
+    assert list(spent.marker.color) == [COLORS["forecast"], COLORS["audited"], COLORS["brand"]]  # no colour: the brand
+    assert next(t for t in pacing_bullets(rows).data if t.name == "Spent so far").marker.color == COLORS["brand"]

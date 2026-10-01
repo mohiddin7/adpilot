@@ -22,7 +22,7 @@ with st.container(border=True):
     with right:
         compare = st.toggle("Compare with the previous period", value=True, key="ov_compare")
 st.caption(f"Data available {m['date_min']} to {m['date_max']}")
-chat.sidebar(context_line("Overview", start, end, selected), "overview")
+chat.sidebar(context_line("Overview", start, end, selected), "overview", colors=colors)
 
 results = view.guarded(view.panels, "overview", tuple(params))
 prior = view.prior_panels("overview", m, params, start, end) if compare else {}
@@ -54,7 +54,7 @@ st.subheader("Budget")
 left, right = st.columns(2)
 with left:
     try:
-        view.pacing_card(view.pacing())
+        view.pacing_card(view.pacing(), colors)
     except ApiError as exc:
         view.show_error(exc)
 with right:

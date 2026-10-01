@@ -28,7 +28,7 @@ from .controls import (
 from .formatters import fmt, fmt_currency, label
 from .glossary import METRIC_DEFINITIONS
 from .page_style import inject_page_style
-from .theme import SEVERITY, SYMBOLS
+from .theme import SEVERITY, SYMBOLS, platform_colors
 
 
 def start(title: str, icon: str) -> None:
@@ -306,12 +306,21 @@ def attention_list(p: dict | None, start: date, end: date, limit: int = 5) -> No
                 st.switch_page("pages/1_Channel_Deep_Dive.py")
 
 
-def pacing_card(pc: dict) -> None:
+def meta_colors() -> dict[str, str]:
+    """The pack's platform colours as hex, for a page that draws nothing else from /dashboard. None when it can't be
+    read: a chart then falls back to the non-platform colours instead of stopping the page."""
+    try:
+        return platform_colors(meta().get("colors") or {})
+    except ApiError:
+        return {}
+
+
+def pacing_card(pc: dict, colors: dict | None = None) -> None:
     with st.container(border=True):
         st.markdown(f"**Month-end pacing** · as of {pc.get('as_of') or '—'} · whole account, filters don't apply")
         for problem in pc.get("problems") or []:
             st.caption(md(problem))
-        fig = pacing_bullets(pc.get("rows") or [])
+        fig = pacing_bullets(pc.get("rows") or [], colors)
         if fig is not None:
             st.plotly_chart(fig, key="fig_pacing")
         for r in pc.get("rows") or []:

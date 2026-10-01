@@ -6,13 +6,14 @@ from lib.controls import md
 
 view.start("Chat", "💬")
 chat.thinking_toggle()
+colors = view.meta_colors()
 st.title("Chat with your data")
 st.caption("The AdPilot analyst writes SQL, checks it, and shows its working. Answers come from free models.")
 
 for message in chat.history("chat"):
     with st.chat_message(message["role"]):
         if "answer" in message:
-            chat.render_answer(message["answer"])
+            chat.render_answer(message["answer"], colors=colors)
         elif message.get("error"):
             st.warning(message["content"])
         else:
@@ -25,7 +26,7 @@ if question:
     with st.chat_message("assistant"):
         answer = chat.ask_and_record(question, "", "chat")
         if answer is not None:
-            chat.render_answer(answer)
+            chat.render_answer(answer, colors=colors)
 
 if chat.history("chat") and st.button("Start a new conversation", key="new_chat"):
     chat.clear("chat")

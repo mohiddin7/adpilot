@@ -24,7 +24,7 @@ with st.container(border=True):
                                         key="ins_platform") or "All"
 selected = {} if platform == "All" else {"platform": [platform]}
 context = context_line("AI insights", start, end, selected)
-chat.sidebar(context, "insights", suggestions=m.get("insights") or [])
+chat.sidebar(context, "insights", suggestions=m.get("insights") or [], colors=colors)
 
 params = view.insight_params(start, end, selected)
 out = view.guarded(view.insights, params)
@@ -42,6 +42,7 @@ for problem in out["problems"]:
     st.caption(md(problem))
 
 for c in cards:
+    single = colors.get(c.get("platform"))  # the finding's platform colours its single-series charts
     with st.container(border=True):
         st.markdown(md(f"{view.SEVERITY_BADGE[c['severity']]} · about {fmt_currency(c['stake'])} {view.stake_label(c)}"))
         st.markdown(md(f"### {c['title']}"))
@@ -51,7 +52,7 @@ for c in cards:
         left, right = st.columns([3, 2])
         with left:
             chart = c.get("chart")
-            fig = build_figure(chart["spec"], chart["rows"], chart["formats"], colors) if chart else None
+            fig = build_figure(chart["spec"], chart["rows"], chart["formats"], colors, single) if chart else None
             if fig is not None:
                 st.plotly_chart(fig, key=f"card_{c['id']}")
         with right:
@@ -65,7 +66,7 @@ for c in cards:
             with st.expander("Why this happened"):
                 st.markdown(md(why["text"]))
                 detail = why.get("chart")
-                fig = build_figure(detail["spec"], detail["rows"], detail["formats"], colors) if detail else None
+                fig = build_figure(detail["spec"], detail["rows"], detail["formats"], colors, single) if detail else None
                 if fig is not None:
                     st.plotly_chart(fig, key=f"why_{c['id']}")
         if st.button("Ask in chat", key=f"chat_{c['id']}"):

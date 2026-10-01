@@ -38,12 +38,14 @@ def style(fig: go.Figure, formats: dict | None = None, x: str | None = None, y: 
 
 def _colour(df: pd.DataFrame, column: str | None, colors: dict | None, single: str | None) -> dict:
     """Platform (or severity) colours when every value has one. Any other set of series gets OTHER, which no platform
-    wears. One series alone is `single` (the one platform in view) or the brand."""
+    wears, in the order of the sorted names: the same name is the same colour on every page, whatever order the rows
+    come in. One series alone is `single` (the one platform in view) or the brand."""
     if not column:
         return {"color_discrete_sequence": [single] if single else SERIES}
     if colors and set(df[column].dropna().astype(str)) <= set(colors):
         return {"color_discrete_map": colors}
-    return {"color_discrete_sequence": OTHER}
+    names = sorted(df[column].dropna().unique(), key=str)
+    return {"color_discrete_map": {name: OTHER[k % len(OTHER)] for k, name in enumerate(names)}}
 
 
 def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, colors: dict | None = None,
@@ -139,8 +141,9 @@ def add_markers(fig: go.Figure, markers: list[dict], series: list[dict], x: str,
     return fig
 
 
-def pacing_bullets(rows: list[dict]) -> go.Figure | None:
-    """Per platform with a budget: the month-end projection (light), spent so far (brand) and the budget (a tick)."""
+def pacing_bullets(rows: list[dict], colors: dict | None = None) -> go.Figure | None:
+    """Per platform with a budget: the month-end projection (light), spent so far (the platform's colour) and the
+    budget (a tick)."""
     rows = [r for r in rows if r.get("budget")]
     if not rows:
         return None
@@ -149,7 +152,7 @@ def pacing_bullets(rows: list[dict]) -> go.Figure | None:
     fig.add_bar(y=names, x=[r.get("projected") or 0 for r in rows], orientation="h", name="Month-end projection",
                 marker_color=GRID)
     fig.add_bar(y=names, x=[r["spent_mtd"] for r in rows], orientation="h", name="Spent so far",
-                marker_color=COLORS["brand"], width=0.35)
+                marker_color=[colors.get(n, COLORS["brand"]) for n in names] if colors else COLORS["brand"], width=0.35)
     fig.add_scatter(y=names, x=[r["budget"] for r in rows], mode="markers", name="Budget",
                     marker={"symbol": "line-ns-open", "size": 28, "color": "#2b2622", "line": {"width": 3}})
     fig.update_layout(barmode="overlay")

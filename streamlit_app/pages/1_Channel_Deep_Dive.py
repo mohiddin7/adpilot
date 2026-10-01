@@ -30,7 +30,7 @@ with st.expander("Filters", expanded=True):
             "deep_dive", m, start, end, "dd", fixed=fixed, skip=frozenset({"platform"}) if segment else frozenset()
         )
 
-chat.sidebar(context_line("Channel deep dive", start, end, selected), "deep_dive")
+chat.sidebar(context_line("Channel deep dive", start, end, selected), "deep_dive", colors=colors)
 
 results = view.guarded(view.panels, "deep_dive", tuple(params))
 prior = view.prior_panels("deep_dive", m, params, start, end) if compare else {}
