@@ -27,19 +27,23 @@ selected = {} if platform == "All" else {"platform": [platform]}
 context = context_line("AI insights", start, end, selected)
 chat.sidebar(context, "insights", suggestions=m.get("insights") or [])
 
-out = view.guarded(view.insights, view.insight_params(start, end, selected))
+params = view.insight_params(start, end, selected)
+out = view.guarded(view.insights, params)
 cards = out["cards"]
 if cards:
     st.markdown(md(f"**{len(cards)} finding{'s' if len(cards) != 1 else ''} · about "
                    f"{fmt_currency(sum(c['stake'] for c in cards))} at stake**"))
+elif out["problems"] and not out["checked"]:
+    st.markdown("**Couldn't check this period.**")
 else:
     st.markdown("**Nothing needs attention in this period.**")
     st.markdown(md("Checked: " + (", ".join(out["checked"]) or "nothing could be checked")))
 for problem in out["problems"]:
     st.caption(md(problem))
 
-investigations = st.session_state.setdefault("investigations", {})
+investigations = st.session_state.setdefault("investigations", {})  # keyed by (card id, window)
 for c in cards:
+    inv_key = (c["id"], params)
     with st.container(border=True):
         st.markdown(md(f"{view.SEVERITY_BADGE[c['severity']]} · about {fmt_currency(c['stake'])} at stake"))
         st.markdown(md(f"### {c['title']}"))
@@ -59,13 +63,13 @@ for c in cards:
         ask, send = st.columns(2)
         if ask.button("Investigate why", key=f"inv_{c['id']}"):
             try:
-                investigations[c["id"]] = {"answer": chat.run_ask(investigate_question(c["facts"]), context, "insights")}
+                investigations[inv_key] = {"answer": chat.run_ask(investigate_question(c["facts"]), context, "insights")}
             except ApiError as exc:
-                investigations[c["id"]] = {"error": exc.message}
+                investigations[inv_key] = {"error": exc.message}
         if send.button("Ask in chat", key=f"chat_{c['id']}"):
             chat.ask_and_record(investigate_question(c["facts"]), context, "insights")
             st.rerun()
-        got = investigations.get(c["id"])
+        got = investigations.get(inv_key)
         if got and "answer" in got:
             with st.container(border=True):
                 chat.render_answer(got["answer"])

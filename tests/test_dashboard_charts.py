@@ -87,3 +87,10 @@ def test_fmt(value, kind, shown):
 def test_labels_read_like_a_media_buyer_wrote_them():
     assert label("cpa") == "Cost per acquisition" and label("roas_google") == "ROAS (Google)"
     assert label("some_new_col") == "Some new col"
+
+
+def test_a_heatmap_hover_and_colour_bar_follow_the_z_format():
+    """Final review M2."""
+    fig = build_figure({"chart_type": "heatmap", "x": "weekday", "y": "platform", "z": "spend"}, ROWS,
+                       {"spend": "currency"})
+    assert "$" in fig.data[0].hovertemplate and fig.data[0].colorbar.tickformat.startswith("$")

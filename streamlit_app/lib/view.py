@@ -118,7 +118,7 @@ def date_controls(m: dict, key: str) -> tuple[date, date]:
     return start, end
 
 
-PRIOR_ROLES = ("kpi", "kpi_series", "trend")
+PRIOR_ROLES = ("kpi", "kpi_series")
 
 
 def by_role(results: list[dict], role: str) -> list[dict]:
@@ -130,7 +130,7 @@ def one(results: list[dict], role: str) -> dict | None:
 
 
 def prior_panels(page: str, m: dict, params: list, start: date, end: date) -> dict[str, dict]:
-    """The previous period of the same length for the KPI, series and trend panels. A failure drops the deltas and
+    """The previous period of the same length for the KPI and series panels. A failure drops the deltas and
     the dashed lines, never the page."""
     ids = [("panel", p["id"]) for p in m["panels"][page] if p.get("role") in PRIOR_ROLES]
     if not ids:
@@ -294,9 +294,10 @@ def attention_list(p: dict | None, start: date, end: date, limit: int = 5) -> No
             return
         for i, r in enumerate(p["rows"][:limit]):
             text, action = st.columns([5, 1])
+            cost = r["excess_cost"] or 0
             text.markdown(md(f"**{r['campaign_name']}** · {r['platform']} · {r['worst']} · "
                              f"{r['flagged_days']} flagged day{'s' if r['flagged_days'] != 1 else ''} · "
-                             f"about {fmt_currency(r['excess_cost'])} excess cost"))
+                             f"about {fmt_currency(abs(cost))} {'excess cost' if cost >= 0 else 'cheaper than usual'}"))
             if action.button("Open in deep dive", key=f"open_{i}"):
                 st.session_state.update({"dd_platform": r["platform"], "dd_campaign_name": [r["campaign_name"]],
                                          "dd_preset": "Custom", "dd_custom": (start, end)})
@@ -340,7 +341,10 @@ def what_changed(start: date, end: date, selected: dict[str, list[str]]) -> None
         for c in out["cards"][:3]:
             st.markdown(md(f"{SEVERITY_BADGE[c['severity']]} · {c['headline']} (about {fmt_currency(c['stake'])} at stake)"))
         if not out["cards"]:
-            st.caption("Nothing needs attention in this period.")
+            failed = out["problems"] and not out["checked"]
+            st.caption("Couldn't check this period." if failed else "Nothing needs attention in this period.")
+        for problem in out["problems"]:
+            st.caption(md(problem))
         st.page_link("pages/2_AI_Insights.py", label="All findings and why →")
 
 

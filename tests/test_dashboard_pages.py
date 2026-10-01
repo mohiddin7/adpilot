@@ -196,7 +196,7 @@ def test_a_failed_filter_option_query_keeps_the_choice_and_says_why(dash_api, mo
     assert any("spend bounds could not be read" in c for c in captions)
 
 
-def _flag(monkeypatch, dash_api, platform="Google"):
+def _flag(monkeypatch, dash_api, platform="Google", excess_cost=812.5):
     """DuckDB has no anomaly rows, so one flagged campaign is injected into the attention panel."""
     from lib import view
 
@@ -211,7 +211,7 @@ def _flag(monkeypatch, dash_api, platform="Google"):
         for p in out:
             if p["role"] == "attention":
                 p["rows"] = [{"platform": platform, "campaign_name": campaign, "worst": "CRITICAL", "flagged_days": 2,
-                              "last_flagged": "2024-01-29", "excess_cost": 812.5}]
+                              "last_flagged": "2024-01-29", "excess_cost": excess_cost}]
         return out
 
     monkeypatch.setattr(view, "panels", flagged)
@@ -310,10 +310,26 @@ def test_investigate_why_answers_under_the_card_and_keeps_it(dash_api, monkeypat
     at = run("pages/2_AI_Insights.py")
     at.button(key="inv_mix:Google").click().run()
     assert not at.exception, at.exception
-    assert "answer" in at.session_state["investigations"]["mix:Google"]
+    assert _investigation(at, "mix:Google") and "answer" in _investigation(at, "mix:Google")
     assert at.session_state.get("messages_insights", []) == []  # an investigation is not the sidebar chat
     at.run()
-    assert "answer" in at.session_state["investigations"]["mix:Google"]
+    assert "answer" in _investigation(at, "mix:Google")
+
+
+def _investigation(at, card_id):
+    return next((v for (cid, _window), v in at.session_state["investigations"].items() if cid == card_id), None)
+
+
+def test_an_investigation_stays_with_the_window_it_was_asked_in(dash_api, monkeypatch):
+    """Final review M8: the same card id in another window is another finding; the old answer must not show."""
+    _cards(monkeypatch, [CARD])
+    at = run("pages/2_AI_Insights.py")
+    at.button(key="inv_mix:Google").click().run()
+    assert any("pre-defined query" in m.value for m in at.markdown)
+    at.session_state["ins_preset"] = "Last 7 days"
+    at.run()
+    assert not at.exception, at.exception
+    assert not any("pre-defined query" in m.value for m in at.markdown)
 
 
 def test_ask_in_chat_goes_to_this_pages_chat(dash_api, monkeypatch):
@@ -334,3 +350,65 @@ def test_no_findings_says_so_and_lists_the_checks(dash_api, monkeypatch):
 def test_the_packs_questions_are_chat_suggestions(dash_api):
     at = run("pages/2_AI_Insights.py")
     assert any("best cost per acquisition" in b.label for b in at.sidebar.button)
+
+
+FAILED_READ = {"cards": [], "checked": [], "problems": ["couldn't read the gold table"], "writer": "templates"}
+
+
+@pytest.mark.parametrize("page", ["Home.py", "pages/2_AI_Insights.py"])
+def test_a_failed_read_is_never_an_all_clear(dash_api, monkeypatch, page):
+    """Final review I1."""
+    from lib import view
+
+    monkeypatch.setattr(view, "insights", lambda params: FAILED_READ)
+    at = run(page)
+    assert not at.exception, at.exception
+    text = " ".join([m.value for m in at.markdown] + [c.value for c in at.caption])
+    assert "Couldn't check this period." in text and "couldn't read the gold table" in text
+    assert "Nothing needs attention" not in text
+
+
+def test_what_changed_shows_problems_next_to_its_cards(dash_api, monkeypatch):
+    from lib import view
+
+    monkeypatch.setattr(view, "insights", lambda params: {"cards": [CARD], "checked": ["channel mix"],
+                                                          "problems": ["couldn't read the anomalies table"],
+                                                          "writer": "templates"})
+    at = run("Home.py")
+    assert not at.exception, at.exception
+    assert any("couldn't read the anomalies table" in c.value for c in at.caption)
+
+
+def test_a_failed_insights_call_on_the_overview_keeps_the_kpis(dash_api, monkeypatch):
+    from lib import view
+    from lib.api_client import ApiError
+
+    def fails(params):
+        raise ApiError("server", "The AdPilot service failed (HTTP 500).")
+
+    monkeypatch.setattr(view, "insights", fails)
+    at = run("Home.py")
+    assert not at.exception, at.exception
+    assert "The AdPilot service failed (HTTP 500)." in [e.value for e in at.error]
+    assert at.metric and at.metric[0].value.startswith("$")
+
+
+def test_a_negative_excess_cost_reads_as_cheaper(dash_api, monkeypatch):
+    """Final review M5: a flagged day can cost less than usual; "about $-40 excess cost" is not a sentence."""
+    _flag(monkeypatch, dash_api, excess_cost=-40.0)
+    at = run("Home.py")
+    assert not at.exception, at.exception
+    text = " ".join(m.value for m in at.markdown)
+    assert "about \\$40 cheaper than usual" in text and "excess cost" not in text.split("Needs attention")[-1]
+
+
+def test_the_comparison_fetch_asks_only_for_panels_a_page_overlays(monkeypatch):
+    """Final review M3: no page draws a prior line on a `trend` panel, so none is fetched."""
+    from lib import view
+
+    asked: list[str] = []
+    monkeypatch.setattr(view, "panels", lambda page, params: asked.extend(v for k, v in params if k == "panel") or [])
+    m = {"panels": {"overview": [{"id": "k", "role": "kpi"}, {"id": "s", "role": "kpi_series"},
+                                 {"id": "t", "role": "trend"}]}}
+    view.prior_panels("overview", m, [], date(2024, 1, 8), date(2024, 1, 14))
+    assert asked == ["k", "s"]

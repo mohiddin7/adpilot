@@ -76,9 +76,12 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
         grid = df.pivot_table(index=y, columns=x, values=z, aggfunc="sum")
         if set(grid.columns) <= set(WEEK):
             grid = grid[[d for d in WEEK if d in grid.columns]]
+        tick, hover, suffix = AXIS.get((formats or {}).get(z), ("", "", ""))
         fig = go.Figure(go.Heatmap(z=grid.values, x=list(grid.columns), y=list(grid.index),
                                    colorscale=[[0, GROUNDS["bg"]], [1, COLORS["brand"]]],
-                                   hovertemplate="%{y} · %{x}: %{z}<extra></extra>"))
+                                   colorbar={"tickformat": tick, "ticksuffix": suffix},
+                                   hovertemplate=f"%{{y}} · %{{x}}: %{{z{':' + hover if hover else ''}}}{suffix}"
+                                                 "<extra></extra>"))
         return style(fig)
     else:
         return None
