@@ -40,6 +40,7 @@ class DuckDBSource:
                     return self._con.execute(sql).df()
                 finally:
                     watchdog.cancel()
+                    watchdog.join()  # cancel() can't stop an interrupt() already in flight; join so it lands before the lock releases, never on the next query
         except duckdb.InterruptException as exc:  # before duckdb.Error: it is a subclass
             raise timeout_error(self._timeout_s) from exc
         except duckdb.ParserException as exc:

@@ -114,16 +114,19 @@ def test_a_timeout_releases_the_shared_lock(pack, deps):
 
 
 class _Job:
-    def __init__(self, exc=None):
-        self.exc, self.cancelled = exc, False
+    def __init__(self, exc=None, cancel_error=None):
+        self.exc, self.cancelled, self.cancel_error = exc, False, cancel_error
 
-    def result(self, timeout=None):
-        self.timeout = timeout
+    def result(self, timeout=None, retry=None):
+        self.timeout, self.retry = timeout, retry
         if self.exc:
             raise self.exc
+        return self  # stands in for the RowIterator `result()` really returns; `to_dataframe` lives on both
 
     def cancel(self):
         self.cancelled = True
+        if self.cancel_error:
+            raise self.cancel_error
 
     def to_dataframe(self):
         return pd.DataFrame({"x": [1]})
@@ -131,10 +134,10 @@ class _Job:
 
 class _Client:
     def __init__(self, job):
-        self.job, self.config = job, None
+        self.job, self.config, self.timeout, self.retry = job, None, None, None
 
-    def query(self, sql, job_config=None):
-        self.config = job_config
+    def query(self, sql, job_config=None, timeout=None, retry=None):
+        self.config, self.timeout, self.retry = job_config, timeout, retry
         return self.job
 
 
@@ -152,7 +155,12 @@ def test_bigquery_jobs_carry_the_timeout_both_ways():
     assert src.query("SELECT 1")["x"].tolist() == [1]
     # QueryJobConfig.job_timeout_ms getter returns the stored string, not an int (job/base.py: "docs indicate
     # a string is expected by the API") — confirmed against the installed 3.45.1, not assumed.
-    assert int(src._client.config.job_timeout_ms) == 30_000 and job.timeout is not None and job.timeout >= 30
+    assert int(src._client.config.job_timeout_ms) == 30_000
+    # Both the job-start RPC and the poll-for-result RPC are bounded, not just the outer client-side wait:
+    # DEFAULT_RETRY's own deadline is 10 minutes, so an unbounded `retry` would let a stalled HTTP call hold
+    # the shared lock long past our deadline (google-cloud-bigquery 3.45.1's own client.query/QueryJob.result).
+    assert src._client.timeout == 30 and src._client.retry._timeout == 30
+    assert job.timeout == 35 and job.retry._timeout == 30
 
 
 def test_a_bigquery_client_side_timeout_cancels_the_job():
@@ -162,16 +170,26 @@ def test_a_bigquery_client_side_timeout_cancels_the_job():
     assert err.value.kind == "QueryTimeout" and job.cancelled
 
 
+def test_a_failed_cancel_does_not_hide_the_timeout():
+    job = _Job(concurrent.futures.TimeoutError(), cancel_error=RuntimeError("cancel failed"))
+    with pytest.raises(AdPilotError) as err:
+        _bq(job).query("SELECT 1")
+    assert err.value.kind == "QueryTimeout" and job.cancelled
+
+
 def test_a_bigquery_server_side_timeout_is_a_query_timeout():
     from google.api_core import exceptions as gexc
 
-    # The real class, read from the installed google-cloud-bigquery 3.45.1 source: when job_timeout_ms stops a
-    # job, BigQuery sets error_result.reason = "stopped" (the same reason an explicit cancel gets — "BigQuery
-    # attempts to stop the job", per the field's own docstring). job/base.py's _ERROR_REASON_TO_EXCEPTION maps
-    # "stopped" to http.client.OK (200); 200 has no registered subclass in google.api_core.exceptions, so
-    # from_http_status falls back to the bare base class, not BadRequest. The message wording ("Job execution
-    # was cancelled: Job timed out after Xs, stopped") is confirmed by real-world reports of job_timeout_ms
-    # firing (e.g. googleapis/dbt-labs dbt#14618).
+    # Exception shape per job/base.py (google-cloud-bigquery 3.45.1) and dbt-labs/dbt#14618's captured message — not confirmed against a live job.
     with pytest.raises(AdPilotError) as err:
         _bq(_Job(gexc.GoogleAPICallError("Job execution was cancelled: Job timed out after 30 sec, stopped"))).query("SELECT 1")
     assert err.value.kind == "QueryTimeout"
+
+
+def test_a_bigquery_outage_is_not_mistaken_for_a_timeout():
+    """Negative case for the "timed out" substring match: an unrelated outage must still map through unchanged."""
+    from google.api_core import exceptions as gexc
+
+    with pytest.raises(AdPilotError) as err:
+        _bq(_Job(gexc.ServiceUnavailable("The service is currently unavailable"))).query("SELECT 1")
+    assert err.value.kind == "DataSourceUnavailable"

@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from adpilot.connectors import get_connector
@@ -57,7 +59,7 @@ def test_briefing_block_is_valid(pack):
     assert set(budgets) == {"Facebook", "Google", "TikTok"} and t["max_items"] == 3
 
 
-@pytest.mark.parametrize("bad", [0, -1, "soon", None])
+@pytest.mark.parametrize("bad", [0, -1, "soon", None, math.nan, math.inf, 0.5])
 def test_a_bad_query_timeout_fails_at_load(pack, bad):
     import copy
     import dataclasses
