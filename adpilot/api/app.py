@@ -52,6 +52,7 @@ from adpilot.core.runtime import (
     record_schema_read,
 )
 from adpilot.core.tools import AgentDeps
+from adpilot.dashboard import insights as dash_insights
 from adpilot.dashboard import panels as dash
 from adpilot.dashboard.config import load_dashboard
 from adpilot.dashboard.filters import FilterError, Filters, parse_filters
@@ -155,6 +156,7 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
     model = build_model()
     if model is None:
         log.warning("no AGENT_LLM_BEARER_TOKEN — answering from pre-defined queries only, every question")
+    app.state.model = model
     app.state.agent = build_agent(model)
     app.state.limiter = RateLimiter(per_minute=int(os.environ.get("ADPILOT_API_RPM", "20")))
     # schema.summary() queries the data source, so the connector and schema text are built once and shared;
@@ -346,6 +348,24 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         dashboard_config()
         out = dash.pacing_rows(app.state.deps_template, app.state.dash_cache)
         dashboard_audit("pacing")
+        return out
+
+    @app.get("/insights", dependencies=[Depends(require_key)])
+    def get_insights(request: Request) -> dict:
+        cfg = dashboard_config()
+        items = list(request.query_params.multi_items())
+        extra = sorted({k for k, _ in items} - {"date_from", "date_to", "platform"})
+        if extra:
+            raise HTTPException(status_code=422, detail=f"/insights takes date_from, date_to and platform only, not: {', '.join(extra)}")
+        try:
+            flt = parse_filters(cfg, "overview", items)
+        except FilterError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        try:
+            out = dash_insights.run_insights(app.state.deps_template, cfg, flt, app.state.model, app.state.dash_cache)
+        except AdPilotError as exc:
+            raise HTTPException(status_code=503, detail=exc.message) from None
+        dashboard_audit("insights")
         return out
 
     return app

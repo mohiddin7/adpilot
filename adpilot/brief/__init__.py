@@ -42,6 +42,12 @@ DEFAULTS = {
     "move_stop_ratio": 1.15,
     "max_items": 3,
     "followup_days": 14,
+    "mover_min_usd": 500,  # /insights: a spend or cost-per-sale move needs this much at stake...
+    "mover_min_pct": 20,  # ...and at least this relative change
+    "mover_min_conversions": 10,  # a cost-per-sale move needs this many sales in both windows
+    "outlier_min_share_pct": 5,  # an efficiency outlier takes at least this share of the window's spend...
+    "outlier_cpa_pct": 25,  # ...at a cost per sale at least this far above the account's
+    "mix_gap_pts": 10,  # share of spend minus share of sales, in points
 }
 
 

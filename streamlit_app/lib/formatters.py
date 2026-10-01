@@ -1,5 +1,4 @@
-"""
-lib/formatters.py — Display formatting for dashboard values.
+"""Formats values for tiles, tables and charts.
 
 Why this module exists:
   Big raw numbers ($130,244.90) look amateur. Senior analyst dashboards
@@ -14,9 +13,6 @@ Conventions used:
   - Deltas                   → +12.3% / -4.1% (with sign)
 """
 from __future__ import annotations
-
-from typing import Optional
-
 
 # ── Core compact formatter ───────────────────────────────────────────────────
 
@@ -34,7 +30,7 @@ def _compact(value: float, decimals: int = 1) -> tuple[float, str]:
 
 # ── Public formatters ─────────────────────────────────────────────────────────
 
-def fmt_currency(value: Optional[float], decimals: int = 1) -> str:
+def fmt_currency(value: float | None, decimals: int = 1) -> str:
     """
     $130244.90 → "$130.2K"   $1349.50 → "$1.3K"   $42.10 → "$42"
     None/NaN → "—".
@@ -57,20 +53,7 @@ def fmt_currency(value: Optional[float], decimals: int = 1) -> str:
     return f"${v:.0f}"
 
 
-def fmt_currency_full(value: Optional[float]) -> str:
-    """Full form: $130,244.90 — for tooltips, source data tables, and exact reconciliation."""
-    if value is None:
-        return "—"
-    try:
-        v = float(value)
-    except (TypeError, ValueError):
-        return "—"
-    if v != v:
-        return "—"
-    return f"${v:,.2f}"
-
-
-def fmt_number(value: Optional[float], decimals: int = 1) -> str:
+def fmt_number(value: float | None, decimals: int = 1) -> str:
     """13363 → "13.4K"   542 → "542"   None → "—"."""
     if value is None:
         return "—"
@@ -87,7 +70,7 @@ def fmt_number(value: Optional[float], decimals: int = 1) -> str:
     return f"{int(v):,}" if v == int(v) else f"{v:,.{decimals}f}"
 
 
-def fmt_pct(value: Optional[float], decimals: int = 1, already_pct: bool = False) -> str:
+def fmt_pct(value: float | None, decimals: int = 1, already_pct: bool = False) -> str:
     """
     Format a ratio or percentage.
       fmt_pct(0.0975)            → "9.8%"   (ratio → percent)
@@ -106,48 +89,24 @@ def fmt_pct(value: Optional[float], decimals: int = 1, already_pct: bool = False
     return f"{v:.{decimals}f}%"
 
 
-def fmt_delta(value: Optional[float], decimals: int = 1, as_pct: bool = True) -> str:
-    """
-    Signed change indicator.
-      fmt_delta(0.123) → "+12.3%"   fmt_delta(-0.04) → "-4.0%"
-    """
-    if value is None:
-        return ""
-    try:
-        v = float(value)
-    except (TypeError, ValueError):
-        return ""
-    if v != v:
-        return ""
-
-    if as_pct:
-        v = v * 100
-        sign = "+" if v >= 0 else ""
-        return f"{sign}{v:.{decimals}f}%"
-    sign = "+" if v >= 0 else ""
-    return f"{sign}{v:,.{decimals}f}"
+LABELS = {"spend": "Spend", "conversions": "Conversions", "cpa": "Cost per acquisition", "ctr": "Click-through rate",
+          "cvr": "Conversion rate", "roas_google": "ROAS (Google)", "roas": "ROAS", "cpc": "Cost per click",
+          "cpm": "Cost per 1,000 impressions", "impressions": "Impressions", "clicks": "Clicks",
+          "quality_score": "Quality score", "impression_share": "Search impression share",
+          "search_impression_share": "Search impression share", "frequency": "Frequency",
+          "excess_cost": "Excess cost", "flagged_days": "Flagged days"}
 
 
-def fmt_int(value: Optional[int]) -> str:
-    """1234 → "1,234". None → "—"."""
-    if value is None:
-        return "—"
-    try:
-        return f"{int(value):,}"
-    except (TypeError, ValueError):
-        return "—"
+def label(column: str) -> str:
+    return LABELS.get(column, column.replace("_", " ").capitalize())
 
 
-# ── DataFrame column formatting helpers ──────────────────────────────────────
-
-def currency_columns(df, columns: list[str]) -> dict:
-    """Return st.column_config formatters for currency columns."""
-    import streamlit as st
-    return {c: st.column_config.NumberColumn(format="$%.2f") for c in columns if c in df.columns}
-
-
-def percent_columns(df, columns: list[str], decimals: int = 1) -> dict:
-    """Return st.column_config formatters for percent columns."""
-    import streamlit as st
-    fmt = f"%.{decimals}f%%"
-    return {c: st.column_config.NumberColumn(format=fmt) for c in columns if c in df.columns}
+def fmt(value, kind: str | None) -> str:
+    """One value in the style its panel's `formats` names; an unknown or missing kind is a plain number."""
+    if kind == "currency":
+        return fmt_currency(value)
+    if kind == "percent":
+        return fmt_pct(value, decimals=2)
+    if kind == "multiple":
+        return "—" if value is None else f"{float(value):.2f}x"
+    return fmt_number(value)

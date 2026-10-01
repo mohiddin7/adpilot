@@ -3,6 +3,7 @@
 -- agent's tools degrade gracefully when the pipeline outputs are not available locally.
 
 CREATE MACRO SAFE_DIVIDE(a, b) AS a / NULLIF(b, 0);
+CREATE MACRO FORMAT_DATE(fmt, d) AS strftime(d, fmt);  -- BigQuery's FORMAT_DATE, so pack SQL is the same on both
 
 CREATE VIEW fct_unified_marketing_performance AS
 WITH base AS (

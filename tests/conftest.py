@@ -1,4 +1,6 @@
 import os
+import sys
+from pathlib import Path
 
 import pytest
 from pydantic_ai import models
@@ -8,6 +10,9 @@ from adpilot.core import schema
 from adpilot.core.audit import MemorySink
 from adpilot.core.tools import AgentDeps
 from adpilot.packs.loader import load_pack
+
+APP_DIR = Path(__file__).resolve().parents[1] / "streamlit_app"
+sys.path.insert(0, str(APP_DIR))  # the dashboard's `lib` package, as Streamlit itself puts it on the path
 
 os.environ["PYDANTIC_AI_NO_BANNER"] = "1"
 models.ALLOW_MODEL_REQUESTS = False
@@ -89,3 +94,45 @@ def api(monkeypatch):
     monkeypatch.setattr(runtime, "build_sink", lambda cfg: sink)
     app = create_app(connector="duckdb")
     return TestClient(app), sink
+
+
+class _Resp:
+    """The slice of requests.Response that lib.api_client uses, over a Starlette TestClient response."""
+
+    def __init__(self, r) -> None:
+        self._r, self.status_code, self.headers = r, r.status_code, r.headers
+
+    def json(self):
+        return self._r.json()
+
+    def iter_lines(self, decode_unicode: bool = False):
+        return self._r.iter_lines()
+
+    def close(self) -> None:
+        pass
+
+
+class InProcessSession:
+    """Stands in for requests.Session in lib.api_client: the dashboard's client meets the real FastAPI app through
+    Starlette's TestClient — same routes, auth and validation, no socket, no network."""
+
+    def __init__(self, client) -> None:
+        self.client = client
+
+    def request(self, method, url, headers=None, timeout=None, params=None, json=None, stream=False):
+        return _Resp(self.client.request(method, url, headers=headers, params=params, json=json))
+
+
+@pytest.fixture
+def dash_api(api, monkeypatch):
+    """lib.api_client wired to the `api` app (DuckDB, no model). Returns (api_client module, TestClient, sink)."""
+    import streamlit as st
+    from lib import api_client, config
+
+    client, sink = api
+    monkeypatch.setattr(api_client, "session", InProcessSession(client))
+    monkeypatch.setattr(api_client, "RETRY_WAIT_S", 0)
+    monkeypatch.setattr(config, "api_url", lambda: "http://testserver")
+    monkeypatch.setattr(config, "api_key", lambda: API_KEY)
+    st.cache_data.clear()  # page tests must not see another test's cached reads
+    return api_client, client, sink

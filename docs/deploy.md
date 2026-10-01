@@ -1,8 +1,7 @@
 # Deploying the API
 
-**No GCP resource is created by this branch.** Everything below is documentation for a later,
-owner-approved step — the container runs and is smoke-tested locally, and deploying it is a one-command
-follow-up, not something this branch does on its own.
+**Every command below that touches GCP creates or changes a real resource and is run by the owner, one step
+at a time, with a yes before each one.** The container itself still just runs and is smoke-tested locally.
 
 ## Container
 
@@ -29,24 +28,77 @@ The image installs `.[api,mcp]`, so the same container serves the MCP tools at `
 [api.md](api.md#one-worker) for why. Scale by running more container instances, never by raising
 `--workers`.
 
-## Cloud Run (documentation only — do not run without owner sign-off)
+## Cloud Run
+
+### One-time setup (owner-run, one approval per step)
 
 ```bash
-gcloud run deploy adpilot-api \
-  --image gcr.io/${PROJ}/adpilot \
-  --region us-central1 \
-  --min-instances 0 --max-instances 2 \
-  --concurrency 4 \
-  --no-cpu-throttling \
-  --timeout 300 \
-  --port 8080 \
-  --service-account adpilot-api@${PROJ}.iam.gserviceaccount.com \
-  --set-secrets ADPILOT_API_KEY=adpilot-api-key:latest,AGENT_LLM_BEARER_TOKEN=agent-llm-bearer-token:latest
+set -a; source .env; set +a
+PROJ=$(gcloud config get-value project); REGION=us-east4
+SA="adpilot-api@${PROJ}.iam.gserviceaccount.com"
+
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com
+
+gcloud iam service-accounts create adpilot-api --display-name "AdPilot API"
+sleep 20   # let the new service account propagate before granting it roles
+gcloud projects add-iam-policy-binding "${PROJ}" --member "serviceAccount:${SA}" --role roles/bigquery.jobUser --condition=None
+
+bq query --use_legacy_sql=false --project_id "$PROJ" \
+  "GRANT \`roles/bigquery.dataEditor\` ON SCHEMA \`${PROJ}.adpilot_audit\` TO 'serviceAccount:${SA}'"
+for DS in "$BQ_PRODUCTION_DATASET" "$BQ_STAGING_DATASET"; do
+  bq query --use_legacy_sql=false --project_id "$PROJ" \
+    "GRANT \`roles/bigquery.dataViewer\` ON SCHEMA \`${PROJ}.${DS}\` TO 'serviceAccount:${SA}'"
+done
+
+python3 -c "import secrets;print(secrets.token_hex(24))" | tr -d '\n' | gcloud secrets create adpilot-api-key --data-file=-
+printf %s "$AGENT_LLM_BEARER_TOKEN" | gcloud secrets create agent-llm-bearer-token --data-file=-
+for SECRET in adpilot-api-key agent-llm-bearer-token; do
+  gcloud secrets add-iam-policy-binding "$SECRET" --member "serviceAccount:${SA}" --role roles/secretmanager.secretAccessor
+done
+
+gcloud artifacts repositories create adpilot --repository-format docker --location "${REGION}"
+gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 ```
+
+`bq add-iam-policy-binding` fails on bq 2.1.x with "This feature requires allowlisting" — the `GRANT` statements
+above are the working equivalent; the first deploy failed here because the audit store was unreachable.
+
+### Deploy
+
+```bash
+set -a; source .env; set +a
+PROJ=$(gcloud config get-value project); REGION=us-east4
+SA="adpilot-api@${PROJ}.iam.gserviceaccount.com"
+IMAGE="${REGION}-docker.pkg.dev/${PROJ}/adpilot/adpilot:$(git rev-parse --short HEAD)"
+docker build --platform linux/amd64 -t adpilot . && docker tag adpilot "${IMAGE}" && docker push "${IMAGE}"
+gcloud run deploy adpilot-api --image "${IMAGE}" --region "${REGION}" \
+  --allow-unauthenticated \
+  --min-instances 0 --max-instances 2 --concurrency 4 --no-cpu-throttling --memory 1Gi --timeout 300 --port 8080 \
+  --service-account "${SA}" \
+  --set-secrets ADPILOT_API_KEY=adpilot-api-key:latest,AGENT_LLM_BEARER_TOKEN=agent-llm-bearer-token:latest \
+  --set-env-vars "ADPILOT_CONNECTOR=bigquery,BQ_PROJECT_ID=${PROJ},BQ_PRODUCTION_DATASET=${BQ_PRODUCTION_DATASET},BQ_STAGING_DATASET=${BQ_STAGING_DATASET},BQ_AUDIT_DATASET=adpilot_audit"
+```
+
+The image is about 0.3 GB compressed and Artifact Registry's free tier is 0.5 GB, so keep one tag and delete the
+previous one after each deploy:
+
+```bash
+gcloud artifacts docker images delete "${REGION}-docker.pkg.dev/${PROJ}/adpilot/adpilot:<old-tag>" --quiet
+```
+
+`--allow-unauthenticated` is required: callers authenticate with `X-API-Key`, and the Streamlit dashboard cannot
+present a Cloud Run IAM token. `--min-instances 0` is deliberate: the service scales to zero when idle (free), and
+the first request after idle pays a cold start of a few seconds, which the dashboard retries through once. Do not
+"fix" the cold start with `--min-instances 1`: that keeps an instance running around the clock and bills it.
 
 `--no-cpu-throttling` is not optional: audit rows are flushed in a background task *after* the response, and
 Cloud Run's default throttles CPU the moment a response completes, so without it the last rows of an instance
 can be lost. The shutdown flush covers the rest.
+
+On the `*.run.app` URL, Google's front end answers `/healthz` itself with a 404, because it reserves some paths
+ending in `z`; Cloud Run's startup probe is TCP, so the service is unaffected. To check a live service, call an
+authenticated endpoint such as `GET /dashboard` with `X-API-Key`. Locally and in Docker, `/healthz` works as
+documented.
 
 `--workers 1` is already in the image's `CMD`; nothing on the `gcloud run deploy` line needs to repeat it.
 `--region` should match the BigQuery dataset's location (`BQ_LOCATION`, default `US`) to avoid cross-region
@@ -68,9 +120,10 @@ One service account, `adpilot-api@${PROJ}.iam.gserviceaccount.com`, attached to 
 | `roles/bigquery.jobUser` | project | run query and load jobs |
 | `roles/bigquery.dataEditor` | `adpilot_audit` dataset only | write `agent_calls`/`scores`/`eval_runs` |
 | `roles/bigquery.dataViewer` | the production dataset | read marketing data for `run_sql` |
+| `roles/bigquery.dataViewer` | the staging dataset | read anomalies, forecast and budget (the tier-2 tools and dashboard panels) |
 
 Same least-privilege pattern as the audit service accounts in [observability.md](observability.md): no
-project-wide `dataEditor`, so the API's credentials cannot touch data outside these two grants.
+project-wide `dataEditor`, so the API's credentials cannot touch data outside these three grants.
 
 ### Secrets
 
@@ -82,14 +135,23 @@ Two Secret Manager secrets, referenced with `--set-secrets` above, never with `-
 
 ### Rotating the API key
 
-1. `python -c "import secrets;print(secrets.token_hex(16))"` for a new value.
-2. `gcloud secrets versions add adpilot-api-key --data-file=-` (paste the value, `Ctrl-D`).
-3. Redeploy (or `gcloud run services update adpilot-api --update-secrets
+1. `python3 -c "import secrets;print(secrets.token_hex(24))" | tr -d '\n' | gcloud secrets versions add adpilot-api-key --data-file=-`
+   (the `tr -d '\n'` matters: a trailing newline in the secret would never match `X-API-Key`).
+2. Redeploy (or `gcloud run services update adpilot-api --update-secrets
    ADPILOT_API_KEY=adpilot-api-key:latest`) so the revision picks up `:latest`.
-4. Update callers, then destroy the old secret version once nothing uses it.
+3. Update callers, then destroy the old secret version once nothing uses it.
 
 There is no dual-key grace period — swapping the secret rotates instantly for every request the new
 revision serves. Roll out gradually with Cloud Run traffic splitting if that matters.
+
+## Streamlit Cloud (dashboard)
+
+A merge to `main` deploys automatically. Streamlit Community Cloud installs the root `requirements.txt`,
+which holds only what `streamlit_app/` imports (Streamlit, pandas, Plotly, requests, python-dotenv) — the
+dashboard is a thin client of `adpilot-api` and never installs the agent, connectors or pipeline
+dependencies. Point it at the deployed API through Streamlit Cloud's app secrets, `[api]` section:
+`ADPILOT_API_URL` (the Cloud Run URL) and `ADPILOT_API_KEY` (the same key from `adpilot-api-key`, above).
+Renaming either config key means updating the Cloud secrets to match.
 
 ## Daily data (Phase 3D)
 
@@ -113,8 +175,9 @@ run_pipeline (event fn, max-instances 1, timeout 540 s)
    write landing/<as_of>/_status.json {ok, run_id, steps, seconds, planted, flagged, error}
 ```
 
-Both entry points live in `pipelines/main.py`, deployed twice from `--source pipelines` with
-`pipelines/requirements.txt` (the pipeline subset of the root file plus `functions-framework`). Retries stay
+Both entry points live in `pipelines/main.py`, deployed twice from `--source pipelines` with its own
+`pipelines/requirements.txt` (BigQuery, Cloud Storage and the pinned pandas/numpy, plus `functions-framework`
+— independent of the dashboard's root `requirements.txt`). Retries stay
 off on purpose: recovery is catch-up on the next run, never a redelivery of a stale batch. Project, dataset
 and bucket names never enter the repo — everything below reads them from `$BQ_PROJECT_ID`,
 `$BQ_BRONZE_DATASET`, `$BQ_STAGING_DATASET`, `$BQ_PRODUCTION_DATASET` and `$RAW_BUCKET`.
