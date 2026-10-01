@@ -11,6 +11,7 @@ ErrorKind = Literal[
     "InputPolicy",
     "OutputPolicy",
     "DataSourceUnavailable",
+    "QueryTimeout",
     "ModelRateLimited",
     "ModelUnavailable",
     "OutOfScope",

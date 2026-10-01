@@ -8,13 +8,15 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
+from adpilot.connectors.base import timeout_error
 from adpilot.core.errors import AdPilotError
 
 
 class DuckDBSource:
     dialect = "duckdb"
 
-    def __init__(self, csv_dir: Path, init_sql: str) -> None:
+    def __init__(self, csv_dir: Path, init_sql: str, timeout_s: float = 30) -> None:
+        self._timeout_s = timeout_s
         self._con = duckdb.connect()
         self._con.execute(init_sql.replace("{csv_dir}", Path(csv_dir).as_posix()))
         # Load every view's rows now (a view over read_csv would read the file on each query), then close file
@@ -32,7 +34,14 @@ class DuckDBSource:
     def query(self, sql: str, max_bytes: int | None = None) -> pd.DataFrame:
         try:
             with self._lock:
-                return self._con.execute(sql).df()
+                watchdog = threading.Timer(self._timeout_s, self._con.interrupt)  # an idle interrupt is a no-op
+                watchdog.start()
+                try:
+                    return self._con.execute(sql).df()
+                finally:
+                    watchdog.cancel()
+        except duckdb.InterruptException as exc:  # before duckdb.Error: it is a subclass
+            raise timeout_error(self._timeout_s) from exc
         except duckdb.ParserException as exc:
             raise AdPilotError("SqlSyntax", _first_line(exc)) from exc
         except duckdb.BinderException as exc:

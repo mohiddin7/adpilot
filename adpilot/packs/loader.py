@@ -33,6 +33,14 @@ class Pack:
     def max_result_rows(self) -> int:
         return int(self.raw.get("max_result_rows", 100))
 
+    @property
+    def query_timeout_s(self) -> float:
+        """Every query's deadline, both engines: queries share one lock, so a slow one stalls every caller."""
+        value = self.raw.get("query_timeout_s", 30)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError(f"pack {self.name!r}: query_timeout_s must be a positive number of seconds, got {value!r}")
+        return value
+
     @cached_property
     def prompt_hash(self) -> str:
         """12-hex sha256 over system prompt + glossary + the tables block: changes when the agent's context changes."""

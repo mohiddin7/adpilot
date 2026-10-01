@@ -55,3 +55,18 @@ def test_briefing_block_is_valid(pack):
 
     t, budgets = settings(pack)
     assert set(budgets) == {"Facebook", "Google", "TikTok"} and t["max_items"] == 3
+
+
+@pytest.mark.parametrize("bad", [0, -1, "soon", None])
+def test_a_bad_query_timeout_fails_at_load(pack, bad):
+    import copy
+    import dataclasses
+
+    raw = copy.deepcopy(pack.raw)
+    raw["query_timeout_s"] = bad
+    with pytest.raises(ValueError, match="query_timeout_s"):
+        dataclasses.replace(pack, raw=raw).query_timeout_s  # noqa: B018 — the property's validation is the point
+
+
+def test_the_ads_pack_times_queries_out_at_30_seconds(pack):
+    assert pack.query_timeout_s == 30

@@ -17,6 +17,7 @@ def get_connector(name: str, pack: Pack) -> DataSource:
         return DuckDBSource(
             csv_dir=pack.repo_root / cfg["csv_dir"],
             init_sql=(pack.root / cfg["init_sql"]).read_text(),
+            timeout_s=pack.query_timeout_s,
         )
     if name == "bigquery":
         from adpilot.connectors.bigquery import BigQuerySource
@@ -25,6 +26,7 @@ def get_connector(name: str, pack: Pack) -> DataSource:
         return BigQuerySource(
             project=os.environ.get(cfg["project_env"], cfg.get("project_default", "adpilot-lakehouse")),
             default_max_bytes=pack.raw.get("max_bytes_billed", 10 * 1024 * 1024),
+            timeout_s=pack.query_timeout_s,
         )
     raise ValueError(f"Unknown connector {name!r}; expected duckdb or bigquery")
 
