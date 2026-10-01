@@ -1,12 +1,11 @@
 """AI insights: findings the analysis engine ranked (money lost first) in the chosen window, each with its evidence
-chart, numbers, action and confidence. "Investigate why" asks the analyst about one finding; the answer stays under
-its card for the session, and says so when the analyst ran no query."""
+chart, numbers, action and confidence. "Why this happened" opens the engine's own breakdown of the finding (no model);
+"Ask in chat" sends the finding to this page's chat."""
 
 import streamlit as st
 from lib import chat, view
-from lib.api_client import ApiError
 from lib.charts import build_figure
-from lib.controls import NO_QUERY, context_line, investigate_question, md
+from lib.controls import ASK_WHY, context_line, md
 from lib.formatters import fmt_currency
 from lib.theme import platform_colors
 
@@ -42,9 +41,7 @@ else:
 for problem in out["problems"]:
     st.caption(md(problem))
 
-investigations = st.session_state.setdefault("investigations", {})  # keyed by (card id, window)
 for c in cards:
-    inv_key = (c["id"], params)
     with st.container(border=True):
         st.markdown(md(f"{view.SEVERITY_BADGE[c['severity']]} · about {fmt_currency(c['stake'])} {view.stake_label(c)}"))
         st.markdown(md(f"### {c['title']}"))
@@ -63,20 +60,14 @@ for c in cards:
             st.markdown(md(f"**Do:** {c['action']}"))
             st.caption(md(f"Why: {c['why']}"))
             st.caption(md(f"Confidence: {c['confidence']}"))
-        ask, send = st.columns(2)
-        if ask.button("Investigate why", key=f"inv_{c['id']}"):
-            try:
-                investigations[inv_key] = {"answer": chat.run_ask(investigate_question(c["facts"]), context, "insights")}
-            except ApiError as exc:
-                investigations[inv_key] = {"error": exc.message}
-        if send.button("Ask in chat", key=f"chat_{c['id']}"):
-            chat.ask_and_record(investigate_question(c["facts"]), context, "insights")
+        why = c.get("why_detail")  # the engine's breakdown; None for a budget move, absent on an older API
+        if why:
+            with st.expander("Why this happened"):
+                st.markdown(md(why["text"]))
+                detail = why.get("chart")
+                fig = build_figure(detail["spec"], detail["rows"], detail["formats"], colors) if detail else None
+                if fig is not None:
+                    st.plotly_chart(fig, key=f"why_{c['id']}")
+        if st.button("Ask in chat", key=f"chat_{c['id']}"):
+            chat.ask_and_record(ASK_WHY + c["facts"], context, "insights")
             st.rerun()
-        got = investigations.get(inv_key)
-        if got and "answer" in got:
-            with st.container(border=True):
-                if not got["answer"].get("sql"):
-                    st.caption(NO_QUERY)
-                chat.render_answer(got["answer"])
-        elif got:
-            st.warning(got["error"])

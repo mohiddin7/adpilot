@@ -309,39 +309,13 @@ def test_card_text_shows_dollar_amounts_literally(dash_api, monkeypatch):
     assert any("HIGH" in m.value for m in at.markdown)  # a text badge, not colour alone
 
 
-def test_investigate_why_answers_under_the_card_and_keeps_it(dash_api, monkeypatch):
-    _cards(monkeypatch, [CARD])
-    at = run("pages/2_AI_Insights.py")
-    at.button(key="inv_mix:Google").click().run()
-    assert not at.exception, at.exception
-    assert _investigation(at, "mix:Google") and "answer" in _investigation(at, "mix:Google")
-    assert at.session_state.get("messages_insights", []) == []  # an investigation is not the sidebar chat
-    at.run()
-    assert "answer" in _investigation(at, "mix:Google")
-
-
-def _investigation(at, card_id):
-    return next((v for (cid, _window), v in at.session_state["investigations"].items() if cid == card_id), None)
-
-
-def test_an_investigation_stays_with_the_window_it_was_asked_in(dash_api, monkeypatch):
-    """Final review M8: the same card id in another window is another finding; the old answer must not show."""
-    _cards(monkeypatch, [CARD])
-    at = run("pages/2_AI_Insights.py")
-    at.button(key="inv_mix:Google").click().run()
-    assert any("pre-defined query" in m.value for m in at.markdown)
-    at.session_state["ins_preset"] = "Last 7 days"
-    at.run()
-    assert not at.exception, at.exception
-    assert not any("pre-defined query" in m.value for m in at.markdown)
-
-
 def test_ask_in_chat_goes_to_this_pages_chat(dash_api, monkeypatch):
     _cards(monkeypatch, [CARD])
     at = run("pages/2_AI_Insights.py")
     at.button(key="chat_mix:Google").click().run()
     assert not at.exception, at.exception
-    assert at.session_state["messages_insights"][0]["role"] == "user"
+    asked = at.session_state["messages_insights"][0]
+    assert asked["role"] == "user" and asked["content"] == "Why did this happen, and what should I check first? " + CARD["facts"]
 
 
 def test_no_findings_says_so_and_lists_the_checks(dash_api, monkeypatch):
@@ -472,24 +446,28 @@ def test_what_changed_says_what_each_stake_is(dash_api, monkeypatch):
     assert "(about \\$5.0K at stake)" in text and "(about \\$1.2K to reallocate)" in text
 
 
-NO_QUERY = "The analyst answered without running a query, so treat this as a hypothesis."
+WHY = {"text": "Ad price +20%, clicks per view -50%. Mostly fewer people clicked. It paid $5 more per sale.",
+       "chart": {"spec": {"chart_type": "bar", "x": "measure", "y": "change"},
+                 "rows": [{"measure": "Ad price", "change": 0.2}, {"measure": "Clicks per view", "change": -0.5}],
+                 "formats": {"change": "percent"}}}
 
 
-@pytest.mark.parametrize("sql,shown", [(None, True), ("SELECT 1", False)])
-def test_an_investigation_without_a_query_is_called_a_hypothesis(dash_api, monkeypatch, sql, shown):
-    """Live pass, finding 8: an ungrounded answer must never pass for analysis."""
-    from lib import api_client
-    from lib.controls import INVESTIGATE
-
-    asked = []
-    answer = {"answer_md": "TikTok probably has a tracking problem.", "sql": sql, "chart": None, "data": None,
-              "caveats": [], "trace_id": "t1"}
-    monkeypatch.setattr(api_client, "ask", lambda question, session_id: asked.append(question) or answer)
-    _cards(monkeypatch, [CARD])
+def test_a_card_with_a_why_explains_it_in_a_collapsed_expander(dash_api, monkeypatch):
+    """Round 2: the engine's why replaces the model-driven "Investigate why"."""
+    _cards(monkeypatch, [{**LOSS, "platform": "Google", "why_detail": WHY}, {**CARD, "why_detail": None}], at_stake=5000.0)
     at = run("pages/2_AI_Insights.py")
-    at.button(key="inv_mix:Google").click().run()
     assert not at.exception, at.exception
-    assert INVESTIGATE.strip() in asked[0] and CARD["facts"] in asked[0]
-    assert (NO_QUERY in [c.value for c in at.caption]) is shown
-    at.run()  # the caption stays with the kept answer
-    assert (NO_QUERY in [c.value for c in at.caption]) is shown
+    whys = [e for e in at.expander if e.label == "Why this happened"]
+    assert len(whys) == 1 and not whys[0].proto.expanded  # only the card that has one; closed until asked
+    assert [m.value for m in whys[0].markdown] == ["Ad price +20%, clicks per view -50%. Mostly fewer people clicked. "
+                                                   "It paid \\$5 more per sale."]
+    assert "why_outlier:Google:c1" in _figures(at)
+    assert "Investigate why" not in [b.label for b in at.button] and "Ask in chat" in [b.label for b in at.button]
+    assert "investigations" not in at.session_state
+
+
+def test_a_card_from_an_api_without_the_why_still_renders(dash_api, monkeypatch):
+    _cards(monkeypatch, [CARD])  # no why_detail key at all: the dashboard can deploy before the API
+    at = run("pages/2_AI_Insights.py")
+    assert not at.exception, at.exception
+    assert not [e for e in at.expander if e.label == "Why this happened"]

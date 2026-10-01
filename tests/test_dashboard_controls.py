@@ -4,14 +4,13 @@ from datetime import date
 
 import pytest
 from lib.controls import (
-    INVESTIGATE,
+    ASK_WHY,
     QUESTION_LIMIT,
     applies_to,
     clamp_pair,
     clamp_range,
     context_line,
     delta_pct,
-    investigate_question,
     keep_valid,
     md,
     preset_range,
@@ -89,20 +88,8 @@ def test_md_escapes_dollar_signs():
     assert md("spent $5K of $7K") == "spent \\$5K of \\$7K"
 
 
-def test_investigate_question_fits_the_limit():
-    """Review focus 5: facts plus context over 600 characters still send a question."""
-    q = investigate_question("x" * 2000)
-    assert len(q) <= QUESTION_LIMIT and q.startswith(INVESTIGATE)
-    assert with_context(q, "Overview page; 2024-01-01 to 2024-01-30") == q  # no room: context dropped first
-    short = investigate_question("Google paid $90 per sale.")
-    assert short == INVESTIGATE + "Google paid $90 per sale."
-
-
-def test_the_investigate_seed_asks_for_queries_and_a_chart_and_leaves_room_for_the_facts():
-    """Live pass, finding 8: the old seed got a text-only guess. The facts (FACTS_MAX) must still fit untrimmed."""
+def test_ask_in_chat_leaves_room_for_a_cards_facts():
+    """The card's facts (FACTS_MAX on the server) plus the question must fit the analyst's limit untrimmed."""
     from adpilot.dashboard.insights import FACTS_MAX
 
-    assert len(INVESTIGATE) + FACTS_MAX <= QUESTION_LIMIT
-    for phrase in ("Run one query", "by campaign and by week", "only what the data shows", "chart"):
-        assert phrase in INVESTIGATE, phrase
-    assert investigate_question("f" * FACTS_MAX).endswith("f" * FACTS_MAX)
+    assert ASK_WHY.endswith("? ") and len(ASK_WHY) + FACTS_MAX <= QUESTION_LIMIT

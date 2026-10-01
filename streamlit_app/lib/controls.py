@@ -101,17 +101,9 @@ def with_context(question: str, context: str) -> str:
     return full if len(full) <= QUESTION_LIMIT else q
 
 
-# Tells the analyst to query, not guess. With the card's facts (FACTS_MAX = 400 on the server) it must fit QUESTION_LIMIT.
-# One query, not two: the analyst has four model calls a question, and two breakdowns spent them all (live pass, B8).
-INVESTIGATE = ("Investigate this finding. Run one query: the platform involved, by campaign and by week. "
-               "Say only what the data shows, include a chart, and say what to check first. Finding: ")
-NO_QUERY = "The analyst answered without running a query, so treat this as a hypothesis."
-
-
-def investigate_question(facts: str, limit: int = QUESTION_LIMIT) -> str:
-    """A card's facts as a question to the analyst, trimmed to fit; with_context then drops the page context first."""
-    q = INVESTIGATE + " ".join(facts.split())
-    return q if len(q) <= limit else q[: limit - 3].rstrip() + "..."
+# "Ask in chat" on an insight card: this question, then the card's facts (at most FACTS_MAX = 400 on the server, so the
+# two always fit QUESTION_LIMIT; with_context drops the page context first if it does not).
+ASK_WHY = "Why did this happen, and what should I check first? "
 
 
 def md(text: str) -> str:
