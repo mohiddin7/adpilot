@@ -1,5 +1,5 @@
-"""GET /insights: the daily brief's analyses plus three window-vs-window ones over the viewer's window, ranked by the
-dollars at stake, each card with an evidence chart computed here. Every query goes through execute(), so the SQL
+"""GET /insights: the daily brief's analyses plus three window-vs-window ones over the viewer's window, money lost
+first and then by the dollars involved, one card per campaign, each card with an evidence chart computed here. Every query goes through execute(), so the SQL
 policy applies; numbers are code's, and a free model may only reword the title, action and why through the brief's
 grounded writer (a number it was not given sends that slot back to the template)."""
 
@@ -63,6 +63,28 @@ def _severity(stake: float, spend: float) -> str:
     return "high" if share >= 0.05 else "medium" if share >= 0.01 else "low"
 
 
+def _stake_label(i: a.Item) -> str:
+    """What the stake is. Only "at stake" is money lost: a spend mover is a change, a move or mix is reallocatable."""
+    if i.kind in ("move", "mix"):
+        return "to reallocate"
+    return "change in spend" if i.kind == "mover" and i.id.endswith(":spend") else "at stake"
+
+
+def _one_per_campaign(ranked: list[a.Item]) -> tuple[list[a.Item], dict[str, list[str]]]:
+    """Keep the first (best-ranked) finding per (platform, campaign id); a later one's sentence goes to the kept
+    card's `also`. Only the campaign-level kinds have that key, in `check`."""
+    kept, first, also = [], {}, {}
+    for i in ranked:
+        key = (i.check["platform"], i.check["campaign_id"]) if i.kind in ("anomaly", "mover", "outlier") else None
+        if key in first:
+            also.setdefault(first[key], []).append(i.happened)
+            continue
+        if key:
+            first[key] = i.id
+        kept.append(i)
+    return kept, also
+
+
 def _chart(spec: dict, rows: list[dict], formats: dict) -> dict | None:
     return {"spec": PanelChartSpec(**spec).model_dump(), "rows": rows, "formats": formats} if rows else None
 
@@ -98,8 +120,9 @@ def _evidence(i: a.Item, gold: pd.DataFrame, cur: pd.DataFrame, plan: pd.DataFra
                 for p, v in (("current", r.current_spend), ("recommended", r.recommended_spend))]
         return _chart({"chart_type": "bar", "x": "platform", "y": "spend", "color": "plan"}, rows, {"spend": "currency"})
     if i.kind == "mover":
-        rows = [{"period": "previous", "value": round(c["before"], 2)}, {"period": "this", "value": round(c["after"], 2)}]
-        return _chart({"chart_type": "bar", "x": "period", "y": "value"}, rows, {"value": "currency"})
+        y = c["metric"]  # spend | cpa: the axis is titled from the column name
+        rows = [{"period": "previous", y: round(c["before"], 2)}, {"period": "this", y: round(c["after"], 2)}]
+        return _chart({"chart_type": "bar", "x": "period", "y": y}, rows, {y: "currency"})
     if i.kind == "outlier" and c["cpa"] is not None:
         rows = [{"name": "this campaign", "cpa": round(c["cpa"], 2)}, {"name": "account average", "cpa": round(c["account"], 2)}]
         return _chart({"chart_type": "bar", "x": "name", "y": "cpa"}, rows, {"cpa": "currency"})
@@ -119,7 +142,7 @@ def run_insights(template: AgentDeps, cfg: DashboardConfig, flt: Filters, model:
     try:
         t, budgets = settings(template.pack)
     except ValueError as exc:  # our own text about pack.yaml: safe to show
-        return {"cards": [], "checked": [], "problems": [str(exc)], "writer": "templates"}
+        return {"cards": [], "checked": [], "problems": [str(exc)], "writer": "templates", "at_stake": 0.0}
     meta = dashboard_meta(template, cfg, cache)  # AdPilotError → the route's 503
     first, latest = date.fromisoformat(meta["date_min"]), date.fromisoformat(meta["date_max"])
     chosen = flt.values("platform")
@@ -133,10 +156,11 @@ def run_insights(template: AgentDeps, cfg: DashboardConfig, flt: Filters, model:
     gold, why = _frame(template, cfg, "gold", GOLD_SQL,
                        dataclasses.replace(flt, date_from=since, ranges=()), ("date",))
     if gold is None:
-        return {"cards": [], "checked": [], "problems": [why], "writer": "templates"}
+        return {"cards": [], "checked": [], "problems": [why], "writer": "templates", "at_stake": 0.0}
     cur = gold[(gold["date"] >= flt.date_from) & (gold["date"] <= flt.date_to)]
     if cur.empty:
-        return {"cards": [], "checked": [], "problems": ["There is no ad data in this period."], "writer": "templates"}
+        return {"cards": [], "checked": [], "problems": ["There is no ad data in this period."], "writer": "templates",
+                "at_stake": 0.0}
     prev = gold[(gold["date"] >= prev_from) & (gold["date"] < flt.date_from)]
 
     week = dataclasses.replace(flt, date_from=as_of - timedelta(days=6), date_to=as_of, ranges=())
@@ -179,7 +203,8 @@ def run_insights(template: AgentDeps, cfg: DashboardConfig, flt: Filters, model:
         if got is not None:  # None: the check does not apply to this view
             found += got
             checked.append(name)
-    found.sort(key=lambda i: -i.stake)
+    found.sort(key=lambda i: (_stake_label(i) != "at stake", -i.stake))  # money lost first, then by size
+    found, also = _one_per_campaign(found)
     top = found[:MAX_CARDS]
     text, model_used, _ = write(fresh_deps(template), model, top, [], [], new_trace_id(), source="dashboard",
                                 case_name="insights_writer") if top else ({}, None, None)
@@ -193,11 +218,13 @@ def run_insights(template: AgentDeps, cfg: DashboardConfig, flt: Filters, model:
             chart = None
         cards.append({
             "id": i.id, "kind": i.kind, "severity": _severity(i.stake, spend), "stake": round(i.stake, 2),
+            "loss": _stake_label(i) == "at stake", "stake_label": _stake_label(i), "also": also.get(i.id, []),
             "title": text[i.id]["title"], "headline": i.happened, "action": text[i.id]["do"],
             "why": text[i.id]["checked"], "confidence": i.confidence, "numbers": i.numbers, "chart": chart,
             "facts": f"{i.happened} {text[i.id]['checked']}"[:FACTS_MAX],
         })
-    out = {"cards": cards, "checked": checked, "problems": problems, "writer": model_used or "templates"}
+    out = {"cards": cards, "checked": checked, "problems": problems, "writer": model_used or "templates",
+           "at_stake": round(sum(c["stake"] for c in cards if c["loss"]), 2)}
     if not problems:
         cache.put(key, out)
     return out
