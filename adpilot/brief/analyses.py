@@ -554,6 +554,54 @@ def mix_gaps(cur: pd.DataFrame, t: dict) -> list[Item]:
     return items
 
 
+# ---------- 7. why a finding happened (the dashboard's "Why this happened") ----------
+
+RATES = {"price": "Ad price", "clicks": "Clicks per view", "buyers": "Sales per click"}
+# driver -> how a campaign differs from the account: a comparison, where CAUSES describes a change over time
+VERSUS = {"price": "its ads cost more per view", "clicks": "fewer of its viewers click", "buyers": "fewer of its clickers buy"}
+SPEND_PARTS = {"views": ("fewer views", "more views"), "price": ("a lower price per view", "a higher price per view")}
+
+
+def versus(sp: dict | None) -> str:
+    """explain()'s sentence for split(account, campaign): which rate makes the campaign dearer than the account."""
+    if sp is None or not drivers(sp):
+        return explain(None)[0]
+    ch = sp["changes"]
+    return (f"Against the account: ad price {pct(ch['price'])}, clicks per view {pct(ch['clicks'])}, sales per click "
+            f"{pct(ch['buyers'])}. Mostly {' and '.join(VERSUS[d] for d in drivers(sp))}.")
+
+
+def spend_split(before: dict, after: dict) -> dict | None:
+    """Spend = views x price per view, so the log change in spend splits exactly into those two terms (the same shape
+    split() returns, so drivers() reads it). None when a period has no spend or no views."""
+    if any(s[k] <= 0 for s in (before, after) for k in ("spend", "impressions")):
+        return None
+    views = after["impressions"] / before["impressions"]
+    price = (after["spend"] / after["impressions"]) / (before["spend"] / before["impressions"])
+    terms = {"views": math.log(views), "price": math.log(price)}
+    return {"terms": terms, "total": sum(terms.values()), "changes": {"views": views - 1, "price": price - 1}}
+
+
+def explain_spend(sp: dict | None) -> str:
+    if sp is None:
+        return "It had no spend or no views in one of the two periods, so the change can't be split."
+    ch = sp["changes"]
+    carried = " and ".join(SPEND_PARTS[d][ch[d] > 0] for d in drivers(sp)) or "no single cause"
+    return f"Views {pct(ch['views'])}, price per view {pct(ch['price'])}. The change comes mostly from {carried}."
+
+
+def driving_campaigns(cur: pd.DataFrame, plat: str) -> list[tuple[str, float]] | None:
+    """A platform's campaigns that cost more than the account's cost per sale would have: (name, excess), where
+    excess = spend - sales x the account's cost per sale in the window, largest first, positive only. None when the
+    account has no sales to set that reference."""
+    spend, sales = float(cur["spend"].sum()), float(cur["conversions"].sum())
+    if sales <= 0:
+        return None
+    c = _by_campaign(cur[cur["platform"] == plat])
+    excess = (c["spend"] - c["conversions"] * spend / sales).sort_values(ascending=False)
+    return [(c["campaign_name"][k], float(v)) for k, v in excess.items() if v > 0]
+
+
 def rank(candidates: list[Item], followed: list[dict], t: dict) -> tuple[list[Item], list[Item]]:
     """Top items by stake. An item still open from an earlier brief stays in "following up" unless its stake grew."""
     stored = {f["item_id"]: f for f in followed if f["status"] == "open"}

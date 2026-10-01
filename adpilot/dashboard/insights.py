@@ -1,5 +1,6 @@
 """GET /insights: the daily brief's analyses plus three window-vs-window ones over the viewer's window, money lost
-first and then by the dollars involved, one card per campaign, each card with an evidence chart computed here. Every query goes through execute(), so the SQL
+first and then by the dollars involved, one card per campaign, each card with an evidence chart and a "why"
+(which rate or which campaigns drove it) computed here. Every query goes through execute(), so the SQL
 policy applies; numbers are code's, and a free model may only reword the title, action and why through the brief's
 grounded writer (a number it was not given sends that slot back to the template)."""
 
@@ -138,6 +139,56 @@ def _evidence(i: a.Item, gold: pd.DataFrame, cur: pd.DataFrame, plan: pd.DataFra
     return None
 
 
+def _bars(changes: dict, names: dict) -> dict | None:
+    rows = [{"measure": names[k], "change": round(v, 4)} for k, v in changes.items()]
+    return _chart({"chart_type": "bar", "x": "measure", "y": "change"}, rows, {"change": "percent"})
+
+
+def _rate_why(before: dict, after: dict, versus: bool = False) -> dict:
+    """Which of ad price, clicks per view and sales per click moved the cost per sale, as a sentence and three bars."""
+    sp = a.split(before, after)
+    return {"text": a.versus(sp) if versus else a.explain(sp)[0], "chart": _bars(sp["changes"], a.RATES) if sp else None}
+
+
+def _campaigns_why(cur: pd.DataFrame, plat: str) -> dict | None:
+    """The platform's campaigns by what they cost above the account's cost per sale: the top one named, five drawn."""
+    found = a.driving_campaigns(cur, plat)
+    if found is None:
+        return None
+    if not found:
+        return {"text": f"No {plat} campaign pays more per sale than the account average.", "chart": None}
+    (name, top), total = found[0], sum(v for _, v in found)
+    rows = [{"campaign_name": n, "excess_cost": round(v, 2)} for n, v in found[:5]]
+    return {"text": f'"{name}" carries {top / total:.0%} of {plat}\'s cost above the account average '
+                    f"({a.money(top)} of {a.money(total)}).",
+            "chart": _chart({"chart_type": "bar_h", "x": "campaign_name", "y": "excess_cost"}, rows, {"excess_cost": "currency"})}
+
+
+def _why(i: a.Item, gold: pd.DataFrame, cur: pd.DataFrame, prev: pd.DataFrame, as_of: date) -> dict | None:
+    """Why the finding happened, computed from the frames already loaded: {text, chart} or None. No query, no model."""
+    c = i.check
+    if i.kind in ("mix", "pace"):
+        return _campaigns_why(cur, c["platform"])
+    if i.kind == "cost":  # the same two weeks cost_items compared
+        g = gold[gold["platform"] == c["platform"]]
+        why = _rate_why(a._sums(a._window(g, as_of - timedelta(days=7), 7)), a._sums(a._window(g, as_of, 7)))
+        top = _campaigns_why(cur, c["platform"])
+        return {**why, "text": f"{why['text']} {top['text']}"} if top else why
+    if i.kind not in ("anomaly", "mover", "outlier"):
+        return None  # a budget move: the card already shows each platform's cost per sale
+
+    def mine(df: pd.DataFrame) -> dict:
+        return a._sums(df[(df["platform"] == c["platform"]) & (df["campaign_id"] == c["campaign_id"])])
+
+    if i.kind == "outlier":
+        return _rate_why(a._sums(cur), mine(cur), versus=True)
+    if i.kind == "mover" and c["metric"] == "spend":
+        sp = a.spend_split(mine(prev), mine(cur))
+        return {"text": a.explain_spend(sp),
+                "chart": _bars(sp["changes"], {"views": "Views", "price": "Price per view"}) if sp else None}
+    return _rate_why(mine(prev), mine(cur))
+
+
 def run_insights(template: AgentDeps, cfg: DashboardConfig, flt: Filters, model: Model | None, cache: TtlCache) -> dict:
     key = ("insights", flt)
     hit = cache.get(key)
@@ -220,8 +271,14 @@ def run_insights(template: AgentDeps, cfg: DashboardConfig, flt: Filters, model:
         except Exception:  # noqa: BLE001 — a card without its chart beats no card
             log.exception("insights: evidence for %s failed", i.id)
             chart = None
+        try:
+            why = _why(i, gold, cur, prev, as_of)
+        except Exception:  # noqa: BLE001 — a card without its why beats no card
+            log.exception("insights: the why for %s failed", i.id)
+            why = None
         cards.append({
-            "id": i.id, "kind": i.kind, "severity": _severity(i.stake, spend), "stake": round(i.stake, 2),
+            "id": i.id, "kind": i.kind, "platform": i.check.get("platform"), "why_detail": why,
+            "severity": _severity(i.stake, spend), "stake": round(i.stake, 2),
             "loss": _stake_label(i) == "at stake", "stake_label": _stake_label(i), "also": also.get(i.id, []),
             "title": text[i.id]["title"], "headline": i.happened, "action": text[i.id]["do"],
             "why": text[i.id]["checked"], "confidence": i.confidence, "numbers": i.numbers, "chart": chart,

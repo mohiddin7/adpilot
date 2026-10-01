@@ -229,3 +229,132 @@ def test_a_mover_chart_names_its_y_axis(eager, cfg, monkeypatch, metric):
     chart = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))["cards"][0]["chart"]
     assert chart["spec"]["y"] == metric and chart["formats"] == {metric: "currency"}
     assert chart["rows"] == [{"period": "previous", metric: 10.0}, {"period": "this", metric: 20.0}]
+
+
+# ---------- the engine-computed "why" (round 2): hand-built frames, exact numbers ----------
+
+AS_OF = date(2024, 1, 30)
+
+
+def _rows(*rows):
+    """(date, platform, campaign_id, impressions, clicks, spend, conversions) → the gold frame's shape."""
+    import pandas as pd
+
+    return pd.DataFrame([{"date": d, "platform": p, "campaign_id": c, "campaign_name": f"{c} name", "impressions": i,
+                          "clicks": k, "spend": s, "conversions": v} for d, p, c, i, k, s, v in rows])
+
+
+PREV = _rows((date(2024, 1, 10), "Google", "g1", 1000, 100, 100.0, 10), (date(2024, 1, 10), "Google", "g2", 1000, 100, 100.0, 0),
+             (date(2024, 1, 10), "TikTok", "t1", 5000, 500, 100.0, 100))
+CUR = _rows((date(2024, 1, 25), "Google", "g1", 1500, 75, 180.0, 15), (date(2024, 1, 25), "Google", "g2", 1000, 100, 100.0, 10),
+            (date(2024, 1, 25), "TikTok", "t1", 5000, 500, 100.0, 100))
+# g1: ad price 0.10 → 0.12 a view (+20%), clicks per view 0.10 → 0.05 (−50%), sales per click 0.10 → 0.20 (+100%)
+G1_CHANGES = [{"measure": "Ad price", "change": 0.2}, {"measure": "Clicks per view", "change": -0.5},
+              {"measure": "Sales per click", "change": 1.0}]
+
+
+def _why(item, cur=CUR, prev=PREV, gold=None):
+    import pandas as pd
+
+    return insights._why(item, pd.concat([prev, cur]) if gold is None else gold, cur, prev, AS_OF)
+
+
+@pytest.mark.parametrize("item", [_mover("g1", "cpa", 1), _anomaly("g1", "high", 1)])
+def test_a_campaigns_cost_per_sale_why_is_its_rate_split_against_the_previous_period(item):
+    why = _why(item)
+    assert why["chart"]["spec"] == PanelChartSpec(chart_type="bar", x="measure", y="change").model_dump()
+    assert why["chart"]["rows"] == G1_CHANGES and why["chart"]["formats"] == {"change": "percent"}
+    assert why["text"] == ("Ad price +20%, clicks per view -50%, sales per click +100%. Mostly fewer people clicked, "
+                           "which points to the ads are wearing out.")
+
+
+def test_a_zero_rate_has_no_chart_and_says_there_is_no_single_cause():
+    why = _why(_mover("g2", "cpa", 1))  # g2 had no sales in the previous period
+    assert why == {"text": "The change has no single clear cause in ad price, clicks or sales per click.", "chart": None}
+
+
+def test_a_spend_movers_why_splits_views_from_price_per_view():
+    why = _why(_mover("g1", "spend", 1))  # views 1,000 → 1,500, price per view 0.10 → 0.12
+    assert why["chart"]["rows"] == [{"measure": "Views", "change": 0.5}, {"measure": "Price per view", "change": 0.2}]
+    assert why["chart"]["formats"] == {"change": "percent"} and why["chart"]["spec"]["chart_type"] == "bar"
+    assert why["text"] == "Views +50%, price per view +20%. The change comes mostly from more views."
+
+
+def test_a_spend_mover_from_nothing_has_no_split():
+    started = _rows((date(2024, 1, 25), "Google", "g9", 1000, 100, 100.0, 10))
+    why = insights._why(_mover("g9", "spend", 1), started, started, PREV, AS_OF)
+    assert why["chart"] is None and "can't be split" in why["text"]
+
+
+def test_an_outliers_why_compares_its_rates_with_the_accounts():
+    why = _why(_outlier("g1", 1))
+    # the account: 7,500 views, 675 clicks, $380, 125 sales. g1: 1,500 views, 75 clicks, $180, 15 sales.
+    assert why["chart"]["rows"] == [{"measure": "Ad price", "change": 1.3684}, {"measure": "Clicks per view", "change": -0.4444},
+                                    {"measure": "Sales per click", "change": 0.08}]
+    assert why["text"] == ("Against the account: ad price +137%, clicks per view -44%, sales per click +8%. "
+                           "Mostly its ads cost more per view.")  # the price term alone carries over half the gap
+
+
+def test_a_platforms_cost_why_is_its_weekly_rate_split_and_names_the_campaign_driving_it():
+    last = _rows((date(2024, 1, 20), "Google", "g1", 1000, 100, 100.0, 10), (date(2024, 1, 20), "TikTok", "t1", 5000, 500, 100.0, 100))
+    this = _rows((date(2024, 1, 27), "Google", "g1", 1500, 75, 180.0, 15), (date(2024, 1, 27), "TikTok", "t1", 5000, 500, 100.0, 100))
+    why = _why(_item("cost:Google", 1, platform="Google"), cur=this, prev=last)  # the 7 days to Jan 30 vs the 7 before
+    assert why["chart"]["rows"] == G1_CHANGES
+    assert why["text"].startswith("Ad price +20%, clicks per view -50%, sales per click +100%. Mostly fewer people clicked")
+    assert why["text"].endswith('"g1 name" carries 100% of Google\'s cost above the account average ($143 of $143).')  # 180 − 15 × (280 / 115)
+
+
+MANY = _rows(*[(date(2024, 1, 25), "Google", f"g{n}", 1000, 100, spend, 10)
+               for n, spend in enumerate((700.0, 600.0, 500.0, 400.0, 300.0, 200.0, 10.0), start=1)],
+             (date(2024, 1, 25), "TikTok", "t1", 5000, 500, 100.0, 100))
+
+
+@pytest.mark.parametrize("item", [_item("mix:Google", 1, platform="Google"), _item("pace:Google:2024-01", 1, platform="Google")])
+def test_a_platforms_why_is_its_campaigns_by_excess_cost(item):
+    """Excess = spend − sales × the account's cost per sale (2,810 / 170). Largest first, positive only, at most 5."""
+    account = 2810 / 170
+    why = _why(item, cur=MANY)
+    assert why["chart"]["spec"] == PanelChartSpec(chart_type="bar_h", x="campaign_name", y="excess_cost").model_dump()
+    assert why["chart"]["formats"] == {"excess_cost": "currency"}
+    assert why["chart"]["rows"] == [{"campaign_name": f"g{n} name", "excess_cost": round(spend - 10 * account, 2)}
+                                    for n, spend in ((1, 700), (2, 600), (3, 500), (4, 400), (5, 300))]
+    total = sum(spend - 10 * account for spend in (700, 600, 500, 400, 300, 200))  # g6 counts; g7 is below the account
+    assert why["text"] == (f'"g1 name" carries {(700 - 10 * account) / total:.0%} of Google\'s cost above the account '
+                           f"average ($535 of $1.7K).")
+
+
+def test_a_platform_with_no_campaign_above_the_account_says_so():
+    assert _why(_item("mix:TikTok", 1, platform="TikTok"), cur=MANY) == {
+        "text": "No TikTok campaign pays more per sale than the account average.", "chart": None}
+
+
+def test_a_budget_move_has_no_why():
+    assert _why(_item("move:TikTok>Facebook", 1)) is None
+
+
+def test_every_card_carries_a_why_detail_whose_chart_is_drawable(eager, cfg):
+    cards = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))["cards"]
+    assert cards and any(c["why_detail"] for c in cards)
+    for c in cards:
+        why = c["why_detail"]  # the key is always there
+        assert c["platform"] in ("Facebook", "Google", "TikTok", None)
+        if why is not None:
+            assert why["text"] and "**" not in why["text"]
+            if why["chart"] is not None:
+                validate_spec(PanelChartSpec(**why["chart"]["spec"]), list(why["chart"]["rows"][0]))
+
+
+def test_a_move_card_has_no_why_detail_and_no_platform(eager, cfg, monkeypatch):
+    _only(monkeypatch, [_item("move:TikTok>Facebook", 5), _outlier("o1", 9)])
+    cards = {c["kind"]: c for c in insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))["cards"]}
+    assert cards["move"]["why_detail"] is None and cards["move"]["platform"] is None
+    assert cards["outlier"]["platform"] == "Google"
+
+
+def test_a_why_that_fails_leaves_its_card_in_place(eager, cfg, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(insights, "_why", boom)
+    cards = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))["cards"]
+    assert cards and all(c["why_detail"] is None for c in cards) and all(c["headline"] for c in cards)
