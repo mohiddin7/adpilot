@@ -1,12 +1,12 @@
-"""AI insights: findings the analysis engine ranked by the dollars at stake in the chosen window, each with its
-evidence chart, numbers, action and confidence. "Investigate why" asks the analyst about one finding; the answer stays
-under its card for the session."""
+"""AI insights: findings the analysis engine ranked (money lost first) in the chosen window, each with its evidence
+chart, numbers, action and confidence. "Investigate why" asks the analyst about one finding; the answer stays under
+its card for the session, and says so when the analyst ran no query."""
 
 import streamlit as st
 from lib import chat, view
 from lib.api_client import ApiError
 from lib.charts import build_figure
-from lib.controls import context_line, investigate_question, md
+from lib.controls import NO_QUERY, context_line, investigate_question, md
 from lib.formatters import fmt_currency
 from lib.theme import platform_colors
 
@@ -31,8 +31,9 @@ params = view.insight_params(start, end, selected)
 out = view.guarded(view.insights, params)
 cards = out["cards"]
 if cards:
-    st.markdown(md(f"**{len(cards)} finding{'s' if len(cards) != 1 else ''} · about "
-                   f"{fmt_currency(sum(c['stake'] for c in cards))} at stake**"))
+    lost = out.get("at_stake") or 0  # the server's sum of the cards whose stake is money lost
+    st.markdown(md(f"**{len(cards)} finding{'s' if len(cards) != 1 else ''}"
+                   + (f" · about {fmt_currency(lost)} at stake" if lost else "") + "**"))
 elif out["problems"] and not out["checked"]:
     st.markdown("**Couldn't check this period.**")
 else:
@@ -45,9 +46,11 @@ investigations = st.session_state.setdefault("investigations", {})  # keyed by (
 for c in cards:
     inv_key = (c["id"], params)
     with st.container(border=True):
-        st.markdown(md(f"{view.SEVERITY_BADGE[c['severity']]} · about {fmt_currency(c['stake'])} at stake"))
+        st.markdown(md(f"{view.SEVERITY_BADGE[c['severity']]} · about {fmt_currency(c['stake'])} {view.stake_label(c)}"))
         st.markdown(md(f"### {c['title']}"))
         st.markdown(md(c["headline"]))
+        for sentence in c.get("also") or []:  # the same campaign's other findings, folded into this card
+            st.markdown(md(f"Also: {sentence}"))
         left, right = st.columns([3, 2])
         with left:
             chart = c.get("chart")
@@ -72,6 +75,8 @@ for c in cards:
         got = investigations.get(inv_key)
         if got and "answer" in got:
             with st.container(border=True):
+                if not got["answer"].get("sql"):
+                    st.caption(NO_QUERY)
                 chat.render_answer(got["answer"])
         elif got:
             st.warning(got["error"])

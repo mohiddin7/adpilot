@@ -101,7 +101,11 @@ def with_context(question: str, context: str) -> str:
     return full if len(full) <= QUESTION_LIMIT else q
 
 
-INVESTIGATE = "Why did this happen, and what should I check first? "
+# Tells the analyst to query, not guess. With the card's facts (FACTS_MAX = 400 on the server) it must fit QUESTION_LIMIT.
+# One query, not two: the analyst has four model calls a question, and two breakdowns spent them all (live pass, B8).
+INVESTIGATE = ("Investigate this finding. Run one query: the platform involved, by campaign and by week. "
+               "Say only what the data shows, include a chart, and say what to check first. Finding: ")
+NO_QUERY = "The analyst answered without running a query, so treat this as a hypothesis."
 
 
 def investigate_question(facts: str, limit: int = QUESTION_LIMIT) -> str:

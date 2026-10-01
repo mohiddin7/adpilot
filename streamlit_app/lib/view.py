@@ -325,6 +325,12 @@ def pacing_card(pc: dict) -> None:
 SEVERITY_BADGE = {"high": "🔴 HIGH", "medium": "🟠 MEDIUM", "low": "⚪ LOW"}
 
 
+def stake_label(card: dict) -> str:
+    """What a card's stake is: "at stake" (money lost), "change in spend" or "to reallocate". An API from before the
+    field said "at stake" for all of them."""
+    return card.get("stake_label", "at stake")
+
+
 def insight_params(start: date, end: date, selected: dict[str, list[str]]) -> tuple[tuple[str, str], ...]:
     """/insights takes the dates and at most one platform (the whole account otherwise)."""
     params = [("date_from", start.isoformat()), ("date_to", end.isoformat())]
@@ -341,7 +347,8 @@ def what_changed(start: date, end: date, selected: dict[str, list[str]]) -> None
             show_error(exc)
             return
         for c in out["cards"][:3]:
-            st.markdown(md(f"{SEVERITY_BADGE[c['severity']]} · {c['headline']} (about {fmt_currency(c['stake'])} at stake)"))
+            st.markdown(md(f"{SEVERITY_BADGE[c['severity']]} · {c['headline']} "
+                           f"(about {fmt_currency(c['stake'])} {stake_label(c)})"))
         if not out["cards"]:
             failed = out["problems"] and not out["checked"]
             st.caption("Couldn't check this period." if failed else "Nothing needs attention in this period.")

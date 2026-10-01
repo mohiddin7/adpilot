@@ -275,11 +275,11 @@ def test_a_failed_sidebar_ask_shows_its_error_once(dash_api, monkeypatch):
     assert shown.count("The analyst hit a snag.") == 1
 
 
-def _cards(monkeypatch, cards, checked=("cost per sale",)):
+def _cards(monkeypatch, cards, checked=("cost per sale",), at_stake=0.0):
     from lib import view
 
     monkeypatch.setattr(view, "insights", lambda params: {"cards": cards, "checked": list(checked), "problems": [],
-                                                          "writer": "templates"})
+                                                          "writer": "templates", "at_stake": at_stake})
 
 
 CARD = {"id": "mix:Google", "kind": "mix", "severity": "high", "stake": 1234.5, "title": "Rebalance spend away from Google",
@@ -288,7 +288,10 @@ CARD = {"id": "mix:Google", "kind": "mix", "severity": "high", "stake": 1234.5, 
         "numbers": [{"platform": "Google", "share of spend": "60%"}],
         "chart": {"spec": {"chart_type": "bar", "x": "platform", "y": "share", "color": "measure"},
                   "rows": [{"platform": "Google", "measure": "Share of spend", "share": 0.6}], "formats": {"share": "percent"}},
-        "facts": "Google took 60% of spend but brought 25% of sales."}
+        "facts": "Google took 60% of spend but brought 25% of sales.",
+        "loss": False, "stake_label": "to reallocate", "also": []}
+LOSS = {**CARD, "id": "outlier:Google:c1", "kind": "outlier", "stake": 5000.0, "loss": True, "stake_label": "at stake",
+        "title": "Cut or fix Google campaign c1", "also": ["It also paid $28.39 per sale, +38% from $20.60."]}
 
 
 def test_insight_cards_render_ranked_with_charts(dash_api):
@@ -440,3 +443,53 @@ def test_the_overviews_comparisons_are_not_in_platform_colours(dash_api):
 
     figs = _figures(run("Home.py"))
     assert [t["marker"]["color"] for t in figs["fig_mix"]["data"]] == OTHER[:2]
+
+
+def test_a_card_says_what_its_stake_is_and_only_losses_are_summed(dash_api, monkeypatch):
+    """Live pass, finding 9."""
+    _cards(monkeypatch, [LOSS, CARD], at_stake=5000.0)
+    at = run("pages/2_AI_Insights.py")
+    assert not at.exception, at.exception
+    shown = [m.value for m in at.markdown]
+    assert "**2 findings · about \\$5.0K at stake**" in shown  # not 5,000 + 1,234.5
+    assert any(m.endswith("HIGH · about \\$5.0K at stake") for m in shown)
+    assert any(m.endswith("HIGH · about \\$1.2K to reallocate") for m in shown)
+    assert shown.count("Also: It also paid \\$28.39 per sale, +38% from \\$20.60.") == 1
+
+
+def test_nothing_lost_means_no_at_stake_total(dash_api, monkeypatch):
+    _cards(monkeypatch, [CARD], at_stake=0.0)
+    at = run("pages/2_AI_Insights.py")
+    assert "**1 finding**" in [m.value for m in at.markdown]
+    assert not any("at stake" in m.value for m in at.markdown)
+
+
+def test_what_changed_says_what_each_stake_is(dash_api, monkeypatch):
+    _cards(monkeypatch, [LOSS, CARD], at_stake=5000.0)
+    at = run("Home.py")
+    assert not at.exception, at.exception
+    text = " ".join(m.value for m in at.markdown)
+    assert "(about \\$5.0K at stake)" in text and "(about \\$1.2K to reallocate)" in text
+
+
+NO_QUERY = "The analyst answered without running a query, so treat this as a hypothesis."
+
+
+@pytest.mark.parametrize("sql,shown", [(None, True), ("SELECT 1", False)])
+def test_an_investigation_without_a_query_is_called_a_hypothesis(dash_api, monkeypatch, sql, shown):
+    """Live pass, finding 8: an ungrounded answer must never pass for analysis."""
+    from lib import api_client
+    from lib.controls import INVESTIGATE
+
+    asked = []
+    answer = {"answer_md": "TikTok probably has a tracking problem.", "sql": sql, "chart": None, "data": None,
+              "caveats": [], "trace_id": "t1"}
+    monkeypatch.setattr(api_client, "ask", lambda question, session_id: asked.append(question) or answer)
+    _cards(monkeypatch, [CARD])
+    at = run("pages/2_AI_Insights.py")
+    at.button(key="inv_mix:Google").click().run()
+    assert not at.exception, at.exception
+    assert INVESTIGATE.strip() in asked[0] and CARD["facts"] in asked[0]
+    assert (NO_QUERY in [c.value for c in at.caption]) is shown
+    at.run()  # the caption stays with the kept answer
+    assert (NO_QUERY in [c.value for c in at.caption]) is shown
