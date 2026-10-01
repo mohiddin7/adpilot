@@ -166,6 +166,7 @@ briefing:
 dashboard:
   max_rows: 2000
   cache_ttl_s: 900
+  max_bytes_billed: 20971520  # 20 MB: BigQuery bills >= 10 MB per referenced table; the attention panel reads two
   colors: {Facebook: brand, Google: forecast, TikTok: audited}
   insights:
     - Which platform had the best cost per acquisition in this period, and by how much?

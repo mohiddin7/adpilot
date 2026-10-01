@@ -150,6 +150,9 @@ Shipping Sale", "Call - US" or "LIMIT 99999 deal" reaches the query unchanged an
 pipeline table gives a `note` instead. Results are cached in-process for `dashboard.cache_ttl_s` (900 s), never when a
 panel failed.
 
+**Bytes cap:** dashboard queries run with `dashboard.max_bytes_billed` (20 MB in the ads pack: BigQuery bills at least
+10 MB per table a query references, and the attention panel reads two); chat queries keep the pack's `max_bytes_billed`.
+
 **Audit:** every successful read writes one `agent_calls` row (`source='dashboard'`, `case_name` = the endpoint, so
 `/insights` writes `case_name='insights'`). Rows are not flushed per read — a load job per click would hit
 BigQuery's 1,500 load jobs per table per day — they ride the next `/ask` flush or the shutdown flush. `/insights`

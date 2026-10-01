@@ -92,7 +92,8 @@ def run_panel(template: AgentDeps, cfg: DashboardConfig, panel: PanelDef, flt: F
     result = PanelResult(id=panel.id, title=panel.title, kind=panel.kind, table=panel.table, role=panel.role,
                           formats=dict(panel.formats))
     where = build_where(cfg, panel.table, deps.pack.raw["date_column"], flt, dialect)
-    res = execute(deps, deps.pack.render(panel.sql, dialect, where=where), max_rows=cfg.max_rows)
+    res = execute(deps, deps.pack.render(panel.sql, dialect, where=where), max_rows=cfg.max_rows,
+                  max_bytes=cfg.max_bytes_billed)
     if isinstance(res, SqlError):
         return result.model_copy(update={"error": _safe_error(res.kind, res.message)})
     missing = sorted(set(panel.formats) - set(res.columns))
@@ -111,9 +112,14 @@ def run_panel(template: AgentDeps, cfg: DashboardConfig, panel: PanelDef, flt: F
 
 
 def last_week(template: AgentDeps, cfg: DashboardConfig, cache: TtlCache, flt: Filters) -> Filters:
-    """The flag rule (spec 3.1.5): an attention panel reads the last 7 days of data, anchored on the newest day,
-    whatever window the viewer picked. Platform and campaign choices still apply."""
-    hi = date.fromisoformat(dashboard_meta(template, cfg, cache)["date_max"])
+    """The flag rule (spec 3.1.5): an attention panel reads the last 7 days of the flags' horizon — the newest day
+    less mature_lag_days, where anomaly flags stop and /insights' as_of sits — whatever window the viewer picked.
+    Platform and campaign choices still apply."""
+    try:
+        lag = settings(template.pack)[0]["mature_lag_days"]
+    except ValueError:  # a bad `briefing:` is pacing's problem to report; the anchor just uses the newest day
+        lag = 0
+    hi = date.fromisoformat(dashboard_meta(template, cfg, cache)["date_max"]) - timedelta(days=lag)
     return dataclasses.replace(flt, date_from=hi - timedelta(days=6), date_to=hi)
 
 
@@ -185,7 +191,7 @@ def _option(template: AgentDeps, cfg: DashboardConfig, f: FilterDef, flt: Filter
         sql = f"SELECT DISTINCT {f.column} AS value FROM {{{table}}} WHERE {{where}} ORDER BY 1"
     else:
         sql = f"SELECT MIN({f.column}) AS lo, MAX({f.column}) AS hi FROM {{{table}}} WHERE {{where}}"
-    res = execute(deps, deps.pack.render(sql, dialect, where=where), max_rows=OPTIONS_MAX_ROWS)
+    res = execute(deps, deps.pack.render(sql, dialect, where=where), max_rows=OPTIONS_MAX_ROWS, max_bytes=cfg.max_bytes_billed)
     if isinstance(res, SqlError):
         empty = {"values": []} if f.type == "categorical" else {}
         return {**empty, "error": _safe_error(res.kind, res.message)}
@@ -205,7 +211,8 @@ def dashboard_meta(template: AgentDeps, cfg: DashboardConfig, cache: TtlCache) -
     deps = fresh_deps(template)
     pack, dialect = deps.pack, deps.connector.dialect
     dc = pack.raw["date_column"]
-    res = execute(deps, pack.render(f"SELECT MIN({dc}) AS lo, MAX({dc}) AS hi FROM {{gold}}", dialect))
+    res = execute(deps, pack.render(f"SELECT MIN({dc}) AS lo, MAX({dc}) AS hi FROM {{gold}}", dialect),
+                  max_bytes=cfg.max_bytes_billed)
     if isinstance(res, SqlError) or not res.rows or res.rows[0]["hi"] is None:
         raise AdPilotError("DataSourceUnavailable", "could not read the data window from the gold table")
     meta = {

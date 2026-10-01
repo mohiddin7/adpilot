@@ -57,10 +57,10 @@ def test_an_empty_window_has_no_cards(deps, cfg):
 def test_a_failed_input_table_is_a_fixed_sentence(eager, cfg, monkeypatch):
     real = insights.execute
 
-    def no_anomalies(deps, sql, max_rows=None):
+    def no_anomalies(deps, sql, **kw):
         if "fct_anomaly_flags" in sql:
             return SqlError(kind="SqlSchema", message="Table project.secret_dataset.fct_anomaly_flags not found")
-        return real(deps, sql, max_rows=max_rows)
+        return real(deps, sql, **kw)
 
     monkeypatch.setattr(insights, "execute", no_anomalies)
     out = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))
@@ -94,3 +94,32 @@ def test_results_are_cached_per_window(eager, cfg, monkeypatch):
     n = len(calls)
     insights.run_insights(eager, cfg, WINDOW, None, cache)
     assert len(calls) == n
+
+
+def test_top_movers_do_not_apply_before_the_data_starts(eager, cfg):
+    """Final review I2: the previous 15 days of 2024-01-01..15 lie before the data, so nothing "started spending"."""
+    out = insights.run_insights(eager, cfg, Filters(date(2024, 1, 1), date(2024, 1, 15)), None, TtlCache(0))
+    assert "top movers" not in out["checked"] and "efficiency outliers" in out["checked"]
+    assert [c for c in out["cards"] if c["kind"] == "mover"] == []
+
+
+def test_a_truncated_gold_read_publishes_no_cards(eager, cfg, monkeypatch):
+    """Final review M6: analysing an arbitrary subset of the rows would publish wrong dollar numbers."""
+    monkeypatch.setattr(insights, "MAX_ROWS", 10)
+    out = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))
+    assert out["cards"] == [] and out["checked"] == []
+    assert out["problems"] == ["the window is too long to analyse in full; narrow the dates"]
+
+
+def test_no_findings_never_calls_the_writer(eager, cfg, monkeypatch):
+    """Final review M7."""
+    for name, empty in (("cost_items", ([],)), ("anomaly_items", ([],)), ("pacing", (None, [])), ("move_item", None),
+                        ("top_movers", []), ("efficiency_outliers", []), ("mix_gaps", [])):
+        monkeypatch.setattr(insights.a, name, lambda *a, _e=empty, **k: _e)
+
+    def no_writer(*a, **k):
+        raise AssertionError("the writer ran with nothing to write")
+
+    monkeypatch.setattr(insights, "write", no_writer)
+    out = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))
+    assert out["cards"] == [] and out["checked"] and out["writer"] == "templates"

@@ -267,12 +267,78 @@ def _flagged_con(pack, rows):
 
 
 def test_the_flag_rule_is_severe_or_critical_in_the_last_7_days_of_data(pack, cfg):
-    """date_max is 2024-01-30, so the anchor is 01-24..01-30 whatever window the viewer picked."""
-    deps, camp = _flagged_con(pack, [("2024-01-29", "CRITICAL", 90, 30),   # in: last 7 days, critical
+    """date_max is 2024-01-30 and flags stop mature_lag_days (2) before it, so the anchor is 01-22..01-28 — the last
+    7 days of the flags' horizon — whatever window the viewer picked."""
+    deps, camp = _flagged_con(pack, [("2024-01-28", "CRITICAL", 90, 30),   # in: date_max - 2, critical
                                      ("2024-01-25", "MODERATE", 90, 30),   # out: moderate
-                                     ("2024-01-10", "SEVERE", 90, 30)])    # out: older than 7 days
+                                     ("2024-01-21", "SEVERE", 90, 30)])    # out: one day older than the 7 days
     viewer = Filters(date(2024, 1, 1), date(2024, 1, 15))  # the anchor ignores this window
     r = next(x for x in run_page(deps, cfg, "overview", viewer, TtlCache(0)) if x.role == "attention")
     assert r.error is None
     assert [row["campaign_name"] for row in r.rows] == [camp.campaign_name.iloc[0]]
     assert r.rows[0]["worst"] == "CRITICAL" and r.rows[0]["flagged_days"] == 1 and r.rows[0]["excess_cost"] > 0
+
+
+def _record_bytes(monkeypatch, deps) -> list:
+    """Patched on the instance: test_agent's instance-level monkeypatch leaves a bound `query` on the shared
+    session connector, which would shadow a class-level patch."""
+    seen: list = []
+    real = deps.connector.query
+
+    def record(sql, max_bytes=None):
+        seen.append(max_bytes)
+        return real(sql, max_bytes)
+
+    monkeypatch.setattr(deps.connector, "query", record)
+    return seen
+
+
+def test_execute_takes_an_explicit_byte_cap_else_the_packs(deps, monkeypatch):
+    """Final review C1: the model path (run_sql calls execute(deps, sql)) keeps the pack's 10 MB."""
+    seen = _record_bytes(monkeypatch, deps)
+    sql = deps.pack.render("SELECT 1 AS x FROM {gold} LIMIT 1", "duckdb")
+    execute(deps, sql)
+    execute(fresh_deps(deps), sql, max_bytes=123)
+    assert seen == [10485760, 123] and deps.pack.raw["max_bytes_billed"] == 10485760
+
+
+def test_every_dashboard_read_uses_the_dashboard_byte_cap(deps, cfg, monkeypatch):
+    from adpilot.dashboard import insights
+
+    seen = _record_bytes(monkeypatch, deps)
+    run_page(deps, cfg, "overview", FLT, TtlCache(0))  # also reads dashboard_meta (the attention anchor)
+    filter_options(deps, cfg, "deep_dive", FLT, TtlCache(0))
+    insights.run_insights(deps, cfg, FLT, None, TtlCache(0))
+    assert seen and set(seen) == {20971520} and cfg.max_bytes_billed == 20971520
+
+
+def test_the_dashboard_byte_cap_pays_for_every_table_a_query_reads(pack, cfg):
+    """BigQuery bills at least 10 MB per table a query references, and rejects a query whose minimum is over its
+    maximum_bytes_billed: the attention panel reads {anomalies} and {gold}, so it needs 20 MB."""
+    from adpilot.dashboard import insights
+
+    sqls = {p.id: p.sql for p in cfg.panels} | {n: getattr(insights, n) for n in
+                                                  ("GOLD_SQL", "FLAGS_SQL", "PLAN_SQL", "FORECAST_SQL")}
+    for name, sql in sqls.items():
+        tables = {t for t in pack.tables if "{" + t + "}" in sql}
+        assert len(tables) * 10485760 <= cfg.max_bytes_billed, (name, sorted(tables))
+
+
+def test_a_failed_attention_anchor_is_a_fixed_sentence_and_the_rest_run(deps, cfg, monkeypatch):
+    from adpilot.core.errors import AdPilotError
+
+    def down(*a, **k):
+        raise AdPilotError("DataSourceUnavailable", "Not found: project.secret_dataset.fct_unified_marketing_performance")
+
+    monkeypatch.setattr(panels, "dashboard_meta", down)
+    results = run_page(deps, cfg, "overview", FLT, TtlCache(0))
+    attention = next(r for r in results if r.role == "attention")
+    assert attention.error == "DataSourceUnavailable: this panel could not be read" and "secret" not in attention.error
+    assert [r.id for r in results if r.error] == [attention.id]
+    assert all(r.rows for r in results if r.role == "kpi")
+
+
+def test_the_attention_week_ends_where_the_flags_do(deps, cfg):
+    """Final review M4: anomaly flags (and /insights' as_of) stop mature_lag_days (2) before the newest day."""
+    week = panels.last_week(deps, cfg, TtlCache(0), FLT)
+    assert (week.date_from, week.date_to) == (date(2024, 1, 22), date(2024, 1, 28))

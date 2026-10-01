@@ -62,6 +62,7 @@ class DashboardConfig(BaseModel):
 
     max_rows: int = Field(default=2000, ge=1, le=10000)
     cache_ttl_s: int = Field(default=900, ge=0)
+    max_bytes_billed: int | None = Field(default=None, ge=1)  # None: the pack's (chat) cap
     filters: list[FilterDef]
     panels: list[PanelDef]
     insights: list[str] = []

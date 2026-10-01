@@ -44,16 +44,18 @@ def _frame(template: AgentDeps, cfg: DashboardConfig, table: str, sql: str, flt:
     deps = fresh_deps(template)
     dialect = deps.connector.dialect
     where = build_where(cfg, table, deps.pack.raw["date_column"], flt, dialect) if flt else "1 = 1"
-    res = execute(deps, deps.pack.render(sql, dialect, where=where), max_rows=MAX_ROWS)
+    res = execute(deps, deps.pack.render(sql, dialect, where=where), max_rows=MAX_ROWS + 1, max_bytes=cfg.max_bytes_billed)
     if isinstance(res, SqlError):
         _safe_error(res.kind, res.message)  # logs it
         return None, f"couldn't read the {table} table"
+    # validate_sql caps the LIMIT at max_rows, so res.truncated never fires: one row past MAX_ROWS is the signal.
+    if len(res.rows) > MAX_ROWS:  # an arbitrary subset of the rows would publish wrong dollar numbers
+        log.warning("insights: %s truncated at %d rows", table, MAX_ROWS)
+        return None, "the window is too long to analyse in full; narrow the dates"
     df = pd.DataFrame(res.rows, columns=res.columns)
     for c in dates:
         df[c] = pd.to_datetime(df[c]).dt.date
-    if res.truncated:
-        log.warning("insights: %s truncated at %d rows", table, MAX_ROWS)
-    return df, ("the window is too long to analyse in full; narrow the dates" if res.truncated else None)
+    return df, None
 
 
 def _severity(stake: float, spend: float) -> str:
@@ -118,7 +120,8 @@ def run_insights(template: AgentDeps, cfg: DashboardConfig, flt: Filters, model:
         t, budgets = settings(template.pack)
     except ValueError as exc:  # our own text about pack.yaml: safe to show
         return {"cards": [], "checked": [], "problems": [str(exc)], "writer": "templates"}
-    latest = date.fromisoformat(dashboard_meta(template, cfg, cache)["date_max"])  # AdPilotError → the route's 503
+    meta = dashboard_meta(template, cfg, cache)  # AdPilotError → the route's 503
+    first, latest = date.fromisoformat(meta["date_min"]), date.fromisoformat(meta["date_max"])
     chosen = flt.values("platform")
     if chosen:
         budgets = {k: v for k, v in budgets.items() if k in chosen}
@@ -131,8 +134,6 @@ def run_insights(template: AgentDeps, cfg: DashboardConfig, flt: Filters, model:
                        dataclasses.replace(flt, date_from=since, ranges=()), ("date",))
     if gold is None:
         return {"cards": [], "checked": [], "problems": [why], "writer": "templates"}
-    if why:
-        problems.append(why)
     cur = gold[(gold["date"] >= flt.date_from) & (gold["date"] <= flt.date_to)]
     if cur.empty:
         return {"cards": [], "checked": [], "problems": ["There is no ad data in this period."], "writer": "templates"}
@@ -162,7 +163,7 @@ def run_insights(template: AgentDeps, cfg: DashboardConfig, flt: Filters, model:
         ("unusual days and tracking", lambda: a.anomaly_items(gold, flags, as_of, t)[0] if flags is not None else None),
         ("month-end pacing", lambda: a.pacing(gold, fc, budgets, latest, t)[1] if current else None),
         ("budget optimizer", lambda: ([m] if (m := a.move_item(plan, t)) else []) if plan is not None else None),
-        ("top movers", lambda: a.top_movers(cur, prev, t)),
+        ("top movers", lambda: a.top_movers(cur, prev, t) if prev_from >= first else None),  # no data before `first`
         ("efficiency outliers", lambda: a.efficiency_outliers(cur, t)),
         ("channel mix", lambda: a.mix_gaps(cur, t) if not chosen or len(chosen) > 1 else None),
     ]
@@ -180,8 +181,8 @@ def run_insights(template: AgentDeps, cfg: DashboardConfig, flt: Filters, model:
             checked.append(name)
     found.sort(key=lambda i: -i.stake)
     top = found[:MAX_CARDS]
-    text, model_used, _ = write(fresh_deps(template), model, top, [], [], new_trace_id(),
-                                source="dashboard", case_name="insights_writer")
+    text, model_used, _ = write(fresh_deps(template), model, top, [], [], new_trace_id(), source="dashboard",
+                                case_name="insights_writer") if top else ({}, None, None)
     spend = float(cur["spend"].sum())
     cards = []
     for i in top:
