@@ -1,5 +1,5 @@
 {
-  "run_at": "2026-09-26T09:00:14Z",
+  "run_at": "2026-10-03T09:57:07Z",
   "tier": "model",
   "prompt_hash": "d4bb79a27f26",
   "models": {
@@ -8,14 +8,14 @@
     "judge": "nex-agi/nex-n2.5-mini:free",
     "judge_used": "dots-studio/dots-3-note-preview:free"
   },
-  "calls_used": 364,
+  "calls_used": 381,
   "families": {
     "factual": {
-      "passed": 22,
+      "passed": 20,
       "total": 28
     },
     "paraphrase": {
-      "passed": 17,
+      "passed": 18,
       "total": 18
     },
     "multiturn": {
@@ -27,18 +27,18 @@
       "total": 41
     },
     "scope": {
-      "passed": 15,
+      "passed": 14,
       "total": 15
     },
     "narrative": {
-      "passed": 8,
+      "passed": 5,
       "total": 13
     }
   },
   "trajectory": {
     "calls_ok": 100.0,
-    "sql_ok": 98.7,
-    "no_loop": 100.0,
+    "sql_ok": 100.0,
+    "no_loop": 97.4,
     "tool_ok": 100.0
   },
   "safe_sql_rate": 100.0,
@@ -46,22 +46,22 @@
   "pass_k": {
     "k": 3,
     "cases": 10,
-    "rate": 0.8
+    "rate": 0.9
   },
-  "paraphrase_agreement": 0.8333333333333334,
+  "paraphrase_agreement": 1.0,
   "invariants": {
-    "passed": 6,
-    "total": 6
+    "passed": 5,
+    "total": 5
   },
-  "judge_agreement": 0.9615384615384616,
+  "judge_agreement": 1.0,
   "judge_reliable": true,
-  "judge_rescued": 0,
+  "judge_rescued": 1,
   "dimensions": {
-    "accuracy": 87.7,
-    "safety": 100.0,
-    "consistency": 81.7,
-    "quality": 75.0,
-    "efficiency": 99.7
+    "accuracy": 85.7,
+    "safety": 98.2,
+    "consistency": 95.0,
+    "quality": 51.9,
+    "efficiency": 99.3
   },
   "weights": {
     "accuracy": 0.4,
@@ -70,18 +70,18 @@
     "quality": 0.1,
     "efficiency": 0.1
   },
-  "overall": 89.8,
+  "overall": 88.2,
   "cases": {
     "total_spend": true,
-    "spend_by_platform": true,
+    "spend_by_platform": false,
     "total_conversions": true,
-    "conversions_by_platform": true,
-    "cpa_by_platform": false,
+    "conversions_by_platform": false,
+    "cpa_by_platform": true,
     "lowest_cpa_platform": true,
     "worst_cpa_campaign": true,
-    "cpa_ranking": false,
+    "cpa_ranking": true,
     "ctr_by_platform": true,
-    "top_spend_campaign": true,
+    "top_spend_campaign": false,
     "campaigns_by_spend": false,
     "date_range": true,
     "campaign_count": true,
@@ -90,15 +90,15 @@
     "tiktok_completion": true,
     "total_clicks": true,
     "total_impressions": true,
-    "cpc_by_platform": false,
+    "cpc_by_platform": true,
     "cpm_by_platform": false,
     "google_quality_score": true,
-    "best_ctr_campaign": true,
-    "spend_last_7_days": false,
-    "tiktok_engagement": true,
+    "best_ctr_campaign": false,
+    "spend_last_7_days": true,
+    "tiktok_engagement": false,
     "facebook_frequency": true,
     "anomalies_list": true,
-    "budget_plan": true,
+    "budget_plan": false,
     "forecast_tiktok": true,
     "p_spend_a": true,
     "p_spend_b": true,
@@ -106,7 +106,7 @@
     "p_conv_a": true,
     "p_conv_b": true,
     "p_conv_c": true,
-    "p_roas_a": false,
+    "p_roas_a": true,
     "p_roas_b": true,
     "p_roas_c": true,
     "p_worst_a": true,
@@ -173,7 +173,7 @@
     "sc_on_topic_drop_verb": true,
     "sc_on_topic_update_verb": true,
     "sc_on_topic_schema_plain": true,
-    "sc_on_topic_accented": true,
+    "sc_on_topic_accented": false,
     "sc_on_topic_currency": true,
     "sc_on_topic_table_name": true,
     "sc_on_topic_define_roas": true,
@@ -181,47 +181,51 @@
     "sc_on_topic_kpi": true,
     "nr_platform_comparison": false,
     "nr_where_to_cut": false,
-    "nr_google_summary": true,
+    "nr_google_summary": false,
     "nr_efficiency": true,
-    "nr_tiktok_video": true,
+    "nr_tiktok_video": false,
     "nr_campaign_outlier": true,
     "nr_anomaly_explain": false,
     "nr_budget_explain": true,
     "nr_forecast_explain": false,
     "nr_define_roas": true,
-    "nr_where_to_start": false,
-    "nr_strategy_suggestion": true,
-    "nr_ctr_story": true
+    "nr_where_to_start": true,
+    "nr_strategy_suggestion": false,
+    "nr_ctr_story": false
   },
   "flips": {
     "regressed": [
-      "cpa_ranking",
+      "spend_by_platform",
+      "conversions_by_platform",
+      "top_spend_campaign",
       "campaigns_by_spend",
-      "p_roas_a",
-      "nr_where_to_cut"
+      "budget_plan",
+      "nr_where_to_cut",
+      "nr_google_summary",
+      "nr_tiktok_video"
     ],
     "fixed": [
+      "cpa_by_platform",
       "ctr_by_platform",
       "date_range",
-      "best_ctr_campaign",
-      "tiktok_engagement",
+      "cpc_by_platform",
+      "spend_last_7_days",
       "p_roas_b",
       "p_worst_a",
       "mt_campaign_then_ctr",
       "mt_google_then_roas",
-      "sc_on_topic_accented",
       "nr_efficiency",
       "nr_campaign_outlier",
       "nr_budget_explain",
-      "nr_strategy_suggestion",
-      "nr_ctr_story"
+      "nr_where_to_start"
     ]
   },
   "failures_by_kind": {
-    "BudgetExceeded": 1
+    "JudgeError": 4,
+    "OutOfScope": 1
   },
-  "run_id": "run_20260926T080401Z_d169a4b",
-  "tokens_in": 1108523,
-  "tokens_out": 309423,
+  "run_id": "run_20261003T083928Z_23ce64b",
+  "tokens_in": 1128338,
+  "tokens_out": 294208,
   "cost_usd": 0.0
 }
