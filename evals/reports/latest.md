@@ -1,45 +1,46 @@
 # AdPilot eval scorecard
 
-**Overall: 89.8** (+10.1 vs baseline 79.7) · tier `model` · 2026-09-26T09:00:14Z · prompt `d4bb79a27f26` · 364 model calls · run `run_20260926T080401Z_d169a4b`
+**Overall: 88.2** (+8.5 vs baseline 79.7) · tier `model` · 2026-10-03T09:57:07Z · prompt `d4bb79a27f26` · 381 model calls · run `run_20261003T083928Z_23ce64b`
 Gate: PASS
 
 | Dimension | Weight | Score |
 |---|---|---|
-| accuracy | 40% | 87.7% |
-| safety | 25% | 100.0% |
-| consistency | 15% | 81.7% |
-| quality | 10% | 75.0% |
-| efficiency | 10% | 99.7% |
+| accuracy | 40% | 85.7% |
+| safety | 25% | 98.2% |
+| consistency | 15% | 95.0% |
+| quality | 10% | 51.9% |
+| efficiency | 10% | 99.3% |
 
 | Family | Passed | Total | Rate |
 |---|---|---|---|
-| factual | 22 | 28 | 78.6% |
-| paraphrase | 17 | 18 | 94.4% |
+| factual | 20 | 28 | 71.4% |
+| paraphrase | 18 | 18 | 100.0% |
 | multiturn | 5 | 5 | 100.0% |
 | redteam | 41 | 41 | 100.0% |
-| scope | 15 | 15 | 100.0% |
-| narrative | 8 | 13 | 61.5% |
-| invariants | 6 | 6 | 100.0% |
+| scope | 14 | 15 | 93.3% |
+| narrative | 5 | 13 | 38.5% |
+| invariants | 5 | 5 | 100.0% |
 
-- Consistency: pass^3 = 80.0% over 10 cases; paraphrase agreement 83.3%
-- Safe SQL rate: 100.0%; trajectory: calls_ok 100.0%, sql_ok 98.7%, no_loop 100.0%, tool_ok 100.0%
+- Consistency: pass^3 = 90.0% over 10 cases; paraphrase agreement 100.0%
+- Safe SQL rate: 100.0%; trajectory: calls_ok 100.0%, sql_ok 100.0%, no_loop 97.4%, tool_ok 100.0%
 - Guard false-positive rate: 0.0% (budget 0%)
-- Judge: agreement with calibration set 96.2% → reliable; rescued 0 factual cases
+- Judge: agreement with calibration set 100.0% → reliable; rescued 1 factual cases
 - Models: agent inclusionai/ling-3.0-flash-fin:free → inclusionai/ling-3.0-flash-sante:free, nvidia/nemotron-3.5-lightning:free, openrouter/free; judge nex-agi/nex-n2.5-mini:free (answered: dots-studio/dots-3-note-preview:free)
-- Cost: 1108523 in / 309423 out tokens, $0.0000
+- Cost: 1128338 in / 294208 out tokens, $0.0000
 
 ## Flipped cases
 
-- Regressed: cpa_ranking, campaigns_by_spend, p_roas_a, nr_where_to_cut
-- Fixed: ctr_by_platform, date_range, best_ctr_campaign, tiktok_engagement, p_roas_b, p_worst_a, mt_campaign_then_ctr, mt_google_then_roas, sc_on_topic_accented, nr_efficiency, nr_campaign_outlier, nr_budget_explain, nr_strategy_suggestion, nr_ctr_story
+- Regressed: spend_by_platform, conversions_by_platform, top_spend_campaign, campaigns_by_spend, budget_plan, nr_where_to_cut, nr_google_summary, nr_tiktok_video
+- Fixed: cpa_by_platform, ctr_by_platform, date_range, cpc_by_platform, spend_last_7_days, p_roas_b, p_worst_a, mt_campaign_then_ctr, mt_google_then_roas, nr_efficiency, nr_campaign_outlier, nr_budget_explain, nr_where_to_start
 
 ## Failures by error kind
 
-- BudgetExceeded: 1
+- JudgeError: 4
+- OutOfScope: 1
 
 ## Failed cases
 
-cpa_by_platform, cpa_ranking, campaigns_by_spend, cpc_by_platform, cpm_by_platform, spend_last_7_days, p_roas_a, nr_platform_comparison, nr_where_to_cut, nr_anomaly_explain, nr_forecast_explain, nr_where_to_start
+spend_by_platform, conversions_by_platform, top_spend_campaign, campaigns_by_spend, cpm_by_platform, best_ctr_campaign, tiktok_engagement, budget_plan, sc_on_topic_accented, nr_platform_comparison, nr_where_to_cut, nr_google_summary, nr_tiktok_video, nr_anomaly_explain, nr_forecast_explain, nr_strategy_suggestion, nr_ctr_story
 
 ## How to read this
 
