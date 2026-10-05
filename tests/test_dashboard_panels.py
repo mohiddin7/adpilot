@@ -362,3 +362,59 @@ def test_parallel_tool_calls_on_one_deps_never_overspend_the_budget(deps):
     with ThreadPoolExecutor(8) as pool:
         out = list(pool.map(lambda _: execute(deps, sql), range(24)))
     assert sum(isinstance(r, SqlResult) for r in out) == deps.budget.max_sql == len(deps.results)
+
+
+def test_fan_out_runs_concurrently_on_bigquery_and_keeps_order():
+    import threading
+
+    barrier = threading.Barrier(3, timeout=5)
+
+    def fn(i):
+        barrier.wait()  # BrokenBarrierError unless all three run at once
+        return i * 10
+
+    assert panels._fan_out("bigquery", fn, [1, 2, 3]) == [10, 20, 30]
+
+
+def test_fan_out_is_sequential_on_duckdb():
+    import threading
+
+    threads = []
+    assert panels._fan_out("duckdb", lambda i: threads.append(threading.get_ident()) or i, [1, 2, 3]) == [1, 2, 3]
+    assert set(threads) == {threading.get_ident()}
+
+
+def _parallel(monkeypatch):
+    """Run the BigQuery (parallel) path over the DuckDB fixture: the connector's own lock serialises the queries."""
+    real = panels._fan_out
+    monkeypatch.setattr(panels, "_fan_out", lambda _dialect, fn, items: real("bigquery", fn, items))
+
+
+@pytest.mark.parametrize("page", ["overview", "deep_dive"])
+def test_a_page_run_in_parallel_matches_the_sequential_run(deps, cfg, monkeypatch, page):
+    seq = run_page(deps, cfg, page, _flt("Google"), TtlCache(0))
+    _parallel(monkeypatch)
+    par = run_page(deps, cfg, page, _flt("Google"), TtlCache(0))
+    assert [r.model_dump() for r in par] == [r.model_dump() for r in seq]
+
+
+def test_filter_options_in_parallel_match_the_sequential_run(deps, cfg, monkeypatch):
+    seq = filter_options(deps, cfg, "deep_dive", FLT, TtlCache(0))
+    _parallel(monkeypatch)
+    assert filter_options(deps, cfg, "deep_dive", FLT, TtlCache(0)) == seq
+
+
+def test_one_panel_raising_is_that_panels_error_only(deps, cfg, monkeypatch):
+    """Review focus 4: an unexpected exception in one parallel panel never blanks the page or becomes a 500."""
+    real = panels.run_panel
+
+    def boom(template, cfg_, p, flt):
+        if p.id == "dd_weekday":
+            raise RuntimeError("a bug")
+        return real(template, cfg_, p, flt)
+
+    monkeypatch.setattr(panels, "run_panel", boom)
+    _parallel(monkeypatch)
+    out = run_page(deps, cfg, "deep_dive", FLT, TtlCache(0))
+    assert [(r.id, r.error) for r in out if r.error] == [("dd_weekday", "this panel could not be read")]
+    assert len(out) > 5

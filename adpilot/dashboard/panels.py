@@ -8,7 +8,9 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Hashable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+from typing import TypeVar
 
 from pydantic import BaseModel
 
@@ -22,6 +24,20 @@ from adpilot.dashboard.config import DashboardConfig, FilterDef, PanelDef
 from adpilot.dashboard.filters import Filters, build_where
 
 log = logging.getLogger(__name__)
+
+T, R = TypeVar("T"), TypeVar("R")
+# Per request. Cloud Run runs 4 requests per instance and at most 2 instances, so at most 32 BigQuery jobs at once,
+# far under the project's concurrent-query quota.
+PANEL_WORKERS = 4
+
+
+def _fan_out(dialect: str, fn: Callable[[T], R], items: list[T]) -> list[R]:
+    """fn over items, results in item order. Concurrent on BigQuery: each query is its own job, the client is
+    thread-safe. Sequential on DuckDB: its one connection runs one query at a time anyway."""
+    if dialect != "bigquery" or len(items) < 2:
+        return [fn(i) for i in items]
+    with ThreadPoolExecutor(max_workers=min(PANEL_WORKERS, len(items))) as pool:
+        return list(pool.map(fn, items))
 
 OPTIONS_MAX_ROWS = 500
 # Kinds our own guards raise with fixed, safe-to-show text (adpilot/core/guardrails.py). Everything else reaching
@@ -127,27 +143,37 @@ def run_page(template: AgentDeps, cfg: DashboardConfig, page: str, flt: Filters,
              ids: tuple[str, ...] = ()) -> list[PanelResult]:
     """The page's panels that apply to this selection (or only `ids`), in pack order. Cached per panel, and only
     when that panel succeeded, so one always-failing panel is retried every load without evicting the rest.
-    A `role: attention` panel ignores the viewer's date range and reads the last 7 days instead (last_week)."""
+    A `role: attention` panel ignores the viewer's date range and reads the last 7 days instead (last_week).
+    The attention anchor is read once, before the panels fan out."""
     wanted = [p for p in cfg.panels_for(page) if (not ids or p.id in ids) and panel_applies(p, flt)]
-    out = []
-    for p in wanted:
+    anchor: Filters | AdPilotError | None = None
+    if any(p.role == "attention" for p in wanted):
+        try:
+            anchor = last_week(template, cfg, cache, flt)
+        except AdPilotError as exc:
+            log.warning("attention anchor failed: %s: %s", exc.kind, exc.message)
+            anchor = exc
+
+    def one(p: PanelDef) -> PanelResult:
+        failed = PanelResult(id=p.id, title=p.title, kind=p.kind, table=p.table, role=p.role)
         pflt = flt
         if p.role == "attention":
-            try:
-                pflt = last_week(template, cfg, cache, flt)
-            except AdPilotError as exc:
-                log.warning("attention anchor failed: %s: %s", exc.kind, exc.message)
-                out.append(PanelResult(id=p.id, title=p.title, kind=p.kind, table=p.table, role=p.role,
-                                        error=f"{exc.kind}: this panel could not be read"))
-                continue
+            if isinstance(anchor, AdPilotError):
+                return failed.model_copy(update={"error": f"{anchor.kind}: this panel could not be read"})
+            pflt = anchor
         key = ("panel", p.id, pflt)
         result = cache.get(key)
         if result is None:
-            result = run_panel(template, cfg, p, pflt)
+            try:
+                result = run_panel(template, cfg, p, pflt)
+            except Exception:  # noqa: BLE001 — one panel's bug is that panel's error, never the page's 500
+                log.exception("panel %s failed", p.id)
+                return failed.model_copy(update={"error": "this panel could not be read"})
             if result.error is None:
                 cache.put(key, result)
-        out.append(result)
-    return out
+        return result
+
+    return _fan_out(template.connector.dialect, one, wanted)
 
 
 def filter_options(template: AgentDeps, cfg: DashboardConfig, page: str, flt: Filters,
@@ -160,16 +186,14 @@ def filter_options(template: AgentDeps, cfg: DashboardConfig, page: str, flt: Fi
     if hit is not None:
         return hit
     categorical = {f.column for f in cfg.filters if f.type == "categorical"}
-    out: dict[str, dict] = {}
-    failed = False
-    for f in cfg.filters_for(page):
-        if f.values is not None:
-            out[f.column] = {"values": list(f.values)}
-            continue
-        option = _option(template, cfg, f, flt, _ancestors(cfg, f) if f.type == "categorical" else categorical)
-        failed = failed or "error" in option
-        out[f.column] = option
-    if not failed:
+    declared = cfg.filters_for(page)
+    asked = [f for f in declared if f.values is None]
+    found = _fan_out(template.connector.dialect,
+                     lambda f: _option(template, cfg, f, flt, _ancestors(cfg, f) if f.type == "categorical" else categorical),
+                     asked)
+    answers = dict(zip([f.column for f in asked], found, strict=True))
+    out = {f.column: {"values": list(f.values)} if f.values is not None else answers[f.column] for f in declared}
+    if not any("error" in o for o in out.values()):
         cache.put(key, out)
     return out
 
