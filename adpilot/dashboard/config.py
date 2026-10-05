@@ -18,7 +18,7 @@ from adpilot.packs.loader import Pack
 Page = Literal["overview", "deep_dive"]
 IDENT = r"^[A-Za-z_][A-Za-z0-9_]*$"
 Role = Literal["kpi", "kpi_series", "trend", "map", "compare", "funnel", "heatmap", "platform", "attention",
-               "markers", "details"]
+               "markers", "details", "flow"]
 Format = Literal["currency", "percent", "multiple", "number"]
 SeriesColor = Literal["brand", "forecast", "audited", "resolved"]  # never the alarm colours (critical, open)
 

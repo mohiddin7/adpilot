@@ -23,7 +23,7 @@ from adpilot.core.runtime import fresh_deps
 from adpilot.core.tools import AgentDeps, SqlError, execute
 from adpilot.dashboard.config import DashboardConfig
 from adpilot.dashboard.filters import Filters, build_where
-from adpilot.dashboard.panels import TtlCache, _safe_error, dashboard_meta
+from adpilot.dashboard.panels import TtlCache, _safe_error, dashboard_meta, run_panel
 
 log = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ def _daily_cpa(g: pd.DataFrame, end: date, days: int) -> pd.DataFrame:
     return g.assign(cpa=(g["spend"] / g["conversions"]).round(2)).reset_index()
 
 
-def _evidence(i: a.Item, gold: pd.DataFrame, cur: pd.DataFrame, plan: pd.DataFrame | None, budgets: dict,
+def _evidence(i: a.Item, gold: pd.DataFrame, cur: pd.DataFrame, flow: dict | None, budgets: dict,
               as_of: date, latest: date) -> dict | None:
     c = i.check
     if i.kind == "cost":
@@ -122,10 +122,8 @@ def _evidence(i: a.Item, gold: pd.DataFrame, cur: pd.DataFrame, plan: pd.DataFra
         rows = [{"date": d.isoformat(), "series": "spent", "spend": round(float(v), 2)} for d, v in daily.items()]
         rows += [{"date": d.isoformat(), "series": "budget pace", "spend": round(budget * d.day / ndays, 2)} for d in daily.index]
         return _chart({"chart_type": "line", "x": "date", "y": "spend", "color": "series"}, rows, {"spend": "currency"})
-    if i.kind == "move" and plan is not None:
-        rows = [{"platform": r.platform, "plan": p, "spend": round(float(v), 2)} for r in plan.itertuples()
-                for p, v in (("current", r.current_spend), ("recommended", r.recommended_spend))]
-        return _chart({"chart_type": "bar", "x": "platform", "y": "spend", "color": "plan"}, rows, {"spend": "currency"})
+    if i.kind == "move":
+        return flow
     if i.kind == "mover":
         y = c["metric"]  # spend | cpa: the axis is titled from the column name
         rows = [{"period": "previous", y: round(c["before"], 2)}, {"period": "this", y: round(c["after"], 2)}]
@@ -265,13 +263,19 @@ def run_insights(template: AgentDeps, cfg: DashboardConfig, flt: Filters, model:
     found.sort(key=lambda i: (_stake_label(i) != "at stake", -i.stake))  # money lost first, then by size
     found, also = _one_per_campaign(found)
     top = found[:MAX_CARDS]
+    flow = None  # the optimizer's whole plan as flows, for a move card: the same panel the Overview draws
+    if any(i.kind == "move" for i in top):
+        panel = next((p for p in cfg.panels if p.role == "flow" and p.table == "budget"), None)
+        res = run_panel(template, cfg, panel, flt) if panel else None
+        if res is not None and res.error is None and res.rows:
+            flow = {"spec": res.chart.model_dump(), "rows": res.rows, "formats": res.formats}
     text, model_used, _ = write(fresh_deps(template), model, top, [], [], new_trace_id(), source="dashboard",
                                 case_name="insights_writer") if top else ({}, None, None)
     spend = float(cur["spend"].sum())
     cards = []
     for i in top:
         try:
-            chart = _evidence(i, gold, cur, plan, budgets, as_of, latest)
+            chart = _evidence(i, gold, cur, flow, budgets, as_of, latest)
         except Exception:  # noqa: BLE001 — a card without its chart beats no card
             log.exception("insights: evidence for %s failed", i.id)
             chart = None

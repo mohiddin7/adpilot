@@ -268,7 +268,7 @@ dashboard:
       role: funnel
       chart: {chart_type: funnel, x: stage, y: value}
       formats: {value: number}
-      sql: >-
+      sql: &funnel_sql >-
         WITH t AS (SELECT SUM(impressions) AS i, SUM(clicks) AS c, SUM(conversions) AS v FROM {gold} WHERE {where})
         SELECT '1. Impressions' AS stage, i AS value FROM t
         UNION ALL SELECT '2. Clicks', c FROM t
@@ -289,6 +289,28 @@ dashboard:
         SELECT platform, 'recommended' AS plan, ROUND(recommended_spend, 2) AS spend FROM {budget}
         WHERE generated_at = (SELECT MAX(generated_at) FROM {budget})
         ORDER BY platform, plan
+    - id: budget_flow
+      title: Budget reallocation, now → recommended
+      page: overview
+      kind: chart
+      role: flow
+      table: budget
+      chart: {chart_type: sankey, x: source, y: spend, target: target}
+      formats: {spend: currency}
+      # Kept spend is min(current, recommended) per platform. Each cut is shared among the increases in proportion
+      # to their size, so the flows into "Recommended: X" always add up to X's recommended spend.
+      sql: >-
+        WITH b AS (SELECT platform, current_spend AS c, recommended_spend AS r FROM {budget}
+        WHERE generated_at = (SELECT MAX(generated_at) FROM {budget})),
+        dn AS (SELECT platform, c - r AS loss FROM b WHERE c > r),
+        up AS (SELECT platform, r - c AS gain FROM b WHERE r > c),
+        lost AS (SELECT SUM(loss) AS total FROM dn)
+        SELECT CONCAT('Now: ', platform) AS source, CONCAT('Recommended: ', platform) AS target,
+        ROUND(LEAST(c, r), 2) AS spend FROM b WHERE LEAST(c, r) > 0
+        UNION ALL
+        SELECT CONCAT('Now: ', dn.platform), CONCAT('Recommended: ', up.platform),
+        ROUND(SAFE_DIVIDE(dn.loss * up.gain, lost.total), 2) FROM dn CROSS JOIN up CROSS JOIN lost
+        ORDER BY source, target
     - id: attention
       title: Needs attention
       page: overview
@@ -383,6 +405,30 @@ dashboard:
         ROUND(SAFE_DIVIDE(SUM(clicks), SUM(impressions)), 4) AS ctr,
         ROUND(SAFE_DIVIDE(SUM(conversion_value), SUM(spend)), 2) AS roas
         FROM {gold} WHERE {where} GROUP BY platform, campaign_id ORDER BY spend DESC
+    - id: dd_funnel
+      title: Funnel
+      page: deep_dive
+      kind: chart
+      role: funnel
+      chart: {chart_type: funnel, x: stage, y: value}
+      formats: {value: number}
+      sql: *funnel_sql
+    - id: money_flow
+      title: Where the money goes
+      page: deep_dive
+      kind: chart
+      role: flow
+      chart: {chart_type: sankey, x: source, y: spend, target: target}
+      formats: {spend: currency}
+      sql: >-
+        WITH c AS (SELECT platform, campaign_id, MAX(campaign_name) AS campaign_name, SUM(spend) AS spend
+        FROM {gold} WHERE {where} GROUP BY platform, campaign_id),
+        r AS (SELECT platform, campaign_id, campaign_name, spend,
+        ROW_NUMBER() OVER (PARTITION BY platform ORDER BY spend DESC, campaign_id) AS n FROM c),
+        f AS (SELECT platform AS source, CASE WHEN n <= 6 THEN campaign_name ELSE CONCAT('Other ', platform) END AS target,
+        CASE WHEN n <= 6 THEN campaign_id END AS cid, spend FROM r)
+        SELECT source, target, cid AS campaign_id, ROUND(SUM(f.spend), 2) AS spend FROM f
+        GROUP BY source, target, cid ORDER BY source, spend DESC
     - id: dd_subgroups
       title: Ad sets / ad groups
       page: deep_dive

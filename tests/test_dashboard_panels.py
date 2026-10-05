@@ -244,8 +244,9 @@ def test_every_numeric_column_has_a_format(eval_deps, cfg, page, platform):
 
 def test_every_role_the_pages_lay_out_is_present(cfg):
     roles = {page: {p.role for p in cfg.panels_for(page)} for page in ("overview", "deep_dive")}
-    assert roles["overview"] >= {"kpi", "kpi_series", "trend", "map", "compare", "funnel", "attention"}
-    assert roles["deep_dive"] >= {"kpi", "kpi_series", "markers", "attention", "details", "heatmap", "platform"}
+    assert roles["overview"] >= {"kpi", "kpi_series", "trend", "map", "compare", "funnel", "attention", "flow"}
+    assert roles["deep_dive"] >= {"kpi", "kpi_series", "markers", "attention", "details", "heatmap", "platform",
+                                  "funnel", "flow"}
 
 
 def _flagged_con(pack, rows):
@@ -461,3 +462,56 @@ def test_the_efficiency_panel_returns_campaigns_with_no_sales(pack, cfg):
     r = next(x for x in run_page(deps, cfg, "overview", FLT, TtlCache(0)) if x.id == "efficiency")
     zero = [row for row in r.rows if row["conversions"] == 0]
     assert len(zero) == 1 and zero[0]["cpa"] is None and zero[0]["spend"] > 0
+
+
+def _plan(rows):
+    values = ", ".join(f"(TIMESTAMP '2024-01-30 06:00:00', '{p}', {c}, {r})" for p, c, r in rows)
+    return ("INSERT INTO tbl_budget_recommendations (generated_at, platform, current_spend, recommended_spend) "
+            "VALUES " + values)
+
+
+@pytest.mark.parametrize("plan", [
+    [("Facebook", 100, 60), ("Google", 200, 260), ("TikTok", 300, 280)],  # totals equal
+    [("Facebook", 100, 0), ("Google", 200, 250), ("TikTok", 300, 300)],   # cut to zero; totals differ (review focus 3)
+    [("Facebook", 100, 100), ("Google", 200, 200)],                       # nothing moves
+])
+def test_budget_flows_add_up_to_the_recommended_plan(pack, cfg, plan):
+    from collections import defaultdict
+
+    deps = _con_with(pack, _plan(plan))
+    r = run_panel(deps, cfg, next(p for p in cfg.panels if p.id == "budget_flow"), FLT)
+    assert r.error is None and all(row["spend"] > 0 for row in r.rows)
+    into = defaultdict(float)
+    for row in r.rows:
+        into[row["target"]] += row["spend"]
+    assert dict(into) == pytest.approx({f"Recommended: {p}": rec for p, _, rec in plan if rec > 0}, abs=0.02)
+
+
+@pytest.mark.parametrize("platform", [(), ("Google",)])
+def test_where_the_money_goes_adds_up_to_the_spend(deps, cfg, platform):
+    d = {r.id: r for r in run_page(deps, cfg, "deep_dive", _flt(*platform), TtlCache(0))}
+    flow, kpi = d["money_flow"], d["dd_kpis"].rows[0]
+    assert flow.error is None
+    assert sum(row["spend"] for row in flow.rows) == pytest.approx(kpi["spend"], abs=0.01 * len(flow.rows))
+    assert {row["source"] for row in flow.rows} == ({"Google"} if platform else {"Facebook", "Google", "TikTok"})
+    per_source = {}
+    for row in flow.rows:
+        per_source[row["source"]] = per_source.get(row["source"], 0) + 1
+    assert max(per_source.values()) <= 7  # 6 campaigns and "Other <platform>"
+
+
+def test_money_flow_folds_campaigns_past_the_sixth_into_other(pack, cfg):
+    """Each fixture platform has 4 campaigns; give Google 8 by splitting ids, then look for "Other Google"."""
+    deps = _con_with(pack, "UPDATE fct_unified_marketing_performance SET campaign_id = campaign_id || '_' || "
+                           "CAST(EXTRACT(day FROM date) % 2 AS VARCHAR) WHERE platform = 'Google'")
+    r = next(x for x in run_page(deps, cfg, "deep_dive", _flt("Google"), TtlCache(0)) if x.id == "money_flow")
+    targets = [row["target"] for row in r.rows]
+    assert len(targets) == 7 and "Other Google" in targets
+    other = next(row for row in r.rows if row["target"] == "Other Google")
+    assert other["campaign_id"] is None
+
+
+def test_the_deep_dive_funnel_matches_the_overviews(deps, cfg):
+    ov = next(r for r in run_page(deps, cfg, "overview", _flt("TikTok"), TtlCache(0)) if r.id == "funnel")
+    dd = next(r for r in run_page(deps, cfg, "deep_dive", _flt("TikTok"), TtlCache(0)) if r.id == "dd_funnel")
+    assert dd.rows == ov.rows and dd.chart.chart_type == "funnel"

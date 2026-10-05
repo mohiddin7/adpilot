@@ -232,6 +232,15 @@ def test_a_mover_chart_names_its_y_axis(eager, cfg, monkeypatch, metric):
     assert chart["rows"] == [{"period": "previous", metric: 10.0}, {"period": "this", metric: 20.0}]
 
 
+def test_a_move_card_draws_the_overviews_budget_flow(eager, cfg, monkeypatch):
+    _only(monkeypatch, [])
+    monkeypatch.setattr(insights.a, "move_item", lambda *a, **k: _item("move:TikTok>Facebook", 100))
+    cards = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))["cards"]
+    chart = next(c for c in cards if c["kind"] == "move")["chart"]
+    assert chart["spec"]["chart_type"] == "sankey" and chart["spec"]["target"] == "target"
+    assert {r["target"] for r in chart["rows"]} >= {"Recommended: " + p for p in ("Facebook", "Google", "TikTok")}
+
+
 # ---------- the engine-computed "why" (round 2): hand-built frames, exact numbers ----------
 
 AS_OF = date(2024, 1, 30)

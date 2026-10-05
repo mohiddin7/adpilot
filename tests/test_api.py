@@ -496,7 +496,7 @@ def test_overview_panels_all_run(api):
     client, _ = api
     panels = _panels(client, page="overview", **WINDOW)
     assert set(panels) == {"kpis", "kpi_daily", "cpa_trend", "efficiency", "mix", "funnel", "budget_plan",
-                           "attention"}
+                           "attention", "budget_flow"}
     assert [p["id"] for p in panels.values() if p["error"]] == []
     assert panels["kpis"]["rows"][0]["spend"] > 0
     assert panels["budget_plan"]["rows"] == [] and panels["budget_plan"]["note"]  # empty pipeline table: a note

@@ -42,6 +42,17 @@ def test_panel_chart_types_need_their_extra_columns():
     assert PanelChartSpec(chart_type="funnel", x="stage", y="value").reference is None
 
 
+def test_a_sankey_needs_a_target_that_exists():
+    from adpilot.core.chart import PanelChartSpec, validate_spec
+
+    with pytest.raises(ValueError, match="target"):
+        PanelChartSpec(chart_type="sankey", x="source", y="spend")
+    spec = PanelChartSpec(chart_type="sankey", x="source", y="spend", target="target")
+    with pytest.raises(ValueError, match="target"):
+        validate_spec(spec, ["source", "spend"])
+    assert validate_spec(spec, ["source", "target", "spend"]) == spec
+
+
 def test_validate_spec_checks_size_and_z_and_keeps_the_class():
     from adpilot.core.chart import PanelChartSpec
     spec = PanelChartSpec(chart_type="bubble", x="spend", y="cpa", size="conversions", reference="mean_y")
