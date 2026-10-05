@@ -39,13 +39,19 @@ def test_overview_panels_agree(eval_deps, cfg, platforms):
     kpi = p["kpis"].rows[0]
     _near(_sum(p["kpi_daily"], "spend"), kpi["spend"], p["kpi_daily"])
     assert _sum(p["kpi_daily"], "conversions") == pytest.approx(kpi["conversions"])
-    _near(_sum(p["efficiency"], "spend"), kpi["spend"], p["efficiency"])  # every campaign, sales or not
+    _near(_sum(p["efficiency"], "spend"), kpi["spend"], p["efficiency"])  # the fixture has no zero-sales campaign: see test_efficiency_keeps_zero_sales_campaigns
     assert _sum(p["efficiency"], "conversions") == pytest.approx(kpi["conversions"])
     funnel = {r["stage"]: r["value"] for r in p["funnel"].rows}
     assert funnel["3. Conversions"] == pytest.approx(kpi["conversions"])
     assert funnel["1. Impressions"] >= funnel["2. Clicks"] >= funnel["3. Conversions"]
     for measure in ("Share of spend", "Share of conversions"):
         assert sum(r["share"] for r in p["mix"].rows if r["measure"] == measure) == pytest.approx(1, abs=0.002)
+    by_platform = defaultdict(float)
+    for r in p["efficiency"].rows:
+        by_platform[r["platform"]] += r["spend"]
+    for r in p["mix"].rows:
+        if r["measure"] == "Share of spend":  # shares are rounded to 4 decimals
+            assert r["share"] == pytest.approx(by_platform[r["platform"]] / kpi["spend"], abs=0.0001)
 
 
 def test_budget_panels_agree(eval_deps, cfg):
@@ -67,5 +73,23 @@ def test_deep_dive_panels_agree(eval_deps, cfg, platforms):
     assert funnel["1. Impressions"] == pytest.approx(_sum(d["dd_campaigns"], "impressions"))
     assert funnel["2. Clicks"] == pytest.approx(_sum(d["dd_campaigns"], "clicks"))
     assert funnel["3. Conversions"] == pytest.approx(kpi["conversions"])
+    _near(_sum(d["dd_daily"], "spend"), kpi["spend"], d["dd_daily"])
+    assert _sum(d["dd_daily"], "conversions") == pytest.approx(kpi["conversions"])
     ov = _page(eval_deps, cfg, "overview", platforms)
     assert d["dd_kpis"].rows == ov["kpis"].rows  # the same SQL on the same filters
+    assert d["dd_attention"].rows == ov["attention"].rows  # same SQL, same last-7-days anchor
+
+
+def test_efficiency_keeps_zero_sales_campaigns(pack, cfg):
+    from adpilot.connectors import get_connector
+    from adpilot.core import schema
+    from adpilot.core.audit import MemorySink
+    from adpilot.core.tools import AgentDeps
+
+    con = get_connector("duckdb", pack)
+    con.execute_script("UPDATE fct_unified_marketing_performance SET conversions = 0 WHERE campaign_id = "
+                       "(SELECT MIN(campaign_id) FROM fct_unified_marketing_performance)")
+    deps = AgentDeps(connector=con, pack=pack, schema_text=schema.summary(con, pack), audit=MemorySink())
+    p = _page(deps, cfg, "overview", ())
+    _near(_sum(p["efficiency"], "spend"), p["kpis"].rows[0]["spend"], p["efficiency"])
+    assert any(r["conversions"] == 0 for r in p["efficiency"].rows)
