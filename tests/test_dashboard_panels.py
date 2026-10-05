@@ -277,6 +277,7 @@ def test_the_flag_rule_is_severe_or_critical_in_the_last_7_days_of_data(pack, cf
     assert r.error is None
     assert [row["campaign_name"] for row in r.rows] == [camp.campaign_name.iloc[0]]
     assert r.rows[0]["worst"] == "CRITICAL" and r.rows[0]["flagged_days"] == 1 and r.rows[0]["excess_cost"] > 0
+    assert r.rows[0]["campaign_id"] == camp.campaign_id.iloc[0]
 
 
 def _record_bytes(monkeypatch, deps) -> list:
@@ -418,3 +419,45 @@ def test_one_panel_raising_is_that_panels_error_only(deps, cfg, monkeypatch):
     out = run_page(deps, cfg, "deep_dive", FLT, TtlCache(0))
     assert [(r.id, r.error) for r in out if r.error] == [("dd_weekday", "this panel could not be read")]
     assert len(out) > 5
+
+
+def _con_with(pack, *scripts):
+    """A private DuckDB with fixture edits (the shared fixture must stay as loaded)."""
+    from adpilot.connectors import get_connector
+    from adpilot.core import schema
+    from adpilot.core.audit import MemorySink
+    from adpilot.core.tools import AgentDeps
+
+    con = get_connector("duckdb", pack)
+    for sql in scripts:
+        con.execute_script(sql)
+    return AgentDeps(connector=con, pack=pack, schema_text=schema.summary(con, pack), audit=MemorySink())
+
+
+# Two Google campaigns renamed to one name: grouping by name would merge them.
+SAME_NAME = ("UPDATE fct_unified_marketing_performance SET campaign_name = 'Shared_Name' WHERE campaign_id IN "
+             "(SELECT campaign_id FROM fct_unified_marketing_performance WHERE platform = 'Google' "
+             "GROUP BY campaign_id ORDER BY campaign_id LIMIT 2)")
+
+
+@pytest.mark.parametrize("panel_id,page", [("efficiency", "overview"), ("dd_campaigns", "deep_dive")])
+def test_two_campaigns_sharing_a_name_stay_two_rows(pack, cfg, panel_id, page):
+    deps = _con_with(pack, SAME_NAME)
+    r = next(x for x in run_page(deps, cfg, page, FLT, TtlCache(0)) if x.id == panel_id)
+    shared = [row for row in r.rows if row["campaign_name"] == "Shared_Name"]
+    assert len(shared) == 2 and len({row["campaign_id"] for row in shared}) == 2
+
+
+def test_ad_sets_of_two_campaigns_sharing_a_name_keep_their_campaign_id(pack, cfg):
+    deps = _con_with(pack, SAME_NAME)
+    r = next(x for x in run_page(deps, cfg, "deep_dive", FLT, TtlCache(0)) if x.id == "dd_subgroups")
+    assert len({row["campaign_id"] for row in r.rows if row["campaign_name"] == "Shared_Name"}) == 2
+
+
+def test_the_efficiency_panel_returns_campaigns_with_no_sales(pack, cfg):
+    """The map can't place them (no cost per sale); the page names them under it (spec 6.4)."""
+    deps = _con_with(pack, "UPDATE fct_unified_marketing_performance SET conversions = 0 WHERE campaign_id = "
+                           "(SELECT MIN(campaign_id) FROM fct_unified_marketing_performance)")
+    r = next(x for x in run_page(deps, cfg, "overview", FLT, TtlCache(0)) if x.id == "efficiency")
+    zero = [row for row in r.rows if row["conversions"] == 0]
+    assert len(zero) == 1 and zero[0]["cpa"] is None and zero[0]["spend"] > 0

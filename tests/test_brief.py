@@ -486,3 +486,16 @@ def test_a_cheaper_than_usual_day_is_explained_in_the_cheaper_direction():
     assert item.do == "If it stays this cheap for another day, give it more budget."
     high = a._anomaly_item("Google", "c1", "Brand", "high", [{**day, "cpa": 20.0, "split": a.split(before, {**before, "spend": 200.0})}], 100.0)
     assert high.checked.endswith("Mostly ads got pricier, which points to more competition in the ad auction.")
+
+
+def test_a_renamed_campaign_keeps_its_history_for_the_tracking_check():
+    """Grouping by name split a campaign renamed 5 days ago into two short histories; by id it is one."""
+    days = [date(2024, 1, 1) + timedelta(days=i) for i in range(21)]
+    rows = [{"date": d, "platform": "Google", "campaign_id": "g1", "campaign_name": "Old" if i < 16 else "New",
+             "impressions": 10_000.0, "clicks": 500.0, "spend": 1_000.0, "conversions": 20.0 if i < 20 else 2.0}
+            for i, d in enumerate(days)]
+    gold = pd.DataFrame(rows)
+    flags = pd.DataFrame(columns=["date", "platform", "campaign_id", "campaign_name", "is_anomaly"])
+    items, _ = a.anomaly_items(gold, flags, days[-1], T)
+    assert [i.id for i in items] == ["anomaly:Google:g1:tracking"]
+    assert '"New"' in items[0].subject  # the current name

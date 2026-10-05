@@ -147,7 +147,10 @@ def cost_items(gold: pd.DataFrame, as_of: date, t: dict) -> tuple[list[Item], li
 
 
 def _campaign_days(gold: pd.DataFrame) -> pd.DataFrame:
-    return gold.groupby(["platform", "campaign_id", "campaign_name", "date"], as_index=False)[NUM].sum()
+    """Daily sums per (platform, campaign_id): a renamed campaign keeps one history, under its newest name."""
+    days = gold.groupby(["platform", "campaign_id", "date"], as_index=False)[NUM].sum()
+    newest = gold.sort_values("date").groupby(["platform", "campaign_id"])["campaign_name"].last()
+    return days.join(newest, on=["platform", "campaign_id"])
 
 
 def anomaly_items(gold: pd.DataFrame, flags: pd.DataFrame, as_of: date, t: dict) -> tuple[list[Item], str | None]:
@@ -157,7 +160,8 @@ def anomaly_items(gold: pd.DataFrame, flags: pd.DataFrame, as_of: date, t: dict)
     groups: dict[tuple, list[dict]] = {}
     shape: dict[tuple, str] = {}  # (platform, campaign_id, date) -> tracking | double
     daily = _campaign_days(gold)
-    by_campaign = {k: g.set_index("date") for k, g in daily.groupby(["platform", "campaign_id", "campaign_name"])}
+    by_campaign = {k: g.set_index("date") for k, g in daily.groupby(["platform", "campaign_id"])}
+    names = {k: g["campaign_name"].iloc[-1] for k, g in by_campaign.items()}
 
     def base(key, d):
         g = by_campaign.get(key)
@@ -190,7 +194,7 @@ def anomaly_items(gold: pd.DataFrame, flags: pd.DataFrame, as_of: date, t: dict)
     for f in flags.itertuples():
         if not f.is_anomaly or f.date not in week or (f.platform, f.campaign_id, f.date) in shape:
             continue
-        key = (f.platform, f.campaign_id, f.campaign_name)
+        key = (f.platform, f.campaign_id)
         row, prior = base(key, f.date)
         sales = row["conversions"] if row is not None else 0.0
         kind = "high" if f.anomaly_direction == "HIGH_CPA" else "low"
@@ -198,19 +202,19 @@ def anomaly_items(gold: pd.DataFrame, flags: pd.DataFrame, as_of: date, t: dict)
             "date": f.date, "spend": row["spend"] if row is not None else f.observed_cpa * sales, "sales": sales,
             "clicks": row["clicks"] if row is not None else 0.0, "normal_spend": prior["spend"].median() if prior is not None else 0.0,
             "cpa": f.observed_cpa, "normal_cpa": f.rolling_mean_cpa, "stake": abs(f.observed_cpa - f.rolling_mean_cpa) * sales,
-            "confidence": f.confidence or "low",
+            "confidence": f.confidence or "low", "name": f.campaign_name,
             "split": split(_sums(prior), {k: float(row[k]) for k in NUM}) if row is not None and prior is not None else None})
 
     items, noise = [], []
     recent = {as_of - timedelta(days=i) for i in range(3)}
-    for (plat, cid, name, kind), days in groups.items():
+    for (plat, cid, kind), days in groups.items():
         stake = sum(x["stake"] for x in days)
         dates = {x["date"] for x in days}
         persistent = as_of in dates or len(dates & recent) >= 2
         if kind in ("high", "low") and not (persistent and stake >= t["anomaly_persist_usd"]) and stake < t["anomaly_any_usd"]:
             noise.append(stake)
             continue
-        items.append(_anomaly_item(plat, cid, name, kind, days, stake))
+        items.append(_anomaly_item(plat, cid, names.get((plat, cid)) or days[0].get("name"), kind, days, stake))
     line = None
     if noise:
         line = f"{len(noise)} other anomaly flag{'s' if len(noise) > 1 else ''}: small ({under(max(noise))} each) or one-day"

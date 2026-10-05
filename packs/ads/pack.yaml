@@ -119,9 +119,9 @@ fallback_queries:
   - keywords: [worst|highest|expensive, "cpa|cost per acquisition|acquisition"]
     title: Campaigns ranked by cost per acquisition (worst first)
     sql: >-
-      SELECT platform, campaign_name, ROUND(SUM(spend), 2) AS spend, SUM(conversions) AS conversions,
+      SELECT platform, MAX(campaign_name) AS campaign_name, ROUND(SUM(spend), 2) AS spend, SUM(conversions) AS conversions,
       ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa FROM {gold} AS g
-      GROUP BY platform, campaign_name HAVING SUM(g.conversions) > 0 ORDER BY cpa DESC LIMIT 10
+      GROUP BY platform, campaign_id HAVING SUM(g.conversions) > 0 ORDER BY cpa DESC LIMIT 10
   - keywords: ["cpa|cost per acquisition|acquisition"]
     title: Cost per acquisition by platform
     sql: >-
@@ -242,9 +242,9 @@ dashboard:
       chart: {chart_type: bubble, x: spend, y: cpa, size: conversions, color: platform, reference: mean_y}
       formats: {spend: currency, conversions: number, cpa: currency}
       sql: >-
-        SELECT platform, campaign_name, ROUND(SUM(spend), 2) AS spend, SUM(conversions) AS conversions,
-        ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa
-        FROM {gold} AS g WHERE {where} GROUP BY platform, campaign_name HAVING SUM(g.conversions) > 0 ORDER BY spend DESC
+        SELECT platform, campaign_id, MAX(campaign_name) AS campaign_name, ROUND(SUM(spend), 2) AS spend,
+        SUM(conversions) AS conversions, ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa
+        FROM {gold} WHERE {where} GROUP BY platform, campaign_id ORDER BY spend DESC
     - id: mix
       title: Share of spend vs share of conversions
       page: overview
@@ -301,15 +301,15 @@ dashboard:
       sql: &attention_sql >-
         WITH f AS (SELECT date, platform, campaign_id, campaign_name, severity, observed_cpa, rolling_mean_cpa
         FROM {anomalies} WHERE {where} AND severity IN ('SEVERE', 'CRITICAL')),
-        d AS (SELECT f.date, f.platform, f.campaign_name, f.severity, f.observed_cpa, f.rolling_mean_cpa,
+        d AS (SELECT f.date, f.platform, f.campaign_id, f.campaign_name, f.severity, f.observed_cpa, f.rolling_mean_cpa,
         SUM(g.conversions) AS conversions FROM f JOIN {gold} g ON g.date = f.date AND g.platform = f.platform
         AND g.campaign_id = f.campaign_id
-        GROUP BY f.date, f.platform, f.campaign_name, f.severity, f.observed_cpa, f.rolling_mean_cpa)
-        SELECT platform, campaign_name,
+        GROUP BY f.date, f.platform, f.campaign_id, f.campaign_name, f.severity, f.observed_cpa, f.rolling_mean_cpa)
+        SELECT platform, campaign_id, MAX(campaign_name) AS campaign_name,
         CASE WHEN SUM(CASE WHEN severity = 'CRITICAL' THEN 1 ELSE 0 END) > 0 THEN 'CRITICAL' ELSE 'SEVERE' END AS worst,
         COUNT(*) AS flagged_days, MAX(date) AS last_flagged,
         ROUND(SUM((observed_cpa - rolling_mean_cpa) * conversions), 2) AS excess_cost
-        FROM d GROUP BY platform, campaign_name ORDER BY excess_cost DESC LIMIT 10
+        FROM d GROUP BY platform, campaign_id ORDER BY excess_cost DESC LIMIT 10
     # ---------- channel deep dive ----------
     - id: dd_kpis
       title: Headline numbers
@@ -360,7 +360,7 @@ dashboard:
       chart: {chart_type: scatter, x: date, y: campaign_name, color: severity}
       formats: {observed_cpa: currency, usual_cpa: currency}
       sql: >-
-        SELECT date, platform, campaign_name, severity, ROUND(observed_cpa, 2) AS observed_cpa,
+        SELECT date, platform, campaign_id, campaign_name, severity, ROUND(observed_cpa, 2) AS observed_cpa,
         ROUND(rolling_mean_cpa, 2) AS usual_cpa FROM {anomalies} WHERE {where} AND is_anomaly = 1 ORDER BY date
     - id: dd_attention
       title: Needs attention
@@ -377,12 +377,12 @@ dashboard:
       role: details
       formats: {spend: currency, impressions: number, clicks: number, conversions: number, cpa: currency, ctr: percent, roas: multiple}
       sql: >-
-        SELECT platform, campaign_name, ROUND(SUM(spend), 2) AS spend, SUM(impressions) AS impressions,
-        SUM(clicks) AS clicks, SUM(conversions) AS conversions,
+        SELECT platform, campaign_id, MAX(campaign_name) AS campaign_name, ROUND(SUM(spend), 2) AS spend,
+        SUM(impressions) AS impressions, SUM(clicks) AS clicks, SUM(conversions) AS conversions,
         ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa,
         ROUND(SAFE_DIVIDE(SUM(clicks), SUM(impressions)), 4) AS ctr,
         ROUND(SAFE_DIVIDE(SUM(conversion_value), SUM(spend)), 2) AS roas
-        FROM {gold} WHERE {where} GROUP BY platform, campaign_name ORDER BY spend DESC
+        FROM {gold} WHERE {where} GROUP BY platform, campaign_id ORDER BY spend DESC
     - id: dd_subgroups
       title: Ad sets / ad groups
       page: deep_dive
@@ -390,9 +390,10 @@ dashboard:
       role: details
       formats: {spend: currency, clicks: number, conversions: number, cpa: currency}
       sql: >-
-        SELECT platform, campaign_name, sub_group_name, ROUND(SUM(spend), 2) AS spend, SUM(clicks) AS clicks,
+        SELECT platform, campaign_id, MAX(campaign_name) AS campaign_name, MAX(sub_group_name) AS sub_group_name,
+        ROUND(SUM(spend), 2) AS spend, SUM(clicks) AS clicks,
         SUM(conversions) AS conversions, ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa
-        FROM {gold} WHERE {where} GROUP BY platform, campaign_name, sub_group_name ORDER BY spend DESC
+        FROM {gold} WHERE {where} GROUP BY platform, campaign_id, sub_group_id ORDER BY spend DESC
     - id: dd_weekday
       title: Day of week
       page: deep_dive
@@ -436,9 +437,9 @@ dashboard:
       chart: {chart_type: scatter, x: frequency, y: ctr}
       formats: {frequency: number, ctr: percent}
       sql: >-
-        SELECT date, campaign_name, ROUND(AVG(frequency), 2) AS frequency,
+        SELECT date, MAX(campaign_name) AS campaign_name, ROUND(AVG(frequency), 2) AS frequency,
         ROUND(SAFE_DIVIDE(SUM(clicks), SUM(impressions)), 4) AS ctr
-        FROM {gold} WHERE {where} GROUP BY date, campaign_name ORDER BY date
+        FROM {gold} WHERE {where} GROUP BY date, campaign_id ORDER BY date
     - id: tiktok_video_funnel
       title: Video completion funnel
       page: deep_dive
