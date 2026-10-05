@@ -5,8 +5,10 @@ import dataclasses
 import json
 from datetime import date
 
+import pandas as pd
 import pytest
 
+from adpilot.brief import analyses as a
 from adpilot.core.chart import PanelChartSpec, validate_spec
 from adpilot.core.tools import SqlError
 from adpilot.dashboard import insights
@@ -269,9 +271,8 @@ def _why(item, cur=CUR, prev=PREV, gold=None):
     return insights._why(item, pd.concat([prev, cur]) if gold is None else gold, cur, prev, AS_OF)
 
 
-@pytest.mark.parametrize("item", [_mover("g1", "cpa", 1), _anomaly("g1", "high", 1)])
-def test_a_campaigns_cost_per_sale_why_is_its_rate_split_against_the_previous_period(item):
-    why = _why(item)
+def test_a_campaigns_cost_per_sale_why_is_its_rate_split_against_the_previous_period():
+    why = _why(_mover("g1", "cpa", 1))
     assert why["chart"]["spec"] == PanelChartSpec(chart_type="bar", x="measure", y="change").model_dump()
     assert why["chart"]["rows"] == G1_CHANGES and why["chart"]["formats"] == {"change": "percent"}
     assert why["text"] == ("Ad price +20%, clicks per view -50%, sales per click +100%. Mostly fewer people clicked, "
@@ -418,3 +419,26 @@ def test_an_outlier_with_a_zero_rate_says_no_rate_explains_the_gap():
     cur = _rows((date(2024, 1, 25), "Google", "g8", 1000, 100, 100.0, 0), (date(2024, 1, 25), "TikTok", "t1", 5000, 500, 100.0, 100))
     why = insights._why(_outlier("g8", 1), cur, cur, PREV, AS_OF)
     assert why == {"text": "No single rate explains the gap with the account.", "chart": None}
+
+
+def _flagged_day(split):
+    return {"date": date(2024, 1, 20), "spend": 200.0, "sales": 10.0, "clicks": 100.0, "cpa": 20.0, "normal_cpa": 10.0,
+            "stake": 100.0, "confidence": "high", "split": split}
+
+
+NORMAL = {"impressions": 1000.0, "clicks": 100.0, "spend": 100.0, "conversions": 10.0}
+PRICIER = {**NORMAL, "spend": 200.0}
+
+
+@pytest.mark.parametrize("kind,before,after,agrees", [
+    ("high", NORMAL, PRICIER, True), ("high", PRICIER, NORMAL, False),
+    ("low", PRICIER, NORMAL, True), ("low", NORMAL, PRICIER, False),
+])
+def test_an_anomaly_cards_why_is_its_flagged_day_not_the_window(kind, before, after, agrees):
+    """The window can move the other way (prev vs cur); the card's why is the day against its normal days."""
+    item = a._anomaly_item("Google", "g1", "C", kind, [_flagged_day(a.split(before, after))], 100.0)
+    window = pd.DataFrame([{"date": date(2024, 1, 20), "platform": "Google", "campaign_id": "g1", "campaign_name": "C",
+                            **NORMAL}])
+    why = insights._why(item, window, window, window, date(2024, 1, 20))
+    assert why["text"] == item.checked
+    assert (why["chart"] is not None) == agrees

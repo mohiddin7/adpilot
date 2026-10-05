@@ -499,3 +499,31 @@ def test_a_renamed_campaign_keeps_its_history_for_the_tracking_check():
     items, _ = a.anomaly_items(gold, flags, days[-1], T)
     assert [i.id for i in items] == ["anomaly:Google:g1:tracking"]
     assert '"New"' in items[0].subject  # the current name
+
+
+def _flagged_day(split):
+    return {"date": date(2024, 1, 20), "spend": 200.0, "sales": 10.0, "clicks": 100.0, "cpa": 20.0, "normal_cpa": 10.0,
+            "stake": 100.0, "confidence": "high", "split": split}
+
+
+NORMAL = {"impressions": 1000.0, "clicks": 100.0, "spend": 100.0, "conversions": 10.0}
+PRICIER = {**NORMAL, "spend": 200.0}
+
+
+def test_a_high_anomaly_keeps_its_own_action_and_a_why_in_its_direction():
+    item = a._anomaly_item("Google", "g1", "C", "high", [_flagged_day(a.split(NORMAL, PRICIER))], 100.0)
+    assert item.do == a.HIGH_DO and "pricier" in item.checked
+    assert item.check["split"]["total"] > 0
+    json.dumps(item.check)
+
+
+def test_a_high_anomaly_whose_split_disagrees_says_so_neutrally():
+    item = a._anomaly_item("Google", "g1", "C", "high", [_flagged_day(a.split(PRICIER, NORMAL))], 100.0)
+    assert item.do == a.HIGH_DO and item.checked == a.NO_DAY_CAUSE
+
+
+def test_a_low_anomaly_keeps_its_own_action_and_a_why_in_its_direction():
+    item = a._anomaly_item("Google", "g1", "C", "low", [_flagged_day(a.split(PRICIER, NORMAL))], 100.0)
+    assert item.do == a.LOW_DO and "cheaper" in item.checked
+    bad = a._anomaly_item("Google", "g1", "C", "low", [_flagged_day(a.split(NORMAL, PRICIER))], 100.0)
+    assert bad.do == a.LOW_DO and bad.checked == a.NO_DAY_CAUSE

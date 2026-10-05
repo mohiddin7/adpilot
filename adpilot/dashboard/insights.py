@@ -179,6 +179,11 @@ def _why(i: a.Item, gold: pd.DataFrame, cur: pd.DataFrame, prev: pd.DataFrame, a
     if i.kind not in ("anomaly", "mover", "outlier"):
         return None  # a budget move: the card already shows each platform's cost per sale
 
+    if i.kind == "anomaly" and c["kind"] in ("high", "low"):  # the flagged day against its 14 normal days
+        sp = a.agreeing(c["kind"], c.get("split"))
+        return {"text": a.explain(sp)[0] if sp else a.NO_DAY_CAUSE,
+                "chart": _bars(sp["changes"], a.RATES) if sp else None}
+
     def mine(df: pd.DataFrame) -> dict:
         return a._sums(df[(df["platform"] == c["platform"]) & (df["campaign_id"] == c["campaign_id"])])
 

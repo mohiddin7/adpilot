@@ -30,6 +30,19 @@ CHEAPER = {
     "buyers": ("more clickers bought", "a better landing page or offer, or a change in tracking"),
 }
 
+# An anomaly card's own actions: a flagged day is about that day, so explain()'s window advice never applies.
+HIGH_DO = "Check what changed in this campaign that day (bids, budget, creative, targeting or the landing page) and undo what doesn't belong."
+LOW_DO = "If it stays this cheap for another day, give it more budget."
+NO_DAY_CAUSE = "The day's cost per sale differs from normal without a single rate behind it."
+
+
+def agreeing(kind: str, sp: dict | None) -> dict | None:
+    """The flagged day's split when it moves the way the flag says (a high day dearer, a low day cheaper), else None:
+    the detector's baseline and this one can differ, and the card must not argue with itself."""
+    if sp is None or sp["total"] == 0 or (sp["total"] > 0) != (kind == "high"):
+        return None
+    return sp
+
 
 @dataclass
 class Item:
@@ -241,18 +254,18 @@ def _anomaly_item(plat, cid, name, kind, days, stake) -> Item:
         do = "Look for a duplicate conversion tag before trusting this campaign's results or giving it more budget."
     else:
         happened = f"On {when} it paid {money(worst['cpa'])} per sale; its normal is about {money(worst['normal_cpa'])}."
-        checked, do = explain(worst["split"])
+        sp = agreeing(kind, worst["split"])
+        checked = explain(sp)[0] if sp else NO_DAY_CAUSE
         if kind == "high":
-            title, check_line = f"Look into {subject}", "whether its cost per sale returns to normal"
+            title, check_line, do = f"Look into {subject}", "whether its cost per sale returns to normal", HIGH_DO
         else:
-            title, check_line = f"Consider more budget for {subject}", "whether it stays this cheap"
-            do = "If it stays this cheap for another day, give it more budget."
+            title, check_line, do = f"Consider more budget for {subject}", "whether it stays this cheap", LOW_DO
     return Item(
         id=f"anomaly:{plat}:{cid}:{kind}", kind="anomaly", subject=subject, stake=stake, happened=happened + more,
         title=title, checked=checked, do=do,
         confidence=f"{conf} ({'one day' if len(days) == 1 else f'{len(days)} days this week'})", check_line=check_line,
         check={"platform": plat, "campaign_id": cid, "kind": kind, "normal_sales": float(worst.get("normal_sales") or 0),
-               "normal_spend": float(worst.get("normal_spend") or 0)},
+               "normal_spend": float(worst.get("normal_spend") or 0), "split": worst.get("split")},
         numbers=[{"date": day(x["date"]), "spend": money(x["spend"]), "sales": f"{x['sales']:,.0f}",
                   "cost per sale": money(x["cpa"]) if x["cpa"] else "–", "normal cost per sale": money(x["normal_cpa"])}
                  for x in sorted(days, key=lambda x: x["date"])],
