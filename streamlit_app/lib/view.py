@@ -297,9 +297,9 @@ def attention_list(p: dict | None, start: date, end: date, limit: int = 5) -> No
         for i, r in enumerate(p["rows"][:limit]):
             text, action = st.columns([5, 1])
             cost = r["excess_cost"] or 0
-            text.markdown(md(f"**{r['campaign_name']}** · {r['platform']} · {r['worst']} · "
-                             f"{r['flagged_days']} flagged day{'s' if r['flagged_days'] != 1 else ''} · "
-                             f"about {fmt_currency(abs(cost))} {'excess cost' if cost >= 0 else 'cheaper than usual'}"))
+            text.markdown(f"**{md(r['campaign_name'])}** · {md(r['platform'])} · {r['worst']} · "
+                          f"{r['flagged_days']} flagged day{'s' if r['flagged_days'] != 1 else ''} · "
+                          f"about {md(fmt_currency(abs(cost)))} {'excess cost' if cost >= 0 else 'cheaper than usual'}")
             if action.button("Open in deep dive", key=f"open_{i}"):
                 st.session_state.update({"dd_platform": r["platform"], "dd_campaign_name": [r["campaign_name"]],
                                          "dd_preset": "Custom", "dd_custom": (start, end)})
@@ -327,8 +327,8 @@ def pacing_card(pc: dict, colors: dict | None = None) -> None:
             if r["budget"] is None:
                 st.caption(f"{r['platform']}: no budget set")
             elif r.get("off_pct") is not None:
-                st.caption(md(f"{r['platform']}: projection {fmt_currency(r['projected'])} "
-                              f"({r['off_pct']:+.0f}% vs budget)"))
+                st.caption(f"{md(r['platform'])}: projection {md(fmt_currency(r['projected']))} "
+                           f"({r['off_pct']:+.0f}% vs budget)")
 
 
 SEVERITY_BADGE = {"high": "🔴 HIGH", "medium": "🟠 MEDIUM", "low": "⚪ LOW"}
@@ -356,8 +356,8 @@ def what_changed(start: date, end: date, selected: dict[str, list[str]]) -> None
             show_error(exc)
             return
         for c in out["cards"][:3]:
-            st.markdown(md(f"{SEVERITY_BADGE[c['severity']]} · {c['headline']} "
-                           f"(about {fmt_currency(c['stake'])} {stake_label(c)})"))
+            st.markdown(f"{SEVERITY_BADGE[c['severity']]} · {md(c['headline'])} "
+                        f"(about {md(fmt_currency(c['stake']))} {stake_label(c)})")
         if not out["cards"]:
             failed = out["problems"] and not out["checked"]
             st.caption("Couldn't check this period." if failed else "Nothing needs attention in this period.")

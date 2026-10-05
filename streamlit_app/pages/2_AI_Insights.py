@@ -31,24 +31,24 @@ out = view.guarded(view.insights, params)
 cards = out["cards"]
 if cards:
     lost = out.get("at_stake") or 0  # the server's sum of the cards whose stake is money lost
-    st.markdown(md(f"**{len(cards)} finding{'s' if len(cards) != 1 else ''}"
-                   + (f" · about {fmt_currency(lost)} at stake" if lost else "") + "**"))
+    st.markdown(f"**{len(cards)} finding{'s' if len(cards) != 1 else ''}"
+                + (f" · about {md(fmt_currency(lost))} at stake" if lost else "") + "**")
 elif out["problems"] and not out["checked"]:
     st.markdown("**Couldn't check this period.**")
 else:
     st.markdown("**Nothing needs attention in this period.**")
-    st.markdown(md("Checked: " + (", ".join(out["checked"]) or "nothing could be checked")))
+    st.markdown("Checked: " + md(", ".join(out["checked"]) or "nothing could be checked"))
 for problem in out["problems"]:
     st.caption(md(problem))
 
 for c in cards:
     single = platform_colour(colors, c.get("platform"))  # the finding's platform colours its single-series charts
     with st.container(border=True):
-        st.markdown(md(f"{view.SEVERITY_BADGE[c['severity']]} · about {fmt_currency(c['stake'])} {view.stake_label(c)}"))
-        st.markdown(md(f"### {c['title']}"))
+        st.markdown(f"{view.SEVERITY_BADGE[c['severity']]} · about {md(fmt_currency(c['stake']))} {view.stake_label(c)}")
+        st.markdown(f"### {md(c['title'])}")
         st.markdown(md(c["headline"]))
         for sentence in c.get("also") or []:  # the same campaign's other findings, folded into this card
-            st.markdown(md(f"Also: {sentence}"))
+            st.markdown(f"Also: {md(sentence)}")
         left, right = st.columns([3, 2])
         with left:
             chart = c.get("chart")
@@ -58,9 +58,9 @@ for c in cards:
         with right:
             if c["numbers"]:
                 st.dataframe(c["numbers"], hide_index=True)
-            st.markdown(md(f"**Do:** {c['action']}"))
-            st.caption(md(f"Why: {c['why']}"))
-            st.caption(md(f"Confidence: {c['confidence']}"))
+            st.markdown(f"**Do:** {md(c['action'])}")
+            st.caption(f"Why: {md(c['why'])}")
+            st.caption(f"Confidence: {md(c['confidence'])}")
         why = c.get("why_detail")  # the engine's breakdown; None for a budget move, absent on an older API
         if why:
             with st.expander("Why this happened"):

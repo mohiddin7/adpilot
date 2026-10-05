@@ -6,7 +6,9 @@ import pytest
 from lib.controls import (
     ASK_WHY,
     QUESTION_LIMIT,
+    answer_md,
     applies_to,
+    caveat_text,
     clamp_pair,
     clamp_range,
     context_line,
@@ -19,6 +21,7 @@ from lib.controls import (
     with_context,
     with_dates,
 )
+from lib.formatters import format_for
 
 MIN, MAX = date(2024, 1, 1), date(2024, 1, 30)
 
@@ -83,13 +86,58 @@ def test_context_is_dropped_rather_than_push_a_question_over_the_limit():
     assert with_context(long_question, "Overview page; 2024-01-01 to 2024-01-30") == long_question
 
 
-def test_md_escapes_dollar_signs():
-    """Review focus 4: Streamlit markdown renders $...$ as LaTeX."""
-    assert md("spent $5K of $7K") == "spent \\$5K of \\$7K"
-
-
 def test_ask_in_chat_leaves_room_for_a_cards_facts():
     """The card's facts (FACTS_MAX on the server) plus the question must fit the analyst's limit untrimmed."""
     from adpilot.dashboard.insights import FACTS_MAX
 
     assert ASK_WHY.endswith("? ") and len(ASK_WHY) + FACTS_MAX <= QUESTION_LIMIT
+
+
+def test_md_shows_data_as_typed():
+    assert md("[click](http://x) #1 *Sale* `x`") == r"\[click\](http\://x) \#1 \*Sale\* \`x\`"
+    assert md("spent $5K of $7K") == r"spent \$5K of \$7K"
+    assert md(":red[big] &copy; <b>x</b> ~~y~~ a|b") == r"\:red\[big\] \&copy; \<b\>x\</b\> \~\~y\~\~ a\|b"
+    assert md("- not a list") == r"\- not a list" and md("1. not a list") == r"1\. not a list"
+    assert md("two\n# lines") == r"two \# lines"  # one line: a newline can't start a heading
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Spend rose.\n---\nMore", "Spend rose.\n\n---\nMore"),          # setext H2
+    ("Total\n===", "Total\n\n==="),                                  # setext H1
+    ("# Title\nbody", "**Title**\nbody"),
+    ("### Spend by **platform** ###", "**Spend by platform**"),
+    ("**Spend rose 5%", "\\*\\*Spend rose 5%"),
+    ("You spent $5K", "You spent \\$5K"),
+    ("```sql\n# not a heading\nSELECT '$1', '**'\n```", "```sql\n# not a heading\nSELECT '$1', '**'\n```"),  # review focus 5
+    ("| a | b |\n|---|---|\n| 1 | 2 |", "| a | b |\n|---|---|\n| 1 | 2 |"),
+    ("- one\n- two", "- one\n- two"),
+    ("See [the docs](https://x.y)", "See [the docs](https://x.y)"),
+])
+def test_answer_md_cannot_take_over_the_page(raw, expected):
+    assert answer_md(raw) == expected
+
+
+@pytest.mark.parametrize("caveat,expected", [
+    ("Rerun: BudgetExceeded", "The analyst hit its query limit, so this answer may be incomplete."),
+    ("Rerun: SqlSchema", "The first attempt failed, so the analyst answered on a second try."),
+    ("OutputPolicy", "Part of the answer was withheld because it named internal details."),
+    ("GuardDegraded", "One of the question checks was unavailable, so only the basic checks ran."),
+    ("classifier:jev", "A safety check stopped this question."),
+    ("InputPolicy", "A safety check stopped this question."),
+    ("OutOfScope", "This question is outside the marketing data, so the analyst did not answer it."),
+    ("ModelUnavailable: answered without the language model (timeout).",
+     "The language model was unavailable, so this answer comes from a pre-defined query."),
+    ("SomethingNew", "The analyst noted a limitation with this answer."),
+    ("Spend for March is still loading.", "Spend for March is still loading."),
+])
+def test_caveats_read_as_sentences(caveat, expected):
+    assert caveat_text(caveat) == expected
+
+
+@pytest.mark.parametrize("column,kind", [
+    ("spend", "currency"), ("cpa", "currency"), ("excess_cost", "currency"), ("conversion_value", "currency"),
+    ("ctr", "percent"), ("click_rate", "percent"), ("search_impression_share", "percent"),
+    ("roas", "multiple"), ("roas_google", "multiple"), ("conversions", "number"), ("current_spend_pct", "number"),
+])
+def test_chat_columns_take_the_dashboards_formats(column, kind):
+    assert format_for(column) == kind

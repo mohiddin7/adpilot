@@ -10,8 +10,9 @@ import streamlit as st
 from . import api_client
 from .api_client import ApiError
 from .charts import build_figure
-from .controls import md, with_context
-from .view import show_error
+from .controls import answer_md, caveat_text, md, with_context
+from .formatters import format_for
+from .view import column_config, show_error
 
 PHASES = {
     "thinking": "Thinking…",
@@ -73,19 +74,22 @@ def run_ask(question: str, context: str, page: str) -> dict:
     return answer
 
 
-def render_answer(answer: dict, compact: bool = False, colors: dict | None = None, single: str | None = None) -> None:
+def render_answer(answer: dict, compact: bool = False, colors: dict | None = None, single: str | None = None,
+                  key: str | None = None) -> None:
     """`colors`: the platform colours, so a chart by platform matches the rest of the dashboard. `single`: the colour
-    of the one platform in view, for a chart with a single series."""
-    st.markdown(md(answer.get("answer_md") or ""))
+    of the one platform in view, for a chart with a single series. `key`: unique per turn on the page."""
+    st.markdown(answer_md(answer.get("answer_md") or ""))
     chart, data = answer.get("chart"), answer.get("data")
+    numeric = {c for r in data or [] for c, v in r.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    formats = {c: format_for(c) for c in numeric}
     if chart and data:
-        fig = build_figure(chart, data, None, colors, single)
+        fig = build_figure(chart, data, formats, colors, single)
         if fig is not None:
-            st.plotly_chart(fig, key=f"answer_{answer.get('trace_id')}_{'s' if compact else 'm'}")
+            st.plotly_chart(fig, key=f"answer_{key or answer.get('trace_id')}_{'s' if compact else 'm'}")
     elif data and not compact:
-        st.dataframe(data, hide_index=True)
+        st.dataframe(data, hide_index=True, column_config=column_config(formats))
     for caveat in answer.get("caveats") or []:
-        st.caption(md(f"Note: {caveat}"))
+        st.caption(f"Note: {md(caveat_text(caveat))}")
     if answer.get("sql") and not compact:
         with st.expander("SQL"):
             st.code(answer["sql"], language="sql")
@@ -106,11 +110,11 @@ def ask_and_record(question: str, context: str, page: str) -> dict | None:
 
 
 def _thread(page: str, colors: dict | None, single: str | None) -> None:
-    for m in history(page):
+    for i, m in enumerate(history(page)):
         if m["role"] == "user":
-            st.markdown(md(f"**You:** {m['content']}"))
+            st.markdown(f"**You:** {md(m['content'])}")
         elif "answer" in m:
-            render_answer(m["answer"], compact=True, colors=colors, single=single)
+            render_answer(m["answer"], compact=True, colors=colors, single=single, key=f"{page}_{i}")
         else:
             st.caption(md(m["content"]))
 
@@ -125,7 +129,7 @@ def sidebar(context: str, page: str, suggestions: list[str] | tuple = (), colors
         clicked = [s for i, s in enumerate(suggestions) if st.button(s, key=f"suggest_{page}_{i}")]  # draw them all
         question = st.chat_input("Ask a question…", key=f"sidebar_chat_{page}") or (clicked[0] if clicked else None)
         if question:
-            st.markdown(md(f"**You:** {question}"))
+            st.markdown(f"**You:** {md(question)}")
             answer = ask_and_record(question, context, page)
             if answer is not None:
                 render_answer(answer, compact=True, colors=colors, single=single)

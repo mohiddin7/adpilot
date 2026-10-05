@@ -3,6 +3,7 @@ line. No Streamlit import, so every rule a page relies on has a plain unit test 
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 
 MAX_RANGE_DAYS = 366  # the API's cap, adpilot/dashboard/filters.py
@@ -106,6 +107,75 @@ def with_context(question: str, context: str) -> str:
 ASK_WHY = "Why did this happen, and what should I check first? "
 
 
+_MD_ANYWHERE = re.compile(r"([\\`*_{}\[\]#|<>~$&:])")
+_MD_LIST = re.compile(r"^(\s*)([-+])")
+_MD_NUMBERED = re.compile(r"^(\s*\d+)([.)])")
+
+
 def md(text: str) -> str:
-    """Streamlit markdown renders $...$ as LaTeX; dollar amounts must stay dollar amounts."""
-    return text.replace("$", "\\$")
+    """Data as literal text inside Markdown (campaign names, findings, problems, the viewer's own question): one line,
+    and every character that could start formatting is backslash-escaped, so `[x](y)`, `*Sale*`, `# 1`, `$5K` (LaTeX),
+    `:red[x]` (Streamlit colour), `&copy;` and a leading `- ` or `1. ` all show as typed. Wrap only the data: our own
+    `**bold**` around it stays bold."""
+    line = " ".join(str(text).split())
+    return _MD_NUMBERED.sub(r"\1\\\2", _MD_LIST.sub(r"\1\\\2", _MD_ANYWHERE.sub(r"\\\1", line)))
+
+
+_FENCE = re.compile(r"^\s{0,3}(```|~~~)")
+_ATX = re.compile(r"^\s{0,3}#{1,6}(?:\s+(.*?))?\s*#*\s*$")
+_UNDERLINE = re.compile(r"^\s{0,3}(=+|-+|(?:\*\s*){3,})\s*$")
+
+
+def answer_md(text: str) -> str:
+    """A model's Markdown that can't take over the page. Outside code blocks: headings become bold lines, a line of
+    only -, = or * gets a blank line above it (else the paragraph above renders as a heading), an odd `**` or `__`
+    has its last marker escaped, and $ stays a dollar sign. Code blocks, tables, lists and links are left as written."""
+    out: list[str] = []
+    prose: list[int] = []  # indexes of the text lines outside code blocks (not rules), where ** and __ count
+    fenced = False
+    for line in (text or "").splitlines():
+        if _FENCE.match(line):
+            fenced = not fenced
+        elif not fenced:
+            heading = _ATX.match(line)
+            if heading:
+                line = f"**{heading.group(1).replace('**', '')}**" if heading.group(1) else ""
+            if _UNDERLINE.match(line):
+                if out and out[-1].strip():
+                    out.append("")
+            else:
+                prose.append(len(out))
+            line = line.replace("$", "\\$")
+        out.append(line)
+    for marker in ("**", "__"):
+        if sum(out[i].count(marker) for i in prose) % 2:
+            i = max(i for i in prose if marker in out[i])
+            at = out[i].rfind(marker)
+            out[i] = f"{out[i][:at]}\\{marker[0]}\\{marker[1]}{out[i][at + 2:]}"
+    return "\n".join(out)
+
+
+CAVEATS = {
+    "Rerun: BudgetExceeded": "The analyst hit its query limit, so this answer may be incomplete.",
+    "OutputPolicy": "Part of the answer was withheld because it named internal details.",
+    "GuardDegraded": "One of the question checks was unavailable, so only the basic checks ran.",
+    "InputPolicy": "A safety check stopped this question.",
+    "OutOfScope": "This question is outside the marketing data, so the analyst did not answer it.",
+}
+_CODE = re.compile(r"^[A-Za-z]+(:\s?\w+)?$")
+
+
+def caveat_text(caveat: str) -> str:
+    """The API's caveats are machine codes the evals and the audit read (unchanged there); viewers get a sentence.
+    A sentence the analyst wrote is shown as it is."""
+    if caveat in CAVEATS:
+        return CAVEATS[caveat]
+    if caveat.startswith("Rerun: "):
+        return "The first attempt failed, so the analyst answered on a second try."
+    if caveat.startswith("classifier:"):
+        return CAVEATS["InputPolicy"]
+    if "answered without the language model" in caveat:
+        return "The language model was unavailable, so this answer comes from a pre-defined query."
+    if _CODE.match(caveat):
+        return "The analyst noted a limitation with this answer."
+    return caveat

@@ -110,3 +110,18 @@ def fmt(value, kind: str | None) -> str:
     if kind == "multiple":
         return "—" if value is None else f"{float(value):.2f}x"
     return fmt_number(value)
+
+
+CURRENCY_COLUMNS = {"spend", "revenue", "cpa", "cpc", "cpm", "conversion_value"}
+
+
+def format_for(column: str) -> str:
+    """A column's format from its name alone, for the analyst's tables, which have no panel `formats`."""
+    c = column.lower()
+    if c in CURRENCY_COLUMNS or c.endswith("_cost"):
+        return "currency"
+    if c in ("ctr", "cvr") or c.endswith(("_rate", "_share")):
+        return "percent"
+    if c == "roas" or c.startswith("roas_"):
+        return "multiple"
+    return "number"

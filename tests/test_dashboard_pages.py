@@ -223,7 +223,7 @@ def test_needs_attention_opens_the_campaign_in_the_deep_dive_with_the_same_dates
     campaign = _flag(monkeypatch, dash_api)
     at = run("Home.py", ov_preset="Last 14 days")
     assert not at.exception, at.exception
-    assert any(campaign in m.value and "CRITICAL" in m.value for m in at.markdown)
+    assert any(campaign.replace("_", "\\_") in m.value and "CRITICAL" in m.value for m in at.markdown)
     at.button(key="open_0").click().run()
     assert not at.exception, at.exception
     assert at.session_state["dd_platform"] == "Google" and at.session_state["dd_campaign_name"] == [campaign]
@@ -258,6 +258,20 @@ def test_the_chat_page_shows_the_viewers_dollar_amounts_literally(dash_api):
     assert any("\\$5K to \\$7K" in m.value for m in at.markdown)
     at.run()  # the history replay path
     assert any("\\$5K to \\$7K" in m.value for m in at.markdown)
+
+
+def test_the_chat_page_renders_a_model_answer_safely_with_plain_caveats(dash_api, monkeypatch):
+    from lib import api_client
+
+    monkeypatch.setattr(api_client, "ask", lambda q, sid: {
+        "answer_md": "Spend rose.\n---\nDetails", "caveats": ["Rerun: BudgetExceeded"],
+        "data": [{"platform": "Google", "spend": 1234.5}], "chart": None, "sql": "SELECT 1", "trace_id": "t1"})
+    at = run("pages/3_Chat.py")
+    at.chat_input[0].set_value("How is spend?").run()
+    assert not at.exception, at.exception
+    assert any(m.value == "Spend rose.\n\n---\nDetails" for m in at.markdown)
+    assert any("query limit" in c.value for c in at.caption)
+    assert not any("BudgetExceeded" in c.value for c in at.caption)
 
 
 def test_a_failed_sidebar_ask_shows_its_error_once(dash_api, monkeypatch):
@@ -482,9 +496,11 @@ BY_PLATFORM = {"answer_md": "Google spent the most.", "sql": "SELECT 1", "caveat
                         {"platform": "Facebook", "spend": 1.0}]}
 
 
-@pytest.mark.parametrize("page,key", [("pages/3_Chat.py", "answer_t1_m"), ("Home.py", "answer_t1_s"),
-                                      ("pages/1_Channel_Deep_Dive.py", "answer_t1_s"), ("pages/2_AI_Insights.py", "answer_t1_s")])
-def test_a_chat_chart_by_platform_wears_the_platform_colours(dash_api, monkeypatch, page, key):
+@pytest.mark.parametrize("page,key,replay", [
+    ("pages/3_Chat.py", "answer_new_m", "answer_t1_m"), ("Home.py", "answer_t1_s", "answer_overview_1_s"),
+    ("pages/1_Channel_Deep_Dive.py", "answer_t1_s", "answer_deep_dive_1_s"),
+    ("pages/2_AI_Insights.py", "answer_t1_s", "answer_insights_1_s")])
+def test_a_chat_chart_by_platform_wears_the_platform_colours(dash_api, monkeypatch, page, key, replay):
     """Review R1: chat passed no platform colours, so platforms fell through to the non-platform sequence."""
     from lib import api_client
     from lib.theme import COLORS
@@ -496,7 +512,7 @@ def test_a_chat_chart_by_platform_wears_the_platform_colours(dash_api, monkeypat
     colours = {t["name"]: t["marker"]["color"] for t in _figures(at)[key]["data"]}
     assert colours == {"TikTok": COLORS["audited"], "Google": COLORS["forecast"], "Facebook": COLORS["brand"]}
     at.run()  # and again from the history
-    assert {t["name"]: t["marker"]["color"] for t in _figures(at)[key]["data"]} == colours
+    assert {t["name"]: t["marker"]["color"] for t in _figures(at)[replay]["data"]} == colours
 
 
 def test_a_findings_charts_wear_its_platforms_colour(dash_api, monkeypatch):
@@ -537,7 +553,7 @@ def test_a_chat_chart_of_one_series_by_platform_wears_each_platforms_colour(dash
     from lib.theme import COLORS
 
     traces = _chat_chart(monkeypatch, "pages/3_Chat.py", {"chart_type": "bar", "x": "platform", "y": "spend"},
-                         BY_PLATFORM["data"], key="answer_t1_m")
+                         BY_PLATFORM["data"], key="answer_new_m")
     assert {t["name"]: t["marker"]["color"] for t in traces} == {
         "TikTok": COLORS["audited"], "Google": COLORS["forecast"], "Facebook": COLORS["brand"]}
 
