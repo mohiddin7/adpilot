@@ -636,3 +636,13 @@ def test_insights_rejects_anything_but_dates_and_platform(api, extra):
 def test_insights_needs_the_key(api):
     client, _ = api
     assert client.get("/insights", params={"date_from": "2024-01-16", "date_to": "2024-01-30"}).status_code == 401
+
+
+def test_an_over_long_selection_is_422_not_a_page_of_failed_panels(api):
+    """build_where's FilterError must reach the route (422), not become every panel's 'could not be read'."""
+    client, sink = api
+    values = [f"campaign-{i:02d}-" + "x" * 90 for i in range(25)]
+    r = client.get("/panels", params={"page": "deep_dive", "campaign_name": values, **WINDOW}, headers=H)
+    assert r.status_code == 422
+    assert "too many filter values" in r.json()["detail"]
+    assert sink.calls == []

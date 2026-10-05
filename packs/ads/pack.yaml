@@ -404,7 +404,7 @@ dashboard:
         SELECT FORMAT_DATE('%a', date) AS weekday, platform, ROUND(SUM(spend), 2) AS spend,
         ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa,
         ROUND(SAFE_DIVIDE(SUM(clicks), SUM(impressions)), 4) AS ctr
-        FROM {gold} WHERE {where} GROUP BY weekday, platform
+        FROM {gold} WHERE {where} GROUP BY weekday, platform ORDER BY weekday, platform
     - id: google_quality_dist
       title: Spend by quality score
       page: deep_dive

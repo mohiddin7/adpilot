@@ -21,7 +21,7 @@ from adpilot.core.errors import AdPilotError
 from adpilot.core.runtime import fresh_deps
 from adpilot.core.tools import AgentDeps, SqlError, execute
 from adpilot.dashboard.config import DashboardConfig, FilterDef, PanelDef
-from adpilot.dashboard.filters import Filters, build_where
+from adpilot.dashboard.filters import FilterError, Filters, build_where
 
 log = logging.getLogger(__name__)
 
@@ -166,6 +166,8 @@ def run_page(template: AgentDeps, cfg: DashboardConfig, page: str, flt: Filters,
         if result is None:
             try:
                 result = run_panel(template, cfg, p, pflt)
+            except FilterError:
+                raise  # the viewer's selection is bad: the route answers 422, not a page of failed panels
             except Exception:  # noqa: BLE001 — one panel's bug is that panel's error, never the page's 500
                 log.exception("panel %s failed", p.id)
                 return failed.model_copy(update={"error": "this panel could not be read"})
