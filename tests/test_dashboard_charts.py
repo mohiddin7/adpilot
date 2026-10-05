@@ -6,7 +6,17 @@ import pytest
 import yaml
 from lib.charts import add_markers, add_prior, build_figure, pacing_bullets
 from lib.formatters import fmt, label
-from lib.theme import COLORS, OTHER, PALETTE, SERIES, SEVERITY, SYMBOLS, platform_colors
+from lib.theme import (
+    COLORS,
+    MUTED,
+    OTHER,
+    PALETTE,
+    SERIES,
+    SEVERITY,
+    SYMBOLS,
+    platform_colors,
+    platform_colour,
+)
 
 ROWS = [{"platform": "Google", "spend": 1.0, "cpa": 2.0, "conversions": 3.0, "weekday": "Mon"},
         {"platform": "TikTok", "spend": 2.0, "cpa": 4.0, "conversions": 1.0, "weekday": "Tue"}]
@@ -184,5 +194,30 @@ def test_each_pacing_bar_is_its_platforms_colour():
             {"platform": "TikTok", "budget": 90.0, "spent_mtd": 30.0, "projected": 80.0},
             {"platform": "Snap", "budget": 50.0, "spent_mtd": 10.0, "projected": 40.0}]
     spent = next(t for t in pacing_bullets(rows, COLORS_BY_PLATFORM).data if t.name == "Spent so far")
-    assert list(spent.marker.color) == [COLORS["forecast"], COLORS["audited"], COLORS["brand"]]  # no colour: the brand
+    # Snap has no colour: a neutral, never the brand (Facebook's colour; review round 3)
+    assert list(spent.marker.color) == [COLORS["forecast"], COLORS["audited"], MUTED]
     assert next(t for t in pacing_bullets(rows).data if t.name == "Spent so far").marker.color == COLORS["brand"]
+
+
+def test_a_platform_without_a_colour_is_neutral_not_the_brand():
+    """Review round 3: the brand is Facebook's colour, so an unassigned platform must not borrow it."""
+    assert platform_colour(COLORS_BY_PLATFORM, "Google") == COLORS["forecast"]
+    assert platform_colour(COLORS_BY_PLATFORM, "Snap") == MUTED and MUTED not in PLATFORM_HEX | {COLORS["brand"]}
+    assert platform_colour(COLORS_BY_PLATFORM, None) is None and platform_colour({}, "Google") is None  # the defaults
+
+
+@pytest.mark.parametrize("kind", ["bar", "bar_h"])
+def test_one_series_whose_categories_are_platforms_wears_each_platforms_colour(kind):
+    """Review round 3: "Total spend by platform" drew every platform in Facebook red."""
+    rows = [{"platform": "TikTok", "spend": 3.0}, {"platform": "Google", "spend": 5.0}, {"platform": "Facebook", "spend": 1.0}]
+    fig = build_figure({"chart_type": kind, "x": "platform", "y": "spend"}, rows, None, COLORS_BY_PLATFORM)
+    assert {t.name: t.marker.color for t in fig.data} == {"TikTok": COLORS["audited"], "Google": COLORS["forecast"],
+                                                          "Facebook": COLORS["brand"]}
+    assert fig.layout.barmode != "group"  # one bar per category: full width, not offset as if grouped
+    other = build_figure({"chart_type": kind, "x": "platform", "y": "spend"}, [{"platform": "Snap", "spend": 1.0}], None,
+                         COLORS_BY_PLATFORM)
+    assert other.data[0].marker.color == SERIES[0]  # not every category is a platform: the default series
+
+
+def test_a_comparison_with_the_account_names_its_axis():
+    assert label("vs_account") == "Against the account"

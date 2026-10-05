@@ -26,6 +26,12 @@ GRID = "#ebe5dc"
 MUTED = "#8c8177"
 
 
+def platform_colour(colors: dict[str, str], platform: str | None) -> str | None:
+    """One platform's colour. A platform the pack gave no colour is neutral, never the brand (that is a platform's
+    colour too). None, for the default, when there is no platform or no pack colours at all."""
+    return colors.get(platform, MUTED) if platform and colors else None
+
+
 def platform_colors(names: dict[str, str]) -> dict[str, str]:
     """The pack's `dashboard.colors` (palette names from /dashboard) → hex. The API only allows series colours."""
     return {platform: COLORS[name] for platform, name in names.items() if name in COLORS}

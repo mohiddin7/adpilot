@@ -416,7 +416,7 @@ def test_the_overviews_comparisons_are_not_in_platform_colours(dash_api):
     from lib.theme import OTHER
 
     figs = _figures(run("Home.py"))
-    assert {t["marker"]["color"] for t in figs["fig_mix"]["data"]} == set(OTHER[:2])
+    assert [t["marker"]["color"] for t in figs["fig_mix"]["data"]] == OTHER[:2]
 
 
 def test_a_card_says_what_its_stake_is_and_only_losses_are_summed(dash_api, monkeypatch):
@@ -516,3 +516,36 @@ def test_the_overview_pacing_bars_are_in_platform_colours(dash_api):
     spent = next(t for t in _figures(run("Home.py"))["fig_pacing"]["data"] if t["name"] == "Spent so far")
     assert set(spent["marker"]["color"]) <= {COLORS["brand"], COLORS["forecast"], COLORS["audited"]}
     assert len(set(spent["marker"]["color"])) == len(spent["y"]) > 1  # one colour per platform, not one for all
+
+
+def _chat_chart(monkeypatch, page, chart, data, key="answer_t1_s", **state):
+    from lib import api_client
+
+    answer = {**BY_PLATFORM, "chart": chart, "data": data}
+    monkeypatch.setattr(api_client, "ask", lambda question, session_id: answer)
+    at = run(page, **state)
+    at.chat_input[0].set_value(QUESTION).run()
+    assert not at.exception, at.exception
+    return _figures(at)[key]["data"]
+
+
+def test_a_chat_chart_of_one_series_by_platform_wears_each_platforms_colour(dash_api, monkeypatch):
+    """Review round 3: the canned "Total spend by platform" has no colour column, so every bar was Facebook red."""
+    from lib.theme import COLORS
+
+    traces = _chat_chart(monkeypatch, "pages/3_Chat.py", {"chart_type": "bar", "x": "platform", "y": "spend"},
+                         BY_PLATFORM["data"], key="answer_t1_m")
+    assert {t["name"]: t["marker"]["color"] for t in traces} == {
+        "TikTok": COLORS["audited"], "Google": COLORS["forecast"], "Facebook": COLORS["brand"]}
+
+
+def test_a_single_platform_deep_dives_chat_charts_wear_that_platforms_colour(dash_api, monkeypatch):
+    """Review round 3 (minor 6): on the Google deep dive, a one-series chat chart is Google blue, not the brand."""
+    from lib.theme import COLORS
+
+    daily = [{"date": "2024-01-01", "spend": 1.0}, {"date": "2024-01-02", "spend": 2.0}]
+    line = {"chart_type": "line", "x": "date", "y": "spend"}
+    assert _chat_chart(monkeypatch, "pages/1_Channel_Deep_Dive.py", line, daily, dd_platform="Google")[0]["line"]["color"] \
+        == COLORS["forecast"]
+    assert _chat_chart(monkeypatch, "pages/1_Channel_Deep_Dive.py", line, daily, dd_platform="All")[0]["line"]["color"] \
+        == COLORS["brand"]

@@ -7,7 +7,7 @@ from lib import chat, view
 from lib.charts import build_figure
 from lib.controls import ASK_WHY, context_line, md
 from lib.formatters import fmt_currency
-from lib.theme import platform_colors
+from lib.theme import platform_colors, platform_colour
 
 view.start("AI insights", "💡")
 m = view.guarded(view.meta)
@@ -42,7 +42,7 @@ for problem in out["problems"]:
     st.caption(md(problem))
 
 for c in cards:
-    single = colors.get(c.get("platform"))  # the finding's platform colours its single-series charts
+    single = platform_colour(colors, c.get("platform"))  # the finding's platform colours its single-series charts
     with st.container(border=True):
         st.markdown(md(f"{view.SEVERITY_BADGE[c['severity']]} · about {fmt_currency(c['stake'])} {view.stake_label(c)}"))
         st.markdown(md(f"### {c['title']}"))

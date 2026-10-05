@@ -5,7 +5,7 @@ heatmap, the platform's own charts, the anomaly timeline and the formatted campa
 import streamlit as st
 from lib import chat, view
 from lib.controls import context_line
-from lib.theme import platform_colors
+from lib.theme import platform_colors, platform_colour
 
 view.start("Channel deep dive", "🎯")
 m = view.guarded(view.meta)
@@ -18,7 +18,8 @@ if segment:
     platform = st.segmented_control("Platform", ["All", *segment["values"]], default="All", required=True,
                                      key="dd_platform") or "All"
 fixed = {} if platform == "All" else {"platform": [platform]}
-single = colors.get(platform)  # one platform in view: its single-series charts wear its colour; None for "All"
+# one platform in view: its single-series charts wear its colour; None for "All"
+single = platform_colour(colors, None if platform == "All" else platform)
 
 with st.expander("Filters", expanded=True):
     left, right = st.columns([1, 3])
@@ -30,7 +31,7 @@ with st.expander("Filters", expanded=True):
             "deep_dive", m, start, end, "dd", fixed=fixed, skip=frozenset({"platform"}) if segment else frozenset()
         )
 
-chat.sidebar(context_line("Channel deep dive", start, end, selected), "deep_dive", colors=colors)
+chat.sidebar(context_line("Channel deep dive", start, end, selected), "deep_dive", colors=colors, single=single)
 
 results = view.guarded(view.panels, "deep_dive", tuple(params))
 prior = view.prior_panels("deep_dive", m, params, start, end) if compare else {}

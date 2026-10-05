@@ -73,12 +73,13 @@ def run_ask(question: str, context: str, page: str) -> dict:
     return answer
 
 
-def render_answer(answer: dict, compact: bool = False, colors: dict | None = None) -> None:
-    """`colors`: the platform colours, so a chart by platform matches the rest of the dashboard."""
+def render_answer(answer: dict, compact: bool = False, colors: dict | None = None, single: str | None = None) -> None:
+    """`colors`: the platform colours, so a chart by platform matches the rest of the dashboard. `single`: the colour
+    of the one platform in view, for a chart with a single series."""
     st.markdown(md(answer.get("answer_md") or ""))
     chart, data = answer.get("chart"), answer.get("data")
     if chart and data:
-        fig = build_figure(chart, data, None, colors)
+        fig = build_figure(chart, data, None, colors, single)
         if fig is not None:
             st.plotly_chart(fig, key=f"answer_{answer.get('trace_id')}_{'s' if compact else 'm'}")
     elif data and not compact:
@@ -104,29 +105,30 @@ def ask_and_record(question: str, context: str, page: str) -> dict | None:
     return answer
 
 
-def _thread(page: str, colors: dict | None) -> None:
+def _thread(page: str, colors: dict | None, single: str | None) -> None:
     for m in history(page):
         if m["role"] == "user":
             st.markdown(md(f"**You:** {m['content']}"))
         elif "answer" in m:
-            render_answer(m["answer"], compact=True, colors=colors)
+            render_answer(m["answer"], compact=True, colors=colors, single=single)
         else:
             st.caption(md(m["content"]))
 
 
-def sidebar(context: str, page: str, suggestions: list[str] | tuple = (), colors: dict | None = None) -> None:
+def sidebar(context: str, page: str, suggestions: list[str] | tuple = (), colors: dict | None = None,
+            single: str | None = None) -> None:
     """This page's own chat: its whole thread (compact), suggestions, a box and a Clear button."""
     thinking_toggle()
     with st.sidebar:
         st.subheader("Ask about this view")
-        _thread(page, colors)
+        _thread(page, colors, single)
         clicked = [s for i, s in enumerate(suggestions) if st.button(s, key=f"suggest_{page}_{i}")]  # draw them all
         question = st.chat_input("Ask a question…", key=f"sidebar_chat_{page}") or (clicked[0] if clicked else None)
         if question:
             st.markdown(md(f"**You:** {question}"))
             answer = ask_and_record(question, context, page)
             if answer is not None:
-                render_answer(answer, compact=True, colors=colors)
+                render_answer(answer, compact=True, colors=colors, single=single)
         if history(page) and st.button("Clear", key=f"clear_{page}"):
             clear(page)
             st.rerun()
