@@ -61,6 +61,7 @@ with right:
     for p in view.by_role(results, "compare"):
         if p["table"] == "budget":
             view.chart_card(p, colors)
+view.chart_card(view.one(results, "flow"), colors)
 
 view.attention_list(view.one(results, "attention"), start, end)
 

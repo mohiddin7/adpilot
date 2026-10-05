@@ -267,3 +267,38 @@ def test_the_pacing_legend_never_shows_one_platforms_colour_for_all():
     shown = [t for t in pacing_bullets(rows, COLORS_BY_PLATFORM).data if t.name == "Spent so far" and t.showlegend is not False]
     assert len(shown) == 1 and shown[0].marker.color == ACCOUNT and not any(shown[0].x or [])  # legend only, no bar
     assert ACCOUNT not in PLATFORM_HEX
+
+
+SANKEY = {"chart_type": "sankey", "x": "source", "y": "spend", "target": "target"}
+
+
+def test_a_sankey_colours_platform_nodes_and_formats_values():
+    colors = {"Google": "#111111", "TikTok": "#222222"}
+    rows = [{"source": "Now: Google", "target": "Recommended: Google", "spend": 200.0},
+            {"source": "Now: TikTok", "target": "Recommended: Google", "spend": 50.0}]
+    s = build_figure(SANKEY, rows, {"spend": "currency"}, colors).data[0]
+    assert list(s.node.label) == ["Now: Google", "Now: TikTok", "Recommended: Google"]
+    assert list(s.node.color) == ["#111111", "#222222", "#111111"]
+    assert list(s.link.source) == [0, 1] and list(s.link.target) == [2, 2] and list(s.link.value) == [200.0, 50.0]
+    assert s.link.color[1] == "rgba(34,34,34,0.4)"  # its source's colour, see-through
+    assert s.valueformat == "$,.0f"
+
+
+def test_campaigns_sharing_a_name_on_two_platforms_stay_two_nodes():
+    rows = [{"source": "Google", "target": "Shared", "campaign_id": "g1", "spend": 5.0},
+            {"source": "TikTok", "target": "Shared", "campaign_id": "t1", "spend": 7.0}]
+    s = build_figure(SANKEY, rows, {"spend": "currency"}, {}).data[0]
+    assert list(s.node.label) == ["Google", "TikTok", "Shared (Google)", "Shared (TikTok)"]
+
+
+def test_a_node_that_is_no_platform_is_ink():
+    from lib.theme import ACCOUNT
+
+    s = build_figure(SANKEY, [{"source": "Google", "target": "Brand_Q1", "spend": 1.0}], None, {"Google": "#111111"}).data[0]
+    assert list(s.node.color) == ["#111111", ACCOUNT]
+
+
+def test_sankey_labels_are_plain_text():
+    """Review focus 1: Plotly renders tags inside text; a campaign name is data."""
+    s = build_figure(SANKEY, [{"source": "Google", "target": "<b>x</b>", "spend": 1.0}], None, {}).data[0]
+    assert s.node.label[1] == "&lt;b&gt;x&lt;/b&gt;"

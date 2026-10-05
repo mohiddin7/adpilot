@@ -4,6 +4,8 @@ formatted from the panel's `formats`."""
 
 from __future__ import annotations
 
+import html
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -63,7 +65,7 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
     df = pd.DataFrame(rows)
     kind, x, y = chart["chart_type"], chart["x"], chart["y"]
     size, z = chart.get("size"), chart.get("z")
-    if any(c and c not in df.columns for c in (x, y, size, z)):
+    if any(c and c not in df.columns for c in (x, y, size, z, chart.get("target"))):
         return None
     color = chart.get("color") if chart.get("color") in df.columns else None
     if color is None and kind in ("bar", "bar_h") and colors and set(df[x].dropna().astype(str)) <= set(colors):
@@ -104,11 +106,54 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
                                    hovertemplate=f"%{{y}} · %{{x}}: %{{z{':' + hover if hover else ''}}}{suffix}"
                                                  "<extra></extra>"))
         return style(fig)
+    elif kind == "sankey":
+        return _sankey(df, x, chart.get("target"), y, formats, colors)
     else:
         return None
     if chart.get("reference") == "mean_y":
         _reference(fig, df, y, size, formats, quadrants=kind == "bubble", x=x)
     return style(fig, formats, x=x, y=y)
+
+
+def _rgba(hex_: str, alpha: float) -> str:
+    h = hex_.lstrip("#")
+    return f"rgba({int(h[0:2], 16)},{int(h[2:4], 16)},{int(h[4:6], 16)},{alpha})"
+
+
+def _sankey(df: pd.DataFrame, source: str, target: str, value: str, formats: dict | None,
+            colors: dict | None) -> go.Figure:
+    """Every source, then every target, as nodes. A target is one per (label, campaign_id), so two campaigns sharing a
+    name stay two, each labelled with its source. A node naming a platform ("Google", "Now: Google") wears that
+    platform's colour, any other node ink, and each flow is its source's colour, see-through. Labels are data, and
+    Plotly renders tags in text, so they are HTML-escaped."""
+    # NaN never equals itself, so a missing id ("Other <platform>") must be None to work as a dict key
+    ids = [None if pd.isna(v) else v for v in df["campaign_id"]] if "campaign_id" in df.columns else [None] * len(df)
+    sources = list(dict.fromkeys(df[source]))
+    targets = list(dict.fromkeys(zip(df[target], ids, df[source], strict=True)))
+    seen: dict = {}
+    for label_, cid, src in targets:  # one node per (label, id); the first source names it
+        seen.setdefault((label_, cid), src)
+    tkeys = list(seen)
+    dup = {lb for lb, _ in tkeys if sum(1 for b, _ in tkeys if b == lb) > 1}
+    labels = sources + [f"{lb} ({seen[(lb, cid)]})" if lb in dup else lb for lb, cid in tkeys]
+
+    def colour(name: str) -> str:
+        return (colors or {}).get(str(name).split(": ", 1)[-1]) or ACCOUNT
+
+    node_colours = [colour(s) for s in sources] + [colour(lb) for lb, _ in tkeys]
+    index = {("s", s): i for i, s in enumerate(sources)} | {("t", k): len(sources) + i for i, k in enumerate(tkeys)}
+    tick, _hover, suffix = AXIS.get((formats or {}).get(value), ("", "", ""))
+    fig = go.Figure(go.Sankey(
+        valueformat=tick, valuesuffix=suffix,
+        node={"label": [html.escape(str(lb)) for lb in labels], "color": node_colours, "pad": 14, "thickness": 14},
+        link={"source": [index[("s", s)] for s in df[source]],
+              "target": [index[("t", (t, c))] for t, c in zip(df[target], ids, strict=True)],
+              "value": [float(v) for v in df[value]],
+              "color": [_rgba(colour(s), 0.4) for s in df[source]]},
+    ))
+    style(fig)
+    fig.update_layout(height=max(HEIGHT, 26 * len(tkeys)))
+    return fig
 
 
 def _reference(fig: go.Figure, df: pd.DataFrame, y: str, size: str | None, formats: dict | None, quadrants: bool,

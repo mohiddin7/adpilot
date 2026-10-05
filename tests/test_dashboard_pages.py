@@ -78,7 +78,7 @@ def test_compare_at_the_start_of_the_data_draws_without_deltas(dash_api):
     ("Google", ["Spend by quality score", "Search impression share", "Quality score"], ["Video completion funnel"]),
     ("Facebook", ["Ad fatigue", "Frequency"], ["Spend by quality score"]),
     ("TikTok", ["Video completion funnel"], ["Ad fatigue"]),
-    ("All", ["Trend explorer", "Campaign leaderboard", "Efficiency map", "Day of week", "Anomaly timeline"], ["Ad fatigue"]),
+    ("All", ["Trend explorer", "Campaign leaderboard", "Efficiency map", "Day of week", "Anomaly timeline", "Funnel", "Where the money goes"], ["Ad fatigue"]),
 ])
 def test_deep_dive_per_platform(dash_api, platform, has, lacks):
     """Review focus 3: one platform in play still draws every section."""
@@ -552,3 +552,9 @@ def test_a_single_platform_deep_dives_chat_charts_wear_that_platforms_colour(das
         == COLORS["forecast"]
     assert _chat_chart(monkeypatch, "pages/1_Channel_Deep_Dive.py", line, daily, dd_platform="All")[0]["line"]["color"] \
         == ACCOUNT
+
+
+def test_overview_draws_the_budget_reallocation(dash_api):
+    at = run("Home.py")
+    assert not at.exception, at.exception
+    assert "Budget reallocation" in " ".join(m.value for m in at.markdown)

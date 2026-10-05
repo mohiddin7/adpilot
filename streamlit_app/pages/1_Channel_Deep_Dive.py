@@ -50,6 +50,11 @@ with right:
     view.efficiency_map(details, colors)
 
 view.chart_card(view.one(results, "heatmap"), colors, pick_z=True, single=single)
+left, right = st.columns(2)
+with left:
+    view.chart_card(view.one(results, "funnel"), colors, single=single)
+with right:
+    view.chart_card(view.one(results, "flow"), colors)
 
 own = view.by_role(results, "platform")
 for i in range(0, len(own), 2):
