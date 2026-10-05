@@ -7,6 +7,7 @@ import yaml
 from lib.charts import add_markers, add_prior, build_figure, pacing_bullets
 from lib.formatters import fmt, label
 from lib.theme import (
+    ACCOUNT,
     COLORS,
     MUTED,
     OTHER,
@@ -120,7 +121,7 @@ def test_a_single_platform_view_draws_single_series_in_that_platforms_colour():
     funnel = build_figure({"chart_type": "funnel", "x": "weekday", "y": "spend"}, ROWS, None, COLORS_BY_PLATFORM, single=google)
     assert line.data[0].line.color == bar.data[0].marker.color == funnel.data[0].marker.color == google
     default = build_figure({"chart_type": "line", "x": "weekday", "y": "cpa"}, ROWS, None, COLORS_BY_PLATFORM)
-    assert default.data[0].line.color == SERIES[0]  # "All": the default stays
+    assert default.data[0].line.color == ACCOUNT  # "All": the whole account, in ink (owner, final polish)
 
 
 def test_severity_is_a_warm_ordered_scale_and_never_a_platform_colour():
@@ -216,7 +217,7 @@ def test_one_series_whose_categories_are_platforms_wears_each_platforms_colour(k
     assert fig.layout.barmode != "group"  # one bar per category: full width, not offset as if grouped
     other = build_figure({"chart_type": kind, "x": "platform", "y": "spend"}, [{"platform": "Snap", "spend": 1.0}], None,
                          COLORS_BY_PLATFORM)
-    assert other.data[0].marker.color == SERIES[0]  # not every category is a platform: the default series
+    assert other.data[0].marker.color == ACCOUNT  # not every category is a platform: one whole-account series
 
 
 def test_a_comparison_with_the_account_names_its_axis():
@@ -231,3 +232,38 @@ def test_bars_labelled_by_platform_need_no_legend(kind):
     grouped = [{"platform": p, "measure": m, "spend": 1.0} for p in ("Google", "TikTok") for m in ("a", "b")]
     fig = build_figure({"chart_type": kind, "x": "platform", "y": "spend", "color": "measure"}, grouped, None, COLORS_BY_PLATFORM)
     assert fig.layout.showlegend is not False
+
+
+def _drawn(fig):
+    t = fig.data[0]
+    return t.marker.color if t.type == "bar" else t.line.color
+
+
+@pytest.mark.parametrize("kind", ["line", "bar", "area"])
+def test_a_whole_account_series_is_ink_never_a_platforms_colour(kind):
+    """Final polish: with every platform in view, brand red read as Facebook's line."""
+    spec = {"chart_type": kind, "x": "weekday", "y": "spend"}
+    drawn = _drawn(build_figure(spec, ROWS, None, COLORS_BY_PLATFORM))
+    assert drawn == ACCOUNT == PALETTE["grounds"]["dark"]["bg"] and drawn not in PLATFORM_HEX
+    assert _drawn(build_figure(spec, ROWS, None, COLORS_BY_PLATFORM, single=COLORS["forecast"])) == COLORS["forecast"]
+    assert _drawn(build_figure(spec, ROWS)) == SERIES[0]  # no pack colours: today's default
+
+
+def test_the_funnel_and_heatmap_follow_the_whole_account_rule():
+    funnel = {"chart_type": "funnel", "x": "weekday", "y": "spend"}
+    heat = {"chart_type": "heatmap", "x": "weekday", "y": "platform", "z": "spend"}
+    assert build_figure(funnel, ROWS, None, COLORS_BY_PLATFORM).data[0].marker.color == ACCOUNT
+    assert build_figure(heat, ROWS, None, COLORS_BY_PLATFORM).data[0].colorscale[-1][1] == ACCOUNT
+    google = COLORS["forecast"]
+    assert build_figure(funnel, ROWS, None, COLORS_BY_PLATFORM, single=google).data[0].marker.color == google
+    assert build_figure(heat, ROWS, None, COLORS_BY_PLATFORM, single=google).data[0].colorscale[-1][1] == google
+    assert build_figure(funnel, ROWS).data[0].marker.color == COLORS["brand"]  # no pack colours: today's default
+
+
+def test_the_pacing_legend_never_shows_one_platforms_colour_for_all():
+    """Final polish: the "Spent so far" swatch was red while each bar is its platform's colour."""
+    rows = [{"platform": "Google", "budget": 100.0, "spent_mtd": 40.0, "projected": 110.0},
+            {"platform": "Facebook", "budget": 90.0, "spent_mtd": 30.0, "projected": 80.0}]
+    shown = [t for t in pacing_bullets(rows, COLORS_BY_PLATFORM).data if t.name == "Spent so far" and t.showlegend is not False]
+    assert len(shown) == 1 and shown[0].marker.color == ACCOUNT and not any(shown[0].x or [])  # legend only, no bar
+    assert ACCOUNT not in PLATFORM_HEX

@@ -399,7 +399,7 @@ def _figures(at) -> dict:
 
 def test_one_platform_draws_its_own_charts_in_its_colour(dash_api):
     """Live pass, finding 2."""
-    from lib.theme import COLORS
+    from lib.theme import ACCOUNT, COLORS, MUTED
 
     figs = _figures(run("pages/1_Channel_Deep_Dive.py", dd_platform="Google"))
     google = COLORS["forecast"]  # the pack: Google = forecast
@@ -407,8 +407,11 @@ def test_one_platform_draws_its_own_charts_in_its_colour(dash_api):
     assert figs["fig_google_quality_dist"]["data"][0]["marker"]["color"] == google
     assert figs["fig_google_impression_share"]["data"][0]["line"]["color"] == google
     assert figs["fig_leaderboard"]["data"][0]["marker"]["color"] == google
-    everyone = _figures(run("pages/1_Channel_Deep_Dive.py", dd_platform="All"))
-    assert everyone["fig_dd_trend"]["data"][0]["line"]["color"] == COLORS["brand"]  # "All" keeps the default
+    everyone = _figures(run("pages/1_Channel_Deep_Dive.py", dd_platform="All", dd_preset="Last 7 days"))
+    trend = everyone["fig_dd_trend"]["data"]
+    assert trend[0]["line"]["color"] == ACCOUNT  # "All": the whole account, in ink
+    # the previous period (a 7-day window has one in the demo month) still reads apart from the ink line
+    assert next(t for t in trend if t["name"] == "Previous period")["line"]["color"] == MUTED
 
 
 def test_the_overviews_comparisons_are_not_in_platform_colours(dash_api):
@@ -498,7 +501,7 @@ def test_a_chat_chart_by_platform_wears_the_platform_colours(dash_api, monkeypat
 
 def test_a_findings_charts_wear_its_platforms_colour(dash_api, monkeypatch):
     """Review R3: a Google campaign's evidence bars were Facebook red."""
-    from lib.theme import COLORS
+    from lib.theme import ACCOUNT, COLORS
 
     bars = {"spec": {"chart_type": "bar", "x": "name", "y": "cpa"}, "formats": {"cpa": "currency"},
             "rows": [{"name": "this campaign", "cpa": 24.8}, {"name": "account average", "cpa": 9.75}]}
@@ -507,7 +510,7 @@ def test_a_findings_charts_wear_its_platforms_colour(dash_api, monkeypatch):
     figs = _figures(run("pages/2_AI_Insights.py"))
     assert figs["card_outlier:Google:c1"]["data"][0]["marker"]["color"] == COLORS["forecast"]
     assert figs["why_outlier:Google:c1"]["data"][0]["marker"]["color"] == COLORS["forecast"]
-    assert figs["card_move:a>b"]["data"][0]["marker"]["color"] == COLORS["brand"]  # no platform: the default
+    assert figs["card_move:a>b"]["data"][0]["marker"]["color"] == ACCOUNT  # no platform: the whole account, in ink
 
 
 def test_the_overview_pacing_bars_are_in_platform_colours(dash_api):
@@ -541,11 +544,11 @@ def test_a_chat_chart_of_one_series_by_platform_wears_each_platforms_colour(dash
 
 def test_a_single_platform_deep_dives_chat_charts_wear_that_platforms_colour(dash_api, monkeypatch):
     """Review round 3 (minor 6): on the Google deep dive, a one-series chat chart is Google blue, not the brand."""
-    from lib.theme import COLORS
+    from lib.theme import ACCOUNT, COLORS
 
     daily = [{"date": "2024-01-01", "spend": 1.0}, {"date": "2024-01-02", "spend": 2.0}]
     line = {"chart_type": "line", "x": "date", "y": "spend"}
     assert _chat_chart(monkeypatch, "pages/1_Channel_Deep_Dive.py", line, daily, dd_platform="Google")[0]["line"]["color"] \
         == COLORS["forecast"]
     assert _chat_chart(monkeypatch, "pages/1_Channel_Deep_Dive.py", line, daily, dd_platform="All")[0]["line"]["color"] \
-        == COLORS["brand"]
+        == ACCOUNT

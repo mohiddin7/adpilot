@@ -23,6 +23,9 @@ SEVERITY = {"MODERATE": _DARK["open"], "SEVERE": _DARK["critical"], "CRITICAL": 
 OTHER = [COLORS["open"], _DARK["resolved"], COLORS["resolved"], _DARK["open"]]
 SYMBOLS = {"MODERATE": "circle", "SEVERE": "diamond", "CRITICAL": "x"}  # colour is never the only signal
 GRID = "#ebe5dc"
+# The whole account as one series, when every platform is in view: ink, the app's text colour, so it is no
+# platform's colour (the brand is Facebook's).
+ACCOUNT = PALETTE["grounds"]["dark"]["bg"]
 MUTED = "#8c8177"
 
 

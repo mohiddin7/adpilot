@@ -9,7 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from .formatters import fmt, fmt_currency, label
-from .theme import COLORS, GRID, GROUNDS, MUTED, OTHER, SERIES, SEVERITY, SYMBOLS, platform_colour
+from .theme import ACCOUNT, COLORS, GRID, GROUNDS, MUTED, OTHER, SEVERITY, SYMBOLS, platform_colour
 
 HEIGHT = 320
 AXIS = {"currency": ("$,.0f", "$,.2f", ""), "percent": (".1%", ".2%", ""), "multiple": (".1f", ".2f", "x"),
@@ -36,12 +36,18 @@ def style(fig: go.Figure, formats: dict | None = None, x: str | None = None, y: 
     return fig
 
 
+def _one(colors: dict | None, single: str | None) -> str:
+    """The colour of a chart's only series: the one platform in view, else the whole account in ink when the pack has
+    platform colours (the brand is one of them), else the brand."""
+    return single or (ACCOUNT if colors else COLORS["brand"])
+
+
 def _colour(df: pd.DataFrame, column: str | None, colors: dict | None, single: str | None) -> dict:
     """Platform (or severity) colours when every value has one. Any other set of series gets OTHER, which no platform
     wears, in the order of the sorted names: the same name is the same colour on every page, whatever order the rows
-    come in. One series alone is `single` (the one platform in view) or the brand."""
+    come in. One series alone is _one()'s colour."""
     if not column:
-        return {"color_discrete_sequence": [single] if single else SERIES}
+        return {"color_discrete_sequence": [_one(colors, single)]}
     if colors and set(df[column].dropna().astype(str)) <= set(colors):
         return {"color_discrete_map": colors}
     names = sorted(df[column].dropna().unique(), key=str)
@@ -85,7 +91,7 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
                          hover_name=hover, **_colour(df, color, colors, single))
     elif kind == "funnel":
         fig = go.Figure(go.Funnel(y=df[x], x=df[y], text=[fmt(v, (formats or {}).get(y)) for v in df[y]],
-                                  textinfo="text+percent previous", marker={"color": single or COLORS["brand"]}))
+                                  textinfo="text+percent previous", marker={"color": _one(colors, single)}))
         return style(fig)
     elif kind == "heatmap":
         grid = df.pivot_table(index=y, columns=x, values=z, aggfunc="sum")
@@ -93,7 +99,7 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
             grid = grid[[d for d in WEEK if d in grid.columns]]
         tick, hover, suffix = AXIS.get((formats or {}).get(z), ("", "", ""))
         fig = go.Figure(go.Heatmap(z=grid.values, x=list(grid.columns), y=list(grid.index),
-                                   colorscale=[[0, GROUNDS["bg"]], [1, single or COLORS["brand"]]],
+                                   colorscale=[[0, GROUNDS["bg"]], [1, _one(colors, single)]],
                                    colorbar={"tickformat": tick, "ticksuffix": suffix},
                                    hovertemplate=f"%{{y}} · %{{x}}: %{{z{':' + hover if hover else ''}}}{suffix}"
                                                  "<extra></extra>"))
@@ -159,7 +165,10 @@ def pacing_bullets(rows: list[dict], colors: dict | None = None) -> go.Figure | 
     fig.add_bar(y=names, x=[r.get("projected") or 0 for r in rows], orientation="h", name="Month-end projection",
                 marker_color=GRID)
     fig.add_bar(y=names, x=[r["spent_mtd"] for r in rows], orientation="h", name="Spent so far",
-                marker_color=[platform_colour(colors, n) for n in names] if colors else COLORS["brand"], width=0.35)
+                marker_color=[platform_colour(colors, n) for n in names] if colors else COLORS["brand"], width=0.35,
+                showlegend=not colors)
+    if colors:  # each bar is its platform's colour, so the legend's swatch is ink, never one platform's colour
+        fig.add_bar(x=[None], y=[None], orientation="h", name="Spent so far", marker_color=ACCOUNT)
     fig.add_scatter(y=names, x=[r["budget"] for r in rows], mode="markers", name="Budget",
                     marker={"symbol": "line-ns-open", "size": 28, "color": "#2b2622", "line": {"width": 3}})
     fig.update_layout(barmode="overlay")
