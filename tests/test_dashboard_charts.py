@@ -221,3 +221,13 @@ def test_one_series_whose_categories_are_platforms_wears_each_platforms_colour(k
 
 def test_a_comparison_with_the_account_names_its_axis():
     assert label("vs_account") == "Against the account"
+
+
+@pytest.mark.parametrize("kind", ["bar", "bar_h"])
+def test_bars_labelled_by_platform_need_no_legend(kind):
+    """Each bar is already named on its axis; a legend repeating the names is noise."""
+    rows = [{"platform": "TikTok", "spend": 3.0}, {"platform": "Google", "spend": 5.0}]
+    assert build_figure({"chart_type": kind, "x": "platform", "y": "spend"}, rows, None, COLORS_BY_PLATFORM).layout.showlegend is False
+    grouped = [{"platform": p, "measure": m, "spend": 1.0} for p in ("Google", "TikTok") for m in ("a", "b")]
+    fig = build_figure({"chart_type": kind, "x": "platform", "y": "spend", "color": "measure"}, grouped, None, COLORS_BY_PLATFORM)
+    assert fig.layout.showlegend is not False

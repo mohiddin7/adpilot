@@ -68,9 +68,13 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
     elif kind == "bar":
         fig = px.bar(df, x=x, y=y, color=color, barmode="relative" if color == x else "group",
                      **_colour(df, color, colors, single))
+        if color == x:  # bars coloured by their own label need no legend
+            fig.update_layout(showlegend=False)
     elif kind == "bar_h":
         fig = px.bar(df, x=y, y=x, color=color, orientation="h", **_colour(df, color, colors, single))
         fig.update_yaxes(autorange="reversed")
+        if color == x:  # bars coloured by their own label need no legend
+            fig.update_layout(showlegend=False)
         return style(fig, formats, x=y)
     elif kind == "line":
         fig = px.line(df, x=x, y=y, color=color, markers=True, **_colour(df, color, colors, single))
