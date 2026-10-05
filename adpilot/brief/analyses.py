@@ -17,11 +17,17 @@ import pandas as pd
 NUM = ["impressions", "clicks", "spend", "conversions"]
 CONFIDENCE = ("low", "medium", "high")
 
-# driver -> (what moved, likely cause, the fix)
+# driver -> (what moved, likely cause, the fix), for a cost per sale that rose
 CAUSES = {
     "price": ("ads got pricier", "more competition in the ad auction", "Review bids, or wait a few days for prices to settle."),
-    "clicks": ("fewer people clicked", "the ads are wearing out", "Refresh the ad creative."),
+    "clicks": ("fewer people clicked", "worn-out ad creative", "Refresh the ad creative."),
     "buyers": ("fewer clickers bought", "a landing page, offer or tracking problem", "Check the landing page, the offer and the conversion tracking."),
+}
+# the same, for a cost per sale that fell
+CHEAPER = {
+    "price": ("ads got cheaper", "less competition in the ad auction"),
+    "clicks": ("more people clicked", "creative that is landing well"),
+    "buyers": ("more clickers bought", "a better landing page or offer, or a change in tracking"),
 }
 
 
@@ -96,14 +102,17 @@ def drivers(sp: dict) -> list[str]:
 
 
 def explain(sp: dict | None) -> tuple[str, str]:
-    """(checked, do) templates from a split."""
+    """(checked, do) templates from a split, in the direction the cost per sale moved: drivers() picks the falling
+    terms when it fell, so their phrases must say cheaper, not pricier."""
     if sp is None or not drivers(sp):
         return "The change has no single clear cause in ad price, clicks or sales per click.", "Look at the campaign's recent changes."
     ch, ds = sp["changes"], drivers(sp)
-    what = " and ".join(CAUSES[d][0] for d in ds)
-    cause = " or ".join(CAUSES[d][1] for d in ds)
+    phrases = CAUSES if sp["total"] > 0 else CHEAPER
+    what = " and ".join(phrases[d][0] for d in ds)
+    cause = " or ".join(phrases[d][1] for d in ds)
+    do = " ".join(CAUSES[d][2] for d in ds) if sp["total"] > 0 else "Keep what is working, and watch whether it holds."
     return (f"Ad price {pct(ch['price'])}, clicks per view {pct(ch['clicks'])}, sales per click {pct(ch['buyers'])}. "
-            f"Mostly {what}, which points to {cause}.", " ".join(CAUSES[d][2] for d in ds))
+            f"Mostly {what}, which points to {cause}.", do)
 
 
 # ---------- 1. cost changes by platform ----------
@@ -565,7 +574,7 @@ SPEND_PARTS = {"views": ("fewer views", "more views"), "price": ("a lower price 
 def versus(sp: dict | None) -> str:
     """explain()'s sentence for split(account, campaign): which rate makes the campaign dearer than the account."""
     if sp is None or not drivers(sp):
-        return explain(None)[0]
+        return "No single rate explains the gap with the account."
     ch = sp["changes"]
     return (f"Against the account: ad price {pct(ch['price'])}, clicks per view {pct(ch['clicks'])}, sales per click "
             f"{pct(ch['buyers'])}. Mostly {' and '.join(VERSUS[d] for d in drivers(sp))}.")

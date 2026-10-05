@@ -179,10 +179,11 @@ def test_an_improvement_is_an_opportunity_not_a_loss(eager, cfg, monkeypatch):
     out = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))
     assert {c["id"]: (c["loss"], c["stake_label"]) for c in out["cards"]} == {
         "mover:Google:m1:cpa": (False, "opportunity"), "anomaly:Google:a1:low": (False, "opportunity"),
-        "anomaly:Google:a2:tracking": (True, "at stake"), "anomaly:Google:a3:double": (True, "at stake"),
+        "anomaly:Google:a2:tracking": (True, "at stake"), "anomaly:Google:a3:double": (False, "to verify"),
         "outlier:Google:o1": (True, "at stake")}
-    assert [c["id"] for c in out["cards"]][:3] == ["anomaly:Google:a2:tracking", "anomaly:Google:a3:double", "outlier:Google:o1"]
-    assert out["at_stake"] == 180.0  # 70 + 60 + 50: the 1,700 of opportunity is not money lost
+    assert [c["id"] for c in out["cards"]][:2] == ["anomaly:Google:a2:tracking", "outlier:Google:o1"]
+    # 70 + 50: neither the 1,700 of opportunity nor the 60 of double-counted sales (owner, round 3) is money lost
+    assert out["at_stake"] == 120.0
 
 
 def test_a_real_loss_is_not_folded_under_the_same_campaigns_improvement(eager, cfg, monkeypatch):
@@ -265,7 +266,7 @@ def test_a_campaigns_cost_per_sale_why_is_its_rate_split_against_the_previous_pe
     assert why["chart"]["spec"] == PanelChartSpec(chart_type="bar", x="measure", y="change").model_dump()
     assert why["chart"]["rows"] == G1_CHANGES and why["chart"]["formats"] == {"change": "percent"}
     assert why["text"] == ("Ad price +20%, clicks per view -50%, sales per click +100%. Mostly fewer people clicked, "
-                           "which points to the ads are wearing out.")
+                           "which points to worn-out ad creative.")
 
 
 def test_a_zero_rate_has_no_chart_and_says_there_is_no_single_cause():
@@ -289,19 +290,26 @@ def test_a_spend_mover_from_nothing_has_no_split():
 def test_an_outliers_why_compares_its_rates_with_the_accounts():
     why = _why(_outlier("g1", 1))
     # the account: 7,500 views, 675 clicks, $380, 125 sales. g1: 1,500 views, 75 clicks, $180, 15 sales.
-    assert why["chart"]["rows"] == [{"measure": "Ad price", "change": 1.3684}, {"measure": "Clicks per view", "change": -0.4444},
-                                    {"measure": "Sales per click", "change": 0.08}]
+    assert why["chart"]["rows"] == [{"measure": "Ad price", "vs_account": 1.3684},
+                                    {"measure": "Clicks per view", "vs_account": -0.4444},
+                                    {"measure": "Sales per click", "vs_account": 0.08}]
+    assert why["chart"]["spec"]["y"] == "vs_account" and why["chart"]["formats"] == {"vs_account": "percent"}
     assert why["text"] == ("Against the account: ad price +137%, clicks per view -44%, sales per click +8%. "
                            "Mostly its ads cost more per view.")  # the price term alone carries over half the gap
 
 
 def test_a_platforms_cost_why_is_its_weekly_rate_split_and_names_the_campaign_driving_it():
+    import pandas as pd
+
     last = _rows((date(2024, 1, 20), "Google", "g1", 1000, 100, 100.0, 10), (date(2024, 1, 20), "TikTok", "t1", 5000, 500, 100.0, 100))
     this = _rows((date(2024, 1, 27), "Google", "g1", 1500, 75, 180.0, 15), (date(2024, 1, 27), "TikTok", "t1", 5000, 500, 100.0, 100))
-    why = _why(_item("cost:Google", 1, platform="Google"), cur=this, prev=last)  # the 7 days to Jan 30 vs the 7 before
+    old = _rows((date(2024, 1, 10), "Google", "g5", 1000, 100, 900.0, 1))  # in the window, before both weeks
+    why = insights._why(_item("cost:Google", 1, platform="Google"), pd.concat([old, last, this]), pd.concat([old, last, this]),
+                        PREV, AS_OF)  # the 7 days to Jan 30 vs the 7 before
     assert why["chart"]["rows"] == G1_CHANGES
     assert why["text"].startswith("Ad price +20%, clicks per view -50%, sales per click +100%. Mostly fewer people clicked")
-    assert why["text"].endswith('"g1 name" carries 100% of Google\'s cost above the account average ($143 of $143).')  # 180 − 15 × (280 / 115)
+    # the two weeks only: g5 (Jan 10) is not named; g1 = 280 − 25 × (480 / 225) over the account's two weeks
+    assert why["text"].endswith('"g1 name" carries 100% of Google\'s cost above the account average ($227 of $227).')
 
 
 MANY = _rows(*[(date(2024, 1, 25), "Google", f"g{n}", 1000, 100, spend, 10)
@@ -358,3 +366,46 @@ def test_a_why_that_fails_leaves_its_card_in_place(eager, cfg, monkeypatch):
     monkeypatch.setattr(insights, "_why", boom)
     cards = insights.run_insights(eager, cfg, WINDOW, None, TtlCache(0))["cards"]
     assert cards and all(c["why_detail"] is None for c in cards) and all(c["headline"] for c in cards)
+
+
+# ---------- round 3: a cost per sale that fell is explained in the cheaper direction ----------
+
+BEFORE = {"impressions": 1000.0, "clicks": 100.0, "spend": 100.0, "conversions": 10.0}
+RISING = [phrase for what, cause, _ in insights.a.CAUSES.values() for phrase in (what, cause)]
+
+
+def test_a_falling_cost_per_sale_names_the_cheaper_cause_never_a_rising_one():
+    """Review round 3: ad price halved read "Mostly ads got pricier, which points to more competition"."""
+    checked, _ = insights.a.explain(insights.a.split(BEFORE, {**BEFORE, "spend": 50.0}))
+    assert checked == ("Ad price -50%, clicks per view +0%, sales per click +0%. Mostly ads got cheaper, "
+                       "which points to less competition in the ad auction.")
+    assert not any(phrase in checked for phrase in RISING)
+    two = insights.a.explain(insights.a.split(BEFORE, {**BEFORE, "clicks": 200.0, "conversions": 20.0}))[0]
+    assert two.endswith("Mostly more people clicked, which points to creative that is landing well.")
+    assert not any(phrase in two for phrase in RISING)
+
+
+def test_a_rising_cost_per_sale_reads_as_before():
+    checked, do = insights.a.explain(insights.a.split(BEFORE, {**BEFORE, "spend": 200.0}))
+    assert checked.endswith("Mostly ads got pricier, which points to more competition in the ad auction.")
+    assert do == "Review bids, or wait a few days for prices to settle."
+
+
+def test_a_campaign_whose_cost_per_sale_fell_gets_the_cheaper_why():
+    cur = _rows((date(2024, 1, 25), "Google", "g1", 1000, 100, 50.0, 10))
+    prev = _rows((date(2024, 1, 10), "Google", "g1", 1000, 100, 100.0, 10))
+    why = insights._why(_mover("g1", "cpa", 1, before=10.0, after=5.0), pd_concat(prev, cur), cur, prev, AS_OF)
+    assert why["text"].endswith("Mostly ads got cheaper, which points to less competition in the ad auction.")
+    assert why["chart"]["rows"][0] == {"measure": "Ad price", "change": -0.5}
+
+
+def pd_concat(*frames):
+    import pandas as pd
+
+    return pd.concat(frames)
+
+
+def test_an_outlier_with_a_zero_rate_says_no_rate_explains_the_gap():
+    cur = _rows((date(2024, 1, 25), "Google", "g8", 1000, 100, 100.0, 0), (date(2024, 1, 25), "TikTok", "t1", 5000, 500, 100.0, 100))
+    why = insights._why(_outlier("g8", 1), cur, cur, PREV, AS_OF)
+    assert why == {"text": "No single rate explains the gap with the account.", "chart": None}

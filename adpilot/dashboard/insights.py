@@ -72,7 +72,10 @@ def _stake_label(i: a.Item) -> str:
     if i.kind == "mover" and i.id.endswith(":spend"):
         return "change in spend"
     cheaper = (i.kind == "mover" and i.check["after"] < i.check["before"]) or (i.kind == "anomaly" and i.check["kind"] == "low")
-    return "opportunity" if cheaper else "at stake"
+    if cheaper:
+        return "opportunity"
+    # double-counted sales overstate results; no money is lost until they are checked (owner, round 3)
+    return "to verify" if i.kind == "anomaly" and i.check["kind"] == "double" else "at stake"
 
 
 def _one_per_campaign(ranked: list[a.Item]) -> tuple[list[a.Item], dict[str, list[str]]]:
@@ -139,15 +142,17 @@ def _evidence(i: a.Item, gold: pd.DataFrame, cur: pd.DataFrame, plan: pd.DataFra
     return None
 
 
-def _bars(changes: dict, names: dict) -> dict | None:
-    rows = [{"measure": names[k], "change": round(v, 4)} for k, v in changes.items()]
-    return _chart({"chart_type": "bar", "x": "measure", "y": "change"}, rows, {"change": "percent"})
+def _bars(changes: dict, names: dict, y: str = "change") -> dict | None:
+    """`y` names the axis: "change" over time, or "vs_account" for a comparison with the account."""
+    rows = [{"measure": names[k], y: round(v, 4)} for k, v in changes.items()]
+    return _chart({"chart_type": "bar", "x": "measure", "y": y}, rows, {y: "percent"})
 
 
 def _rate_why(before: dict, after: dict, versus: bool = False) -> dict:
     """Which of ad price, clicks per view and sales per click moved the cost per sale, as a sentence and three bars."""
     sp = a.split(before, after)
-    return {"text": a.versus(sp) if versus else a.explain(sp)[0], "chart": _bars(sp["changes"], a.RATES) if sp else None}
+    return {"text": a.versus(sp) if versus else a.explain(sp)[0],
+            "chart": _bars(sp["changes"], a.RATES, "vs_account" if versus else "change") if sp else None}
 
 
 def _campaigns_why(cur: pd.DataFrame, plat: str) -> dict | None:
@@ -172,7 +177,7 @@ def _why(i: a.Item, gold: pd.DataFrame, cur: pd.DataFrame, prev: pd.DataFrame, a
     if i.kind == "cost":  # the same two weeks cost_items compared
         g = gold[gold["platform"] == c["platform"]]
         why = _rate_why(a._sums(a._window(g, as_of - timedelta(days=7), 7)), a._sums(a._window(g, as_of, 7)))
-        top = _campaigns_why(cur, c["platform"])
+        top = _campaigns_why(a._window(gold, as_of, 14), c["platform"])  # the same two weeks
         return {**why, "text": f"{why['text']} {top['text']}"} if top else why
     if i.kind not in ("anomaly", "mover", "outlier"):
         return None  # a budget move: the card already shows each platform's cost per sale

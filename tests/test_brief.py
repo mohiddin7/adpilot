@@ -473,3 +473,16 @@ def test_writer_records_the_callers_source(deps):
     write(deps, fn, [item], [], [], "run1", source="dashboard", case_name="insights_writer")
     rec = deps.audit.calls[-1]
     assert (rec.source, rec.case_name) == ("dashboard", "insights_writer")
+
+
+def test_a_cheaper_than_usual_day_is_explained_in_the_cheaper_direction():
+    """Review round 3: the brief's "low" anomaly line named a rising cause for a falling cost per sale."""
+    before = {"impressions": 1000.0, "clicks": 100.0, "spend": 100.0, "conversions": 10.0}
+    day = {"date": date(2024, 1, 29), "spend": 50.0, "sales": 10.0, "clicks": 100.0, "cpa": 5.0, "normal_cpa": 10.0,
+           "stake": 50.0, "confidence": "high", "split": a.split(before, {**before, "spend": 50.0})}
+    item = a._anomaly_item("Google", "c1", "Brand", "low", [day], 50.0)
+    assert item.checked.endswith("Mostly ads got cheaper, which points to less competition in the ad auction.")
+    assert "pricier" not in item.checked and "more competition" not in item.checked
+    assert item.do == "If it stays this cheap for another day, give it more budget."
+    high = a._anomaly_item("Google", "c1", "Brand", "high", [{**day, "cpa": 20.0, "split": a.split(before, {**before, "spend": 200.0})}], 100.0)
+    assert high.checked.endswith("Mostly ads got pricier, which points to more competition in the ad auction.")
