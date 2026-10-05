@@ -45,12 +45,11 @@ def _frame(template: AgentDeps, cfg: DashboardConfig, table: str, sql: str, flt:
     deps = fresh_deps(template)
     dialect = deps.connector.dialect
     where = build_where(cfg, table, deps.pack.raw["date_column"], flt, dialect) if flt else "1 = 1"
-    res = execute(deps, deps.pack.render(sql, dialect, where=where), max_rows=MAX_ROWS + 1, max_bytes=cfg.max_bytes_billed)
+    res = execute(deps, deps.pack.render(sql, dialect, where=where), max_rows=MAX_ROWS, max_bytes=cfg.max_bytes_billed)
     if isinstance(res, SqlError):
         _safe_error(res.kind, res.message)  # logs it
         return None, f"couldn't read the {table} table"
-    # validate_sql caps the LIMIT at max_rows, so res.truncated never fires: one row past MAX_ROWS is the signal.
-    if len(res.rows) > MAX_ROWS:  # an arbitrary subset of the rows would publish wrong dollar numbers
+    if res.truncated:  # an arbitrary subset of the rows would publish wrong dollar numbers
         log.warning("insights: %s truncated at %d rows", table, MAX_ROWS)
         return None, "the window is too long to analyse in full; narrow the dates"
     df = pd.DataFrame(res.rows, columns=res.columns)

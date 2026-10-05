@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import threading
 
 import pandas as pd
 
@@ -18,17 +19,19 @@ class BigQuerySource:
         self._default_max_bytes = default_max_bytes
         self._timeout_s = timeout_s
         self._client = None
+        self._client_lock = threading.Lock()  # panels run in parallel: create the client once
 
     @property
     def client(self):
-        if self._client is None:
-            from google.cloud import bigquery
+        with self._client_lock:
+            if self._client is None:
+                from google.cloud import bigquery
 
-            try:
-                self._client = bigquery.Client(project=self._project)
-            except Exception as exc:  # auth / env problems
-                raise AdPilotError("DataSourceUnavailable", f"BigQuery client failed: {exc}") from exc
-        return self._client
+                try:
+                    self._client = bigquery.Client(project=self._project)
+                except Exception as exc:  # auth / env problems
+                    raise AdPilotError("DataSourceUnavailable", f"BigQuery client failed: {exc}") from exc
+            return self._client
 
     def query(self, sql: str, max_bytes: int | None = None) -> pd.DataFrame:
         from google.cloud import bigquery
@@ -36,7 +39,7 @@ class BigQuerySource:
         cfg = bigquery.QueryJobConfig(maximum_bytes_billed=max_bytes or self._default_max_bytes,
                                       job_timeout_ms=int(self._timeout_s * 1000))
         # DEFAULT_RETRY's own deadline is 10 minutes: unbounded here would let a stalled HTTP call (not the
-        # query itself) hold _EXEC_LOCK far past our deadline. `retry` below bounds every RPC `client.query`/
+        # query itself) hold a panel worker far past our deadline. `retry` below bounds every RPC `client.query`/
         # `job.result` make (per google-cloud-bigquery 3.45.1's own `client.query`/`QueryJob.result` signatures).
         retry = bigquery.DEFAULT_RETRY.with_timeout(self._timeout_s)
         try:

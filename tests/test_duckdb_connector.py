@@ -18,3 +18,19 @@ def test_concurrent_queries_do_not_error(duck):
 
     assert len(results) == 50
     assert len(set(results)) == 1  # every thread saw the same, uncorrupted result
+
+
+def test_metadata_reads_wait_for_the_connection_lock(pack):
+    """columns() used to run under tools' global lock; without it, it must take the connection's own."""
+    import threading
+
+    from adpilot.connectors import get_connector
+
+    con = get_connector("duckdb", pack)
+    done = threading.Event()
+    with con._lock:
+        t = threading.Thread(target=lambda: (con.columns("fct_unified_marketing_performance"), done.set()))
+        t.start()
+        assert not done.wait(0.3)  # blocked behind a query in flight
+    t.join(5)
+    assert done.is_set()

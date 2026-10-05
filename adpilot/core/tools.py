@@ -53,8 +53,9 @@ class SqlError(BaseModel):
     columns: list[str] = []
 
 
-# ponytail: one lock — pydantic-ai runs parallel tool calls in threads and DuckDB connections are not thread-safe
-_EXEC_LOCK = threading.Lock()
+# Guards per-deps bookkeeping (the SQL budget, results, last_result) for pydantic-ai's parallel tool calls on one
+# deps; never held across a query. Connectors serialise their own I/O where they must (DuckDB's one connection).
+_STATE_LOCK = threading.Lock()
 
 
 def execute(deps: AgentDeps, sql: str, max_rows: int | None = None, max_bytes: int | None = None) -> SqlResult | SqlError:
@@ -62,27 +63,23 @@ def execute(deps: AgentDeps, sql: str, max_rows: int | None = None, max_bytes: i
 
     `max_rows` raises the row cap and `max_bytes` replaces the pack's bytes-billed cap for pack-authored dashboard
     queries (a 90-day trend has more than 100 rows; a join bills 10 MB per table on BigQuery); the model-facing tools
-    never pass them."""
+    never pass them. One row past the cap is asked for, so `truncated` says whether rows were cut."""
     pack, con = deps.pack, deps.connector
     limit = max_rows or pack.max_result_rows
-    with _EXEC_LOCK:
-        try:
+    try:
+        with _STATE_LOCK:
             deps.budget.take_sql()
-            clean = validate_sql(sql, pack.allowed_tables(con.dialect), limit, dialect=con.dialect)
-            df = con.query(clean, max_bytes=max_bytes or pack.raw.get("max_bytes_billed"))
-        except AdPilotError as exc:
-            cols = [c for c, _ in _gold_columns(deps)] if exc.kind == "SqlSchema" else []
-            return SqlError(kind=exc.kind, message=exc.message, hint=exc.hint, columns=cols)
-        deps.last_result = df
+        clean = validate_sql(sql, pack.allowed_tables(con.dialect), limit + 1, dialect=con.dialect)
+        df = con.query(clean, max_bytes=max_bytes or pack.raw.get("max_bytes_billed"))
+    except AdPilotError as exc:
+        cols = [c for c, _ in _gold_columns(deps)] if exc.kind == "SqlSchema" else []
+        return SqlError(kind=exc.kind, message=exc.message, hint=exc.hint, columns=cols)
     rows = df.head(limit)
-    result = SqlResult(
-        sql=clean,
-        columns=list(df.columns),
-        rows=records(rows),
-        row_count=len(df),
-        truncated=len(df) > len(rows),
-    )
-    deps.results.append(result)
+    result = SqlResult(sql=clean, columns=list(df.columns), rows=records(rows), row_count=len(rows),
+                       truncated=len(df) > limit)
+    with _STATE_LOCK:
+        deps.last_result = rows
+        deps.results.append(result)
     return result
 
 

@@ -17,6 +17,7 @@ class DuckDBSource:
 
     def __init__(self, csv_dir: Path, init_sql: str, timeout_s: float = 30) -> None:
         self._timeout_s = timeout_s
+        self._lock = threading.Lock()  # one shared connection; the eval harness and parallel panels query it from several threads
         self._con = duckdb.connect()
         self._con.execute(init_sql.replace("{csv_dir}", Path(csv_dir).as_posix()))
         # Load every view's rows now (a view over read_csv would read the file on each query), then close file
@@ -25,11 +26,11 @@ class DuckDBSource:
             q = '"' + view.replace('"', '""') + '"'
             self._con.execute(f"CREATE TABLE _adpilot_load AS FROM {q}; DROP VIEW {q}; ALTER TABLE _adpilot_load RENAME TO {q}")
         self._con.execute("SET enable_external_access = false; SET lock_configuration = true")
-        self._lock = threading.Lock()  # one shared connection; the eval harness can query it from two threads
 
     def execute_script(self, sql: str) -> None:
         """Run trusted setup SQL (fixtures). Never called with model-written text."""
-        self._con.execute(sql)
+        with self._lock:
+            self._con.execute(sql)
 
     def query(self, sql: str, max_bytes: int | None = None) -> pd.DataFrame:
         try:
@@ -53,17 +54,19 @@ class DuckDBSource:
             raise AdPilotError("DataSourceUnavailable", _first_line(exc)) from exc
 
     def list_tables(self) -> list[str]:
-        rows = self._con.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' ORDER BY 1"
-        ).fetchall()
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' ORDER BY 1"
+            ).fetchall()
         return [r[0] for r in rows]
 
     def columns(self, table: str) -> list[tuple[str, str]]:
-        rows = self._con.execute(
-            "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_name = ? ORDER BY ordinal_position",
-            [table],
-        ).fetchall()
+        with self._lock:
+            rows = self._con.execute(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_name = ? ORDER BY ordinal_position",
+                [table],
+            ).fetchall()
         return [(r[0], r[1]) for r in rows]
 
 

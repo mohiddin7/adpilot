@@ -6,7 +6,7 @@ import pytest
 
 from adpilot.core.chart import ChartSpec
 from adpilot.core.runtime import fresh_deps
-from adpilot.core.tools import SqlError, execute
+from adpilot.core.tools import SqlError, SqlResult, execute
 from adpilot.dashboard import panels
 from adpilot.dashboard.config import load_dashboard
 from adpilot.dashboard.filters import Filters
@@ -342,3 +342,23 @@ def test_the_attention_week_ends_where_the_flags_do(deps, cfg):
     """Final review M4: anomaly flags (and /insights' as_of) stop mature_lag_days (2) before the newest day."""
     week = panels.last_week(deps, cfg, TtlCache(0), FLT)
     assert (week.date_from, week.date_to) == (date(2024, 1, 22), date(2024, 1, 28))
+
+
+def test_truncated_is_true_only_when_rows_were_cut(deps):
+    sql = deps.pack.render("SELECT * FROM {gold}", "duckdb")  # 330 rows
+    cut = execute(deps, sql, max_rows=329)
+    assert len(cut.rows) == 329 and cut.row_count == 329 and cut.truncated
+    assert len(deps.last_result) == 329  # the probe row never reaches the model's data
+    whole = execute(fresh_deps(deps), sql, max_rows=330)
+    assert len(whole.rows) == 330 and not whole.truncated
+
+
+def test_parallel_tool_calls_on_one_deps_never_overspend_the_budget(deps):
+    """pydantic-ai runs a turn's parallel tool calls in threads on ONE deps: the budget must hold without a global
+    query lock. (Passes before the change too: it guards the lock's removal.)"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    sql = deps.pack.render("SELECT 1 AS x FROM {gold} LIMIT 1", "duckdb")
+    with ThreadPoolExecutor(8) as pool:
+        out = list(pool.map(lambda _: execute(deps, sql), range(24)))
+    assert sum(isinstance(r, SqlResult) for r in out) == deps.budget.max_sql == len(deps.results)

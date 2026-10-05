@@ -92,7 +92,7 @@ def fresh_deps(template: AgentDeps) -> AgentDeps:
     """A per-call copy: the connector, pack, schema text and sink are shared; per-turn state is not.
 
     ask() also resets budget/results, but a fresh list object per call means two concurrent calls can never see
-    each other's rows even before ask() runs. Sharing the connector is safe: tools._EXEC_LOCK serialises queries.
+    each other's rows even before ask() runs. Sharing the connector is safe: DuckDB's connector serialises its one connection, and BigQuery runs each query as its own job.
     """
     return dataclasses.replace(template, budget=Budget(), last_result=None, results=[], run_context=None)
 
