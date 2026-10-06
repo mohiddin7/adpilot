@@ -403,7 +403,7 @@ dashboard:
         SUM(impressions) AS impressions, SUM(clicks) AS clicks, SUM(conversions) AS conversions,
         ROUND(SAFE_DIVIDE(SUM(spend), SUM(conversions)), 2) AS cpa,
         ROUND(SAFE_DIVIDE(SUM(clicks), SUM(impressions)), 4) AS ctr,
-        ROUND(SAFE_DIVIDE(SUM(conversion_value), SUM(spend)), 2) AS roas
+        ROUND(SAFE_DIVIDE(NULLIF(SUM(conversion_value), 0), SUM(spend)), 2) AS roas
         FROM {gold} WHERE {where} GROUP BY platform, campaign_id ORDER BY spend DESC
     - id: dd_funnel
       title: Funnel

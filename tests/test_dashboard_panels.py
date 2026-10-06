@@ -515,3 +515,12 @@ def test_the_deep_dive_funnel_matches_the_overviews(deps, cfg):
     ov = next(r for r in run_page(deps, cfg, "overview", _flt("TikTok"), TtlCache(0)) if r.id == "funnel")
     dd = next(r for r in run_page(deps, cfg, "deep_dive", _flt("TikTok"), TtlCache(0)) if r.id == "dd_funnel")
     assert dd.rows == ov.rows and dd.chart.chart_type == "funnel"
+
+
+def test_a_campaign_with_no_revenue_has_no_roas_not_zero(pack, cfg):
+    """Live checklist: TikTok and Facebook campaigns (no revenue tracked) showed ROAS 0.00x."""
+    deps = _con_with(pack, "SELECT 1")
+    r = next(x for x in run_page(deps, cfg, "deep_dive", FLT, TtlCache(0)) if x.id == "dd_campaigns")
+    by_platform = {row["platform"]: row["roas"] for row in r.rows}
+    assert all(row["roas"] is None or row["roas"] > 0 for row in r.rows) and by_platform["Google"] is not None
+    assert [row["roas"] for row in r.rows if row["platform"] == "TikTok"] == [None] * 4
