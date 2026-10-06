@@ -271,4 +271,5 @@ def test_a_passed_deadline_ends_the_chain_instead_of_falling_over():
 
 def test_each_openrouter_request_has_its_own_timeout():
     """The OpenAI SDK's default read timeout is 10 minutes: one slow free model could hold the answer that long."""
-    assert m.openrouter_factory("test-key")("some/model:free").client.timeout == m.REQUEST_TIMEOUT_S
+    timeout = m.openrouter_factory("test-key")("some/model:free").client.timeout
+    assert timeout.read == m.REQUEST_TIMEOUT_S and timeout.connect == 10

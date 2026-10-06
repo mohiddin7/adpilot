@@ -557,6 +557,32 @@ def test_an_answer_past_its_deadline_falls_back_to_the_canned_query(agent, deps,
     assert {r["platform"] for r in answer.data} == {"Facebook", "Google", "TikTok"}
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_passed_deadline_tries_no_other_model_on_either_path(agent, deps, no_waits, stream):
+    """Past the deadline the chain stops instead of falling over to the next model; the streaming path too."""
+    calls = []
+
+    def late(messages, info):
+        calls.append(1)
+        return final("too late")
+
+    async def late_stream(messages, info):
+        calls.append(1)
+        yield "too late"
+
+    chain = build_chain(["a", "b"], lambda n: FunctionModel(late, stream_function=late_stream, model_name=n))
+
+    async def handler(ctx, events):
+        async for _ in events:
+            pass
+
+    answer, _, _ = ask(agent, deps, "What was spend by platform?", model=chain, deadline_s=0,
+                       event_stream_handler=handler if stream else None)
+    assert calls == [] and "took longer than" in answer.caveats[0]
+    from adpilot.core.models import DEADLINE
+    assert DEADLINE.get() is None  # reset for whatever runs next in this thread
+
+
 def test_without_a_deadline_the_answer_runs_to_completion(agent, deps, no_waits):
     """Evals and the CLI pass none: a slow model is slow, not a fallback."""
     chain = build_chain(["a"], lambda n: scripted(GOOD_SQL, name=n))

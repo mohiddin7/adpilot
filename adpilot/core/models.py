@@ -204,13 +204,14 @@ def build_chain(names: Sequence[str], make: Callable[[str], Model]) -> Model | N
 
 
 def openrouter_factory(api_key: str) -> Callable[[str], Model]:
+    from openai import Timeout
     from pydantic_ai.models.openrouter import OpenRouterModel
     from pydantic_ai.providers.openrouter import OpenRouterProvider
 
     provider = OpenRouterProvider(api_key=api_key)
     # Retrying is the only retry layer: the SDK's own retried the daily-cap 429 for hours (evals-nightly, 2026-09-23).
     provider.client.max_retries = 0
-    provider.client.timeout = REQUEST_TIMEOUT_S
+    provider.client.timeout = Timeout(REQUEST_TIMEOUT_S, connect=10)  # per phase: connect, read, write, pool
     return lambda name: OpenRouterModel(name, provider=provider)
 
 
