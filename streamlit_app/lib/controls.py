@@ -219,10 +219,10 @@ def no_sales_line(rows: list[dict], shown: int = 3) -> str | None:
 
 
 def header_html(title: str, through: str | None) -> str:
-    """The bar on top of every page: the product, the page, and how fresh the data is (empty when unknown)."""
+    """The bar on top of every page: the page, in bold, and how fresh the data is (empty when unknown). The product
+    name is the sidebar logo (view.start)."""
     asof = f'<span class="ad-asof">Data through {html.escape(through)}</span>' if through else ""
-    return (f'<div class="ad-header"><span class="ad-brand">AdPilot</span>'
-            f'<span class="ad-page">{html.escape(title)}</span>{asof}</div>')
+    return f'<div class="ad-header"><span class="ad-page">{html.escape(title)}</span>{asof}</div>'
 
 
 def filter_summary(start: date, end: date, params: list[tuple[str, str]]) -> str:
