@@ -4,19 +4,21 @@ heatmap, the platform's own charts, the anomaly timeline and the formatted campa
 
 import streamlit as st
 from lib import chat, view
-from lib.controls import context_line
+from lib.controls import context_line, filter_summary
 from lib.theme import platform_colors, platform_colour
 
 view.start("Channel deep dive", "🎯")
 m = view.guarded(view.meta)
 colors = platform_colors(m.get("colors") or {})
-st.title("Channel deep dive")
 
 segment = next((f for f in m["filters"] if f["column"] == "platform" and f.get("values")), None)
-platform = "All"
-if segment:
-    platform = st.segmented_control("Platform", ["All", *segment["values"]], default="All", required=True,
-                                     key="dd_platform") or "All"
+bar = st.container(key="sticky_filters")
+with bar:
+    platform = "All"
+    if segment:
+        platform = st.segmented_control("Platform", ["All", *segment["values"]], default="All", required=True,
+                                         key="dd_platform") or "All"
+    summary = st.empty()
 fixed = {} if platform == "All" else {"platform": [platform]}
 # one platform in view: its single-series charts wear its colour; None for "All"
 single = platform_colour(colors, None if platform == "All" else platform)
@@ -30,6 +32,7 @@ with st.expander("Filters", expanded=True):
         selected, params = view.filter_controls(
             "deep_dive", m, start, end, "dd", fixed=fixed, skip=frozenset({"platform"}) if segment else frozenset()
         )
+summary.caption(filter_summary(start, end, params))
 
 chat.sidebar(context_line("Channel deep dive", start, end, selected), "deep_dive", colors=colors, single=single)
 

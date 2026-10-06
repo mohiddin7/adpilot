@@ -14,6 +14,8 @@ from lib.controls import (
     context_line,
     delta_pct,
     distinct_names,
+    filter_summary,
+    header_html,
     keep_valid,
     md,
     no_sales_line,
@@ -164,3 +166,18 @@ def test_campaigns_with_no_sales_are_named_under_the_map():
     assert no_sales_line(rows) == md("4 campaigns spent $2.1K with no sales: B ($1.5K), A ($500), C* ($50) and 1 more.")
     assert no_sales_line(rows[-1:]) is None
     assert no_sales_line(rows[:1]) == md("1 campaign spent $500 with no sales: A ($500).")
+
+
+def test_the_header_names_the_product_the_page_and_the_data_date():
+    assert header_html("Overview", "2024-01-30") == (
+        '<div class="ad-header"><span class="ad-brand">AdPilot</span><span class="ad-page">Overview</span>'
+        '<span class="ad-asof">Data through 2024-01-30</span></div>')
+    assert "ad-asof" not in header_html("Chat", None)
+    assert "&lt;x&gt;" in header_html("<x>", None)
+
+
+def test_the_filter_summary_counts_filters_not_values():
+    params = [("date_from", "2024-01-01"), ("date_to", "2024-01-30"), ("campaign_name", "A"), ("campaign_name", "B"),
+              ("spend_min", "10.0"), ("spend_max", "90.0")]
+    assert filter_summary(date(2024, 1, 1), date(2024, 1, 30), params) == "2024-01-01 to 2024-01-30 · 2 filters set"
+    assert filter_summary(date(2024, 1, 1), date(2024, 1, 30), params[:2]) == "2024-01-01 to 2024-01-30"

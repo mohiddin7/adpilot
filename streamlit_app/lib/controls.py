@@ -3,6 +3,7 @@ line. No Streamlit import, so every rule a page relies on has a plain unit test 
 
 from __future__ import annotations
 
+import html
 import re
 from datetime import date, timedelta
 
@@ -213,3 +214,17 @@ def no_sales_line(rows: list[dict], shown: int = 3) -> str | None:
     n = len(none)
     return md(f"{n} campaign{'s' if n != 1 else ''} spent {fmt_currency(sum(r['spend'] for r in none))} "
               f"with no sales: {named}{more}.")
+
+
+def header_html(title: str, through: str | None) -> str:
+    """The bar on top of every page: the product, the page, and how fresh the data is (empty when unknown)."""
+    asof = f'<span class="ad-asof">Data through {html.escape(through)}</span>' if through else ""
+    return (f'<div class="ad-header"><span class="ad-brand">AdPilot</span>'
+            f'<span class="ad-page">{html.escape(title)}</span>{asof}</div>')
+
+
+def filter_summary(start: date, end: date, params: list[tuple[str, str]]) -> str:
+    """One line for the sticky bar: the dates, and how many filters are set (a range's _min and _max are one)."""
+    names = {k.removesuffix("_min").removesuffix("_max") for k, _ in params if k not in ("date_from", "date_to")}
+    n = len(names)
+    return f"{start} to {end}" + (f" · {n} filter{'s' if n != 1 else ''} set" if n else "")

@@ -12,7 +12,6 @@ from lib.theme import platform_colors, platform_colour
 view.start("AI insights", "💡")
 m = view.guarded(view.meta)
 colors = platform_colors(m.get("colors") or {})
-st.title("AI insights")
 
 segment = next((f for f in m["filters"] if f["column"] == "platform" and f.get("values")), None)
 with st.container(border=True):

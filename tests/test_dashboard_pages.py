@@ -584,3 +584,12 @@ def test_all_findings_opens_insights_on_the_overviews_window(dash_api):
     assert at.session_state["ins_preset"] == "Custom"
     assert tuple(at.session_state["ins_custom"]) == (date(2024, 1, 10), date(2024, 1, 24))
     assert at.session_state["ins_platform"] == "Google"
+
+
+@pytest.mark.parametrize("page,title", [("Home.py", "Overview"), ("pages/1_Channel_Deep_Dive.py", "Channel deep dive"),
+                                        ("pages/2_AI_Insights.py", "AI insights"), ("pages/3_Chat.py", "Chat")])
+def test_every_page_has_the_header(dash_api, page, title):
+    at = run(page)
+    assert not at.exception, at.exception
+    header = next(m.value for m in at.markdown if m.value.startswith('<div class="ad-header"'))
+    assert "AdPilot" in header and f">{title}<" in header and "Data through 2024-01-30" in header

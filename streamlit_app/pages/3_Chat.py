@@ -7,7 +7,6 @@ from lib.controls import md
 view.start("Chat", "💬")
 chat.thinking_toggle()
 colors = view.meta_colors()
-st.title("Chat with your data")
 st.caption("The AdPilot analyst writes SQL, checks it, and shows its working. Answers come from free models.")
 
 for i, message in enumerate(chat.history("chat")):

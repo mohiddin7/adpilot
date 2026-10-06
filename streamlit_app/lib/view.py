@@ -19,6 +19,7 @@ from .controls import (
     clamp_range,
     delta_pct,
     distinct_names,
+    header_html,
     keep_valid,
     md,
     no_sales_line,
@@ -34,8 +35,16 @@ from .theme import SEVERITY, SYMBOLS, platform_colors
 
 
 def start(title: str, icon: str) -> None:
+    """Page setup and the header that stays on top. The data date comes from /dashboard (cached); if that read fails,
+    the header just omits it: the page's own guarded(meta) says why."""
     st.set_page_config(page_title=f"{title} · AdPilot", page_icon=icon, layout="wide")
     inject_page_style()
+    try:
+        through = meta().get("date_max")
+    except ApiError:
+        through = None
+    with st.container(key="ad_header"):
+        st.markdown(header_html(title, through), unsafe_allow_html=True)
 
 
 def show_error(exc: ApiError) -> None:

@@ -11,9 +11,8 @@ from lib.theme import platform_colors
 view.start("Overview", "📊")
 m = view.guarded(view.meta)
 colors = platform_colors(m.get("colors") or {})
-st.title("Overview")
 
-with st.container(border=True):
+with st.container(border=True, key="sticky_filters"):
     left, middle, right = st.columns([1.2, 3, 1])
     with left:
         start, end = view.date_controls(m, "ov")
