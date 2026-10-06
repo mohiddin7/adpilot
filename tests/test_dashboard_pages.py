@@ -593,3 +593,65 @@ def test_every_page_has_the_header(dash_api, page, title):
     assert not at.exception, at.exception
     header = next(m.value for m in at.markdown if m.value.startswith('<div class="ad-header"'))
     assert "AdPilot" in header and f">{title}<" in header and "Data through 2024-01-30" in header
+
+
+STORED = json.dumps({"conversations": [{"id": "a" * 32, "title": "What was spend by platform?", "updated": "2026-10-04",
+                                        "turns": [{"role": "user", "content": "What was spend by platform?"},
+                                                  {"role": "assistant", "content": "Spend was $5K.",
+                                                   "answer": {"answer_md": "Spend was $5K.", "data": [], "caveats": []}}]}]})
+
+
+def _browser_holding(monkeypatch, raw) -> list:
+    """Stand in for the localStorage component: it returns `raw`, and records every save the page hands it."""
+    from lib import chat
+
+    saves: list = []
+
+    def fake(save):
+        saves.append(save)
+        return raw
+
+    monkeypatch.setattr(chat, "_browser", fake)
+    return saves
+
+
+def test_saved_chats_are_listed_and_one_can_be_reopened(dash_api, monkeypatch):
+    _browser_holding(monkeypatch, STORED)
+    at = run("pages/3_Chat.py")
+    at.button(key="open_" + "a" * 32).click().run()
+    assert not at.exception, at.exception
+    assert at.session_state["session_id_chat"] == "a" * 32
+    assert [m["role"] for m in at.session_state["messages_chat"]] == ["user", "assistant"]
+
+
+def test_a_new_answer_is_saved_to_this_browser(dash_api, monkeypatch):
+    saves = _browser_holding(monkeypatch, "")
+    at = run("pages/3_Chat.py")
+    at.chat_input[0].set_value(QUESTION).run()
+    first = json.loads(saves[-1])["conversations"][0]
+    assert first["id"] == at.session_state["session_id_chat"] and first["title"] == QUESTION
+
+
+def test_deleting_a_chat_removes_it_from_this_browser(dash_api, monkeypatch):
+    saves = _browser_holding(monkeypatch, STORED)
+    at = run("pages/3_Chat.py")
+    at.button(key="del_" + "a" * 32).click().run()
+    assert json.loads(saves[-1])["conversations"] == []
+
+
+def test_nothing_is_written_before_the_browsers_copy_arrives(dash_api, monkeypatch):
+    saves = _browser_holding(monkeypatch, None)  # the component hasn't answered yet
+    at = run("pages/3_Chat.py")
+    at.chat_input[0].set_value(QUESTION).run()
+    assert not at.exception and set(saves) == {None}
+
+
+@pytest.mark.parametrize("raw", [{"unavailable": True}, "{not json"])
+def test_blocked_or_broken_storage_keeps_the_chat_working(dash_api, monkeypatch, raw):
+    _browser_holding(monkeypatch, raw)
+    at = run("pages/3_Chat.py")
+    at.chat_input[0].set_value(QUESTION).run()
+    assert not at.exception, at.exception
+    assert at.session_state["messages_chat"][-1]["answer"]["answer_md"]
+    if isinstance(raw, dict):
+        assert any("this tab only" in c.value for c in at.caption)

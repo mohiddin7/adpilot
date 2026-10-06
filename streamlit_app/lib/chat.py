@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+from datetime import date
+from pathlib import Path
 from uuid import uuid4
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from . import api_client
+from . import history as saved_chats
 from .api_client import ApiError
 from .charts import build_figure
 from .controls import answer_md, caveat_text, md, with_context
@@ -136,3 +140,57 @@ def sidebar(context: str, page: str, suggestions: list[str] | tuple = (), colors
         if history(page) and st.button("Clear", key=f"clear_{page}"):
             clear(page)
             st.rerun()
+
+
+_component = components.declare_component(
+    "local_history", path=str(Path(__file__).resolve().parents[1] / "components" / "local_history"))
+
+
+def _browser(save: str | None):
+    """This browser's saved list as a JSON string ("" when empty), {"unavailable": True} when it can't keep one,
+    or None until the component has answered. A component failure reads as unavailable: the chat never depends on it."""
+    try:
+        return _component(save=save, key="local_history", default=None)
+    except Exception:  # noqa: BLE001 — saved chats are a convenience
+        return {"unavailable": True}
+
+
+def saved() -> list[dict] | None:
+    """The Chat page's saved conversations, newest first; None until the browser's copy has arrived."""
+    return st.session_state.get("chat_saved")
+
+
+def restore(conv: dict) -> None:
+    """Show a saved conversation and continue its server session (a fresh one if the API has forgotten it)."""
+    st.session_state["messages_chat"] = [dict(t) for t in conv["turns"]]
+    st.session_state["session_id_chat"] = conv["id"]
+
+
+def forget(conv_id: str) -> None:
+    st.session_state["chat_saved"] = saved_chats.forget(saved() or [], conv_id)
+    if st.session_state.get("session_id_chat") == conv_id:
+        clear("chat")
+
+
+def remember_current() -> None:
+    """The open conversation goes first in the saved list (once the list has loaded)."""
+    if saved() is not None and history("chat"):
+        st.session_state["chat_saved"] = saved_chats.remember(saved(), session_id("chat"), history("chat"),
+                                                              date.today().isoformat())
+
+
+def sync_browser() -> None:
+    """The last call on the Chat page, so the browser gets every change made above it. Nothing is written before the
+    browser's copy arrives; when it does, it is loaded (plus this tab's open conversation) and the list redraws."""
+    kept = saved()
+    got = _browser(None if kept is None else saved_chats.dumps(kept))
+    if kept is not None or got is None:
+        return
+    if isinstance(got, dict):
+        st.session_state["chat_saved_unavailable"] = True
+        return
+    loaded = saved_chats.parse(got)
+    if history("chat"):
+        loaded = saved_chats.remember(loaded, session_id("chat"), history("chat"), date.today().isoformat())
+    st.session_state["chat_saved"] = loaded
+    st.rerun()
