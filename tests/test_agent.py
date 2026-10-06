@@ -588,3 +588,16 @@ def test_without_a_deadline_the_answer_runs_to_completion(agent, deps, no_waits)
     chain = build_chain(["a"], lambda n: scripted(GOOD_SQL, name=n))
     answer, _, _ = ask(agent, deps, "spend per platform", model=chain)
     assert answer.answer_md == "ok" and answer.data
+
+
+def test_the_instructions_name_the_sql_dialect(agent, deps):
+    """Audit 2026-10-06: told nothing, the free models wrote DuckDB date math and bare table names on BigQuery."""
+    seen = []
+
+    def fn(messages, info):
+        seen.append(" ".join(p.content for m in messages for p in m.parts if p.part_kind == "system-prompt")
+                    + " ".join(getattr(m, "instructions", None) or "" for m in messages))
+        return final("ok")
+
+    ask(agent, deps, "spend per platform", model=FunctionModel(fn))
+    assert "# SQL dialect\nDuckDB SQL." in seen[0]

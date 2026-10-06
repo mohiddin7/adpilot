@@ -173,24 +173,26 @@ def mask_sql(sql: str, dialect: str) -> str:
     return _lex(sql, dialect)[0]
 
 
-def _tables(masked: str, code: str, dialect: str) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
-    """Every table the statement reads, as (name, offset), and the leading WITH's CTEs, as (name, visible_from).
+def _tables(masked: str, code: str, dialect: str) -> tuple[list[tuple[str, int, int]], list[tuple[str, int]]]:
+    """Every table the statement reads, as (name, start, end) of its text, and the leading WITH's CTEs, as
+    (name, visible_from).
     Walks `code` (masked, quoted-identifier contents as _), so no quoted text can move the walk. A FROM/JOIN item
     that is not a plain (dotted) table name or a parenthesised query is refused, never guessed at."""
     toks = [(m.lastgroup, m.group().upper(), m.start()) for m in _TOKEN.finditer(code)]
-    refs: list[tuple[str, int]] = []
+    refs: list[tuple[str, int, int]] = []
     ctes: list[tuple[str, int]] = []
 
     def word(i: int) -> str:
         return toks[i][1] if 0 <= i < len(toks) else ""
 
-    def name(i: int) -> tuple[str, int]:  # the table name starting at toks[i] → (name, index of the next token)
+    def name(i: int) -> tuple[str, int, int]:  # the name starting at toks[i] → (name, index of the next token, end)
         s = toks[i][2]
         m, c = _NAME[dialect].match(masked, s), _NAME[dialect].match(code, s)
         after = code[m.end() : m.end() + 1] if m else ""
         if not m or not c or m.end() != c.end() or after == "*" or not after.isascii():  # escapes, wildcards,
             raise _refuse("This table name is not supported.")  # a name the engine would read on past \w
-        return re.sub(r'["`]', "", masked[s : m.end()]), next((k for k in range(i, len(toks)) if toks[k][2] >= m.end()), len(toks))
+        nxt = next((k for k in range(i, len(toks)) if toks[k][2] >= m.end()), len(toks))
+        return re.sub(r'["`]', "", masked[s : m.end()]), nxt, m.end()
 
     def group_end(i: int) -> int:  # toks[i] is "(": the index after its matching ")"
         depth = 0
@@ -222,10 +224,10 @@ def _tables(masked: str, code: str, dialect: str) -> tuple[list[tuple[str, int]]
             return i  # a subquery: the walk checks the FROM lists inside it
         if kind != "w" and t != "`":
             raise _refuse("This FROM item is not supported; name an allowed table or use a subquery.")
-        table, j = name(i)
+        table, j, end = name(i)
         if word(j) == "(":
             raise _refuse("Table functions, UNNEST and LATERAL are not allowed in FROM.")
-        refs.append((table, toks[i][2]))
+        refs.append((table, toks[i][2], end))
         return after(j)
 
     i = 0
@@ -236,7 +238,7 @@ def _tables(masked: str, code: str, dialect: str) -> tuple[list[tuple[str, int]]
         while True:
             if i >= len(toks) or toks[i][0] != "w" or "." in toks[i][1]:
                 raise _refuse("This WITH clause is not supported.")
-            cte, i = name(i)
+            cte, i, _end = name(i)
             if word(i) == "(":
                 i = group_end(i)
             if word(i) != "AS":
@@ -334,10 +336,12 @@ def validate_sql(sql: str, allowed_tables: set[str], max_rows: int, *, dialect: 
     refs, ctes = _tables(masked, code, dialect)
     # A name is a CTE only after that CTE's body ends (CTE names are case-insensitive in both engines; a dotted name
     # is never a CTE); anywhere else it is a real table.
-    referenced = {t for t, at in refs if not any(t.lower() == c.lower() and at >= seen for c, seen in ctes)}
-    if not referenced:
+    tables = [(t, s, e) for t, s, e in refs if not any(t.lower() == c.lower() and s >= seen for c, seen in ctes)]
+    if not tables:
         raise AdPilotError("SqlPolicy", "No table reference found.", hint=f"Allowed tables: {sorted(allowed_tables)}")
-    unknown = sorted(t for t in referenced if t not in allowed_tables)
+    full = _full_names(allowed_tables, dialect)
+    fixes = [(s, e, full[t.lower()]) for t, s, e in tables if t not in allowed_tables and t.lower() in full]
+    unknown = sorted({t for t, _, _ in tables if t not in allowed_tables and t.lower() not in full})
     if unknown:
         raise AdPilotError(
             "SqlPolicy",
@@ -347,10 +351,25 @@ def validate_sql(sql: str, allowed_tables: set[str], max_rows: int, *, dialect: 
 
     m = _TRAILING_LIMIT.search(masked)
     if not m:  # a new line when the SQL ends in a comment, or the LIMIT would be commented out
-        return sql + ("\n" if sql[len(masked.rstrip(_WS)) :].strip(_WS) else " ") + f"LIMIT {max_rows}"
-    if int(m.group(1)) > max_rows:  # the match span holds in the original: same length, and the digits are code
-        return sql[: m.start(1)] + str(max_rows) + sql[m.end(1) :]
+        sql = sql + ("\n" if sql[len(masked.rstrip(_WS)) :].strip(_WS) else " ") + f"LIMIT {max_rows}"
+    elif int(m.group(1)) > max_rows:  # the match span holds in the original: same length, and the digits are code
+        sql = sql[: m.start(1)] + str(max_rows) + sql[m.end(1) :]
+    for s, e, name in sorted(fixes, reverse=True):  # every table name precedes the trailing LIMIT: offsets still hold
+        sql = sql[:s] + f"`{name}`" + sql[e:]
     return sql
+
+
+def _full_names(allowed_tables: set[str], dialect: str) -> dict[str, str]:
+    """BigQuery only: a bare table name (lower-cased) → the one allowed `project.dataset.table` it can mean. Models
+    write the short name first, a refusal costs them a call and sometimes the answer (audit, 2026-10-06). Never
+    widens the allowlist: every value is an allowed table, and a name two allowed tables share maps to neither."""
+    if dialect != "bigquery":
+        return {}
+    by_last: dict[str, list[str]] = {}
+    for t in allowed_tables:
+        if "." in t:
+            by_last.setdefault(t.rsplit(".", 1)[1].lower(), []).append(t)
+    return {k: v[0] for k, v in by_last.items() if len(v) == 1}
 
 
 _INJECTION = re.compile(
