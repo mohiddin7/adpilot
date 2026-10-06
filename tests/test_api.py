@@ -464,7 +464,7 @@ def test_the_stream_does_its_blocking_work_off_the_loop_in_anyio_threads(api, mo
     assert thread_name.startswith("AnyIO"), thread_name
 
 
-# ---------- dashboard endpoints (Phase 4A) ----------
+# ---------- dashboard endpoints ----------
 
 H = {"X-API-Key": KEY}
 WINDOW = {"date_from": "2024-01-01", "date_to": "2024-01-30"}

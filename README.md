@@ -22,8 +22,9 @@
 | 1 | Data-agnostic agent core (Pydantic AI), typed tools, guardrails, `adpilot chat` CLI ✅ |
 | 2 | Eval harness: golden cases, red-team, self-heal rate, LLM judge, scorecard ✅ |
 | 3 | Three surfaces over the same agent: FastAPI service ✅ · daily brief ✅ · MCP server ✅ |
-| 4 | Pack-driven dashboard ✅ · human-in-the-loop budget approvals |
-| 5 | Production rollout: Docker ✅, tracing ✅, deployed Cloud Run service |
+| 4 | Pack-driven dashboard ✅ |
+| 5 | Production rollout: Docker ✅, tracing ✅, deployed Cloud Run service ✅ |
+| 6 | Calibrated synthetic data generator feeding the daily pipeline ✅ |
 
 ## Quick start
 
