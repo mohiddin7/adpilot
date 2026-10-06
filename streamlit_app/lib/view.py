@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 import pandas as pd
@@ -81,10 +82,35 @@ def options(page: str, params: tuple[tuple[str, str], ...]) -> dict:
     return api_client.filter_options(page, list(params))
 
 
-@st.cache_data(ttl=300, max_entries=200, show_spinner="Loading panels…")
-def panels(page: str, params: tuple[tuple[str, str], ...]) -> list[dict]:
+def _named(results: list[dict]) -> list[dict]:
     """Every panel's campaigns told apart by name (distinct_names), once, for every chart and table that shows them."""
-    return [{**p, "rows": distinct_names(p["rows"])} for p in api_client.panels(page, list(params))]
+    return [{**p, "rows": distinct_names(p["rows"])} for p in results]
+
+
+class _PriorFailed(Exception):
+    """The comparison period's read failed. Carries this period's panels; raising keeps the pair out of the cache, so
+    the comparison is retried on the next run."""
+
+    def __init__(self, current: list[dict]) -> None:
+        super().__init__("the comparison period could not be read")
+        self.current = current
+
+
+@st.cache_data(ttl=300, max_entries=200, show_spinner="Loading panels…")
+def _panels(page: str, params: tuple[tuple[str, str], ...], prior: tuple[tuple[str, str], ...]
+            ) -> tuple[list[dict], list[dict] | None]:
+    """This period's panels and, when `prior` is given, the comparison period's, read at the same time: the page
+    waits for the slower of the two, not for both in turn. Threads only call the API client (no Streamlit)."""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        now = pool.submit(api_client.panels, page, list(params))
+        before = pool.submit(api_client.panels, page, list(prior)) if prior else None
+        current = _named(now.result())  # an ApiError here is the page's: guarded() shows it
+        if before is None:
+            return current, None
+        try:
+            return current, _named(before.result())
+        except ApiError:
+            raise _PriorFailed(current) from None
 
 
 @st.cache_data(ttl=300, max_entries=200, show_spinner=False)
@@ -143,19 +169,29 @@ def one(results: list[dict], role: str) -> dict | None:
     return next(iter(by_role(results, role)), None)
 
 
-def prior_panels(page: str, m: dict, params: list, start: date, end: date) -> dict[str, dict]:
-    """The previous period of the same length for the KPI and series panels. A failure drops the deltas and
-    the dashed lines, never the page."""
+def comparison_params(page: str, m: dict, params: list, start: date, end: date) -> tuple[tuple[str, str], ...]:
+    """The previous period of the same length, asking only for the panels a page overlays (the KPIs and series)."""
     ids = [("panel", p["id"]) for p in m["panels"][page] if p.get("role") in PRIOR_ROLES]
     if not ids:
-        return {}
+        return ()
     ps, pe = prior_range(start, end)
+    return tuple(with_dates(params, ps, pe) + ids)
+
+
+def page_panels(page: str, m: dict, params: list, start: date, end: date, compare: bool
+                ) -> tuple[list[dict], dict[str, dict]]:
+    """The page's panels, and by id the previous period's KPI and series panels when comparing. This period's failure
+    stops the page with its reason; the comparison's drops the deltas and the dashed lines, never the page."""
+    prior = comparison_params(page, m, params, start, end) if compare else ()
     try:
-        out = {p["id"]: p for p in panels(page, tuple(with_dates(params, ps, pe) + ids))}
-    except ApiError:
-        return {}
+        results, before = guarded(_panels, page, tuple(params), prior)
+    except _PriorFailed as exc:
+        return exc.current, {}
+    if before is None:
+        return results, {}
+    ps, pe = prior_range(start, end)
     st.caption(f"Changes compare with {ps} to {pe}.")
-    return out
+    return results, {p["id"]: p for p in before}
 
 
 def drawable(p: dict | None) -> bool:

@@ -36,8 +36,7 @@ summary.caption(filter_summary(start, end, params))
 
 chat.sidebar(context_line("Channel deep dive", start, end, selected), "deep_dive", colors=colors, single=single)
 
-results = view.guarded(view.panels, "deep_dive", tuple(params))
-prior = view.prior_panels("deep_dive", m, params, start, end) if compare else {}
+results, prior = view.page_panels("deep_dive", m, params, start, end, compare)
 days = (end - start).days + 1
 markers = view.one(results, "markers")
 details = view.by_role(results, "details")  # campaigns, then ad sets (pack order)

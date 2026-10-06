@@ -23,8 +23,7 @@ with st.container(border=True, key="sticky_filters"):
 st.caption(f"Data available {m['date_min']} to {m['date_max']}")
 chat.sidebar(context_line("Overview", start, end, selected), "overview", colors=colors)
 
-results = view.guarded(view.panels, "overview", tuple(params))
-prior = view.prior_panels("overview", m, params, start, end) if compare else {}
+results, prior = view.page_panels("overview", m, params, start, end, compare)
 days = (end - start).days + 1
 
 view.kpi_strip(results, prior)

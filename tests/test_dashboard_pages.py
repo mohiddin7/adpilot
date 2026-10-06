@@ -199,13 +199,11 @@ def test_a_failed_filter_option_query_keeps_the_choice_and_says_why(dash_api, mo
 
 def _flag(monkeypatch, dash_api, platform="Google", excess_cost=812.5):
     """DuckDB has no anomaly rows, so one flagged campaign is injected into the attention panel."""
-    from lib import view
-
     ac, _, _ = dash_api
     # a campaign active in the last 14 days, so every window the tests use still offers it
     campaign = ac.filter_options("deep_dive", [("date_from", "2024-01-17"), ("date_to", "2024-01-30"),
                                               ("platform", platform)])["campaign_name"]["values"][0]
-    real = view.panels
+    real = ac.panels
 
     def flagged(page, params):
         out = real(page, params)
@@ -216,7 +214,7 @@ def _flag(monkeypatch, dash_api, platform="Google", excess_cost=812.5):
                               "last_flagged": "2024-01-29", "excess_cost": excess_cost}]
         return out
 
-    monkeypatch.setattr(view, "panels", flagged)
+    monkeypatch.setattr(ac, "panels", flagged)
     return campaign
 
 
@@ -236,10 +234,11 @@ def test_needs_attention_opens_the_campaign_in_the_deep_dive_with_the_same_dates
 @pytest.mark.parametrize("page,preset_key", [("Home.py", "ov_preset"), ("pages/1_Channel_Deep_Dive.py", "dd_preset")])
 def test_a_failed_comparison_fetch_drops_the_deltas_not_the_page(dash_api, monkeypatch, page, preset_key):
     """Last 7 days: its comparison week is inside the demo month, so a working fetch would show deltas."""
-    from lib import view
+    import streamlit as st
+    from lib import api_client
     from lib.api_client import ApiError
 
-    real = view.panels
+    real = api_client.panels
 
     def prior_fails(page_id, params):
         if any(k == "panel" for k, _ in params):  # only the comparison-period call asks for named panels
@@ -247,7 +246,8 @@ def test_a_failed_comparison_fetch_drops_the_deltas_not_the_page(dash_api, monke
         return real(page_id, params)
 
     assert any(m.delta for m in run(page, **{preset_key: "Last 7 days"}).metric)  # deltas when the fetch works
-    monkeypatch.setattr(view, "panels", prior_fails)
+    st.cache_data.clear()  # the working read above is cached for 5 minutes
+    monkeypatch.setattr(api_client, "panels", prior_fails)
     at = run(page, **{preset_key: "Last 7 days"})
     assert not at.exception, at.exception
     assert at.metric and not any(m.delta for m in at.metric)
@@ -399,12 +399,11 @@ def test_the_comparison_fetch_asks_only_for_panels_a_page_overlays(monkeypatch):
     """Final review M3: no page draws a prior line on a `trend` panel, so none is fetched."""
     from lib import view
 
-    asked: list[str] = []
-    monkeypatch.setattr(view, "panels", lambda page, params: asked.extend(v for k, v in params if k == "panel") or [])
     m = {"panels": {"overview": [{"id": "k", "role": "kpi"}, {"id": "s", "role": "kpi_series"},
                                  {"id": "t", "role": "trend"}]}}
-    view.prior_panels("overview", m, [], date(2024, 1, 8), date(2024, 1, 14))
-    assert asked == ["k", "s"]
+    params = view.comparison_params("overview", m, [], date(2024, 1, 8), date(2024, 1, 14))
+    assert [v for k, v in params if k == "panel"] == ["k", "s"]
+    assert ("date_from", "2024-01-01") in params and ("date_to", "2024-01-07") in params
 
 
 def _figures(at) -> dict:
@@ -671,3 +670,23 @@ def test_the_sidebar_label_leads_with_the_short_date(dash_api, monkeypatch):
     _browser_holding(monkeypatch, STORED)
     at = run("pages/3_Chat.py")
     assert at.button(key="open_" + "a" * 32).label == "Oct 4 · What was spend by platform?"
+
+
+@pytest.mark.parametrize("page", ["Home.py", "pages/1_Channel_Deep_Dive.py"])
+def test_the_comparison_period_is_read_at_the_same_time_as_this_one(dash_api, monkeypatch, page):
+    """Live pass, 2026-10-06: a cold deep-dive switch waited for /panels, then for the comparison /panels. Each read
+    waits here until the other has started, so run one after the other they never finish."""
+    import threading
+
+    from lib import api_client
+
+    real, both = api_client.panels, threading.Barrier(2, timeout=10)
+
+    def overlapping(page_id, params):
+        both.wait()
+        return real(page_id, params)
+
+    monkeypatch.setattr(api_client, "panels", overlapping)
+    at = run(page, **({"ov_preset" if page == "Home.py" else "dd_preset": "Last 7 days"}))
+    assert not at.exception, at.exception
+    assert any(m.delta for m in at.metric)  # the comparison arrived
