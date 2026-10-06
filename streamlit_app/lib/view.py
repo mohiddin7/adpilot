@@ -18,8 +18,10 @@ from .controls import (
     clamp_pair,
     clamp_range,
     delta_pct,
+    distinct_names,
     keep_valid,
     md,
+    no_sales_line,
     preset_range,
     prior_range,
     to_params,
@@ -72,7 +74,8 @@ def options(page: str, params: tuple[tuple[str, str], ...]) -> dict:
 
 @st.cache_data(ttl=300, max_entries=200, show_spinner="Loading panels…")
 def panels(page: str, params: tuple[tuple[str, str], ...]) -> list[dict]:
-    return api_client.panels(page, list(params))
+    """Every panel's campaigns told apart by name (distinct_names), once, for every chart and table that shows them."""
+    return [{**p, "rows": distinct_names(p["rows"])} for p in api_client.panels(page, list(params))]
 
 
 @st.cache_data(ttl=300, max_entries=200, show_spinner=False)
@@ -210,14 +213,22 @@ def chart_card(p: dict | None, colors: dict, key: str | None = None, pick_z: boo
         if pick_z:
             zs = [c for c in p["columns"] if c in p["formats"] and c not in (chart["x"], chart["y"])]
             chart["z"] = st.selectbox("Metric", zs, format_func=label, key=f"z_{p['id']}") if len(zs) > 1 else chart["z"]
-        fig = build_figure(chart, p["rows"], p["formats"], colors, single)
+        rows = p["rows"]
+        if p.get("role") == "map":  # the map can't place a campaign with no sales; name them under it instead
+            rows = [r for r in rows if (r.get("conversions") or 0) > 0]
+        fig = build_figure(chart, rows, p["formats"], colors, single)
         if fig is not None:
             st.plotly_chart(fig, key=key or f"fig_{p['id']}")
+        if p.get("role") == "map" and (line := no_sales_line(p["rows"])):
+            st.caption(line)
         if p["truncated"]:
             st.caption("Showing the first rows only. Narrow the dates or filters to see the rest.")
 
 
-def table_card(p: dict | None, flagged: frozenset[str] = frozenset()) -> None:
+HIDDEN = {"campaign_id": None, "campaign_name_raw": None}  # keys, not for reading
+
+
+def table_card(p: dict | None, flagged: frozenset[tuple[str, str]] = frozenset()) -> None:
     """A formatted table; campaigns in the flag set get a text label (colour is never the only signal)."""
     if p is None:
         return
@@ -225,9 +236,9 @@ def table_card(p: dict | None, flagged: frozenset[str] = frozenset()) -> None:
     if not drawable(p):
         return
     df = pd.DataFrame(p["rows"])
-    if flagged and "campaign_name" in df.columns:
-        df.insert(0, "flag", ["⚠ flagged" if c in flagged else "" for c in df["campaign_name"]])
-    st.dataframe(df, hide_index=True, column_config=column_config(p["formats"]))
+    if flagged and {"platform", "campaign_id"} <= set(df.columns):
+        df.insert(0, "flag", ["⚠ flagged" if k in flagged else "" for k in zip(df["platform"], df["campaign_id"], strict=True)])
+    st.dataframe(df, hide_index=True, column_config={**column_config(p["formats"]), **HIDDEN})
 
 
 def leaderboard(p: dict | None, colors: dict) -> None:
@@ -262,6 +273,8 @@ def efficiency_map(details: list[dict], colors: dict) -> None:
                             "reference": "mean_y"}, rows, p["formats"], colors)
         if fig is not None:
             st.plotly_chart(fig, key="fig_dd_map")
+        if line := no_sales_line(p["rows"]):
+            st.caption(line)
 
 
 def timeline(p: dict | None) -> None:
@@ -278,11 +291,11 @@ def timeline(p: dict | None) -> None:
             st.plotly_chart(fig, key="fig_timeline")
 
 
-def flag_set(p: dict | None) -> frozenset[str]:
-    """Spec 3.1.5: the flag set is the attention panel's rows and nothing else."""
+def flag_set(p: dict | None) -> frozenset[tuple[str, str]]:
+    """Spec 3.1.5: the flag set is the attention panel's campaigns, by (platform, campaign id), and nothing else."""
     if not p or p["error"]:
         return frozenset()
-    return frozenset(r["campaign_name"] for r in p["rows"] if r.get("campaign_name"))
+    return frozenset((r.get("platform"), r["campaign_id"]) for r in p["rows"] if r.get("campaign_id"))
 
 
 def attention_list(p: dict | None, start: date, end: date, limit: int = 5) -> None:
@@ -301,7 +314,7 @@ def attention_list(p: dict | None, start: date, end: date, limit: int = 5) -> No
                           f"{r['flagged_days']} flagged day{'s' if r['flagged_days'] != 1 else ''} · "
                           f"about {md(fmt_currency(abs(cost)))} {'excess cost' if cost >= 0 else 'cheaper than usual'}")
             if action.button("Open in deep dive", key=f"open_{i}"):
-                st.session_state.update({"dd_platform": r["platform"], "dd_campaign_name": [r["campaign_name"]],
+                st.session_state.update({"dd_platform": r["platform"], "dd_campaign_name": [r.get("campaign_name_raw", r["campaign_name"])],
                                          "dd_preset": "Custom", "dd_custom": (start, end)})
                 st.switch_page("pages/1_Channel_Deep_Dive.py")
 
@@ -363,7 +376,11 @@ def what_changed(start: date, end: date, selected: dict[str, list[str]]) -> None
             st.caption("Couldn't check this period." if failed else "Nothing needs attention in this period.")
         for problem in out["problems"]:
             st.caption(md(problem))
-        st.page_link("pages/2_AI_Insights.py", label="All findings and why →")
+        if st.button("All findings and why →", key="all_findings"):  # the same window and platform, like "Open in deep dive"
+            platforms = selected.get("platform") or []
+            st.session_state.update({"ins_preset": "Custom", "ins_custom": (start, end),
+                                     "ins_platform": platforms[0] if len(platforms) == 1 else "All"})
+            st.switch_page("pages/2_AI_Insights.py")
 
 
 def filter_controls(page: str, m: dict, start: date, end: date, key: str,

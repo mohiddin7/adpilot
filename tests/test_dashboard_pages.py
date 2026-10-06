@@ -209,9 +209,10 @@ def _flag(monkeypatch, dash_api, platform="Google", excess_cost=812.5):
 
     def flagged(page, params):
         out = real(page, params)
+        ids = {r["campaign_name"]: r["campaign_id"] for p in out if p["role"] == "details" for r in p["rows"]}
         for p in out:
             if p["role"] == "attention":
-                p["rows"] = [{"platform": platform, "campaign_name": campaign, "worst": "CRITICAL", "flagged_days": 2,
+                p["rows"] = [{"platform": platform, "campaign_id": ids.get(campaign, "c1"), "campaign_name": campaign, "worst": "CRITICAL", "flagged_days": 2,
                               "last_flagged": "2024-01-29", "excess_cost": excess_cost}]
         return out
 
@@ -574,3 +575,12 @@ def test_overview_draws_the_budget_reallocation(dash_api):
     at = run("Home.py")
     assert not at.exception, at.exception
     assert "Budget reallocation" in " ".join(m.value for m in at.markdown)
+
+
+def test_all_findings_opens_insights_on_the_overviews_window(dash_api):
+    at = run("Home.py", ov_preset="Custom", ov_custom=(date(2024, 1, 10), date(2024, 1, 24)), ov_platform=["Google"])
+    at.button(key="all_findings").click().run()
+    assert not at.exception, at.exception
+    assert at.session_state["ins_preset"] == "Custom"
+    assert tuple(at.session_state["ins_custom"]) == (date(2024, 1, 10), date(2024, 1, 24))
+    assert at.session_state["ins_platform"] == "Google"

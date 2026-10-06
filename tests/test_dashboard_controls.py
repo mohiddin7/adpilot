@@ -13,8 +13,10 @@ from lib.controls import (
     clamp_range,
     context_line,
     delta_pct,
+    distinct_names,
     keep_valid,
     md,
+    no_sales_line,
     preset_range,
     prior_range,
     to_params,
@@ -141,3 +143,24 @@ def test_caveats_read_as_sentences(caveat, expected):
 ])
 def test_chat_columns_take_the_dashboards_formats(column, kind):
     assert format_for(column) == kind
+
+
+def test_campaigns_sharing_a_name_are_told_apart():
+    rows = [{"platform": "Google", "campaign_id": "g1", "campaign_name": "Shared"},
+            {"platform": "TikTok", "campaign_id": "t1", "campaign_name": "Shared"},
+            {"platform": "Google", "campaign_id": "g2", "campaign_name": "Solo"},
+            {"platform": "Google", "campaign_id": "g2", "campaign_name": "Solo"}]  # same campaign twice (two days)
+    out = distinct_names(rows)
+    assert [r["campaign_name"] for r in out] == ["Shared (Google)", "Shared (TikTok)", "Solo", "Solo"]
+    assert out[0]["campaign_name_raw"] == "Shared" and "campaign_name_raw" not in out[2]
+    same = distinct_names([{"platform": "Google", "campaign_id": i, "campaign_name": "X"} for i in ("g1", "g2")])
+    assert [r["campaign_name"] for r in same] == ["X (Google g1)", "X (Google g2)"]
+    assert distinct_names([{"campaign_name": "X"}, {"campaign_name": "X"}]) == [{"campaign_name": "X"}] * 2  # no ids
+
+
+def test_campaigns_with_no_sales_are_named_under_the_map():
+    rows = [{"campaign_name": n, "spend": s, "conversions": 0} for n, s in
+            (("A", 500.0), ("B", 1500.0), ("C*", 50.0), ("D", 20.0))] + [{"campaign_name": "E", "spend": 9.0, "conversions": 3}]
+    assert no_sales_line(rows) == md("4 campaigns spent $2.1K with no sales: B ($1.5K), A ($500), C* ($50) and 1 more.")
+    assert no_sales_line(rows[-1:]) is None
+    assert no_sales_line(rows[:1]) == md("1 campaign spent $500 with no sales: A ($500).")

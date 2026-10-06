@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
+from .formatters import fmt_currency
+
 MAX_RANGE_DAYS = 366  # the API's cap, adpilot/dashboard/filters.py
 QUESTION_LIMIT = 600  # sanitize_question's cap inside ask()
 PRESETS = ("Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", "Month to date", "Last 12 months", "Custom")
@@ -179,3 +181,35 @@ def caveat_text(caveat: str) -> str:
     if _CODE.match(caveat):
         return "The analyst noted a limitation with this answer."
     return caveat
+
+
+def distinct_names(rows: list[dict], column: str = "campaign_name") -> list[dict]:
+    """Two campaigns that share a name stay two on screen: " (Platform)" is added, or " (Platform id)" when they share
+    the platform too. The name as stored stays in `<column>_raw`, for filters. Rows without a campaign_id are left alone."""
+    owners: dict[str, set] = {}
+    for r in rows:
+        if r.get(column) is not None and r.get("campaign_id") is not None:
+            owners.setdefault(r[column], set()).add((r.get("platform"), r["campaign_id"]))
+    out = []
+    for r in rows:
+        mine = owners.get(r.get(column), set())
+        if len(mine) < 2 or r.get("campaign_id") is None:
+            out.append(r)
+            continue
+        platforms = [p for p, _ in mine]
+        tag = r.get("platform") if len(set(platforms)) == len(platforms) else f"{r.get('platform')} {r['campaign_id']}"
+        out.append({**r, column: f"{r[column]} ({tag})", f"{column}_raw": r[column]})
+    return out
+
+
+def no_sales_line(rows: list[dict], shown: int = 3) -> str | None:
+    """The campaigns the efficiency map can't place (no sales, so no cost per sale), biggest spend first, as
+    Markdown-safe text."""
+    none = sorted((r for r in rows if not r.get("conversions") and (r.get("spend") or 0) > 0), key=lambda r: -r["spend"])
+    if not none:
+        return None
+    named = ", ".join(f"{r['campaign_name']} ({fmt_currency(r['spend'])})" for r in none[:shown])
+    more = f" and {len(none) - shown} more" if len(none) > shown else ""
+    n = len(none)
+    return md(f"{n} campaign{'s' if n != 1 else ''} spent {fmt_currency(sum(r['spend'] for r in none))} "
+              f"with no sales: {named}{more}.")
