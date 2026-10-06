@@ -1,5 +1,5 @@
-# One worker on purpose: MODEL_RATE_LIMITER (20 rpm) and tools._EXEC_LOCK are process-level, so a second
-# worker would silently double the model rate and unprotect DuckDB. Scale with instances, not workers.
+# One worker on purpose: MODEL_RATE_LIMITER (20 rpm) is process-level, so a second worker would silently
+# double the model rate. Scale with instances, not workers.
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

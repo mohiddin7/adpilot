@@ -115,14 +115,14 @@ rate limit) are HTTP-level errors.
 ## One worker
 
 `uvicorn --workers 1` is not a suggestion — `MODEL_RATE_LIMITER` (the fixed 20 rpm bucket in
-`adpilot/core/models.py` that every model call blocks on) and `tools._EXEC_LOCK` (serializes DuckDB access)
-are process-level state, each a single Python object living in one process's memory. A second worker process
-gets its own copies of both, so it silently doubles the effective model rate and removes the DuckDB
-serialization — `ADPILOT_API_RPM` cannot compensate, since it governs a different limiter (`app.state.limiter`,
+`adpilot/core/models.py` that every model call blocks on) is process-level state, a single Python object
+living in one process's memory. A second worker process gets its own copy, so it silently doubles the effective
+model rate. DuckDB's connector serializes its one connection; BigQuery runs each query as its own job (a page's
+panels and filter options run up to 4 at a time). `ADPILOT_API_RPM` cannot compensate, since it governs a different limiter (`app.state.limiter`,
 one per process too). Scale by running more instances behind a load balancer, not more workers per instance
 — see [deploy.md](deploy.md). This is also why every query (DuckDB and BigQuery) is stopped at
-`pack.query_timeout_s` (30s for the ads pack): a query that held `_EXEC_LOCK` any longer would stall every
-other caller in the process.
+`pack.query_timeout_s` (30s for the ads pack): a slow query would otherwise tie up its connection (DuckDB) or a
+worker slot (BigQuery) indefinitely.
 
 ## Dashboard endpoints
 
