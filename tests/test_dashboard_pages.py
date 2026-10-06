@@ -591,7 +591,7 @@ def test_every_page_has_the_header(dash_api, page, title):
     at = run(page)
     assert not at.exception, at.exception
     header = next(m.value for m in at.markdown if m.value.startswith('<div class="ad-header"'))
-    assert "AdPilot" in header and f">{title}<" in header and "Data through 2024-01-30" in header
+    assert "AdPilot" not in header and f">{title}<" in header and "Data through 2024-01-30" in header  # logo has it
 
 
 STORED = json.dumps({"conversations": [{"id": "a" * 32, "title": "What was spend by platform?", "updated": "2026-10-04",

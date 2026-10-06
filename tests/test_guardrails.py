@@ -802,3 +802,76 @@ def test_two_blocking_waiters_share_one_window(monkeypatch):
         t.join(timeout=5)
     assert not any(t.is_alive() for t in threads)  # both eventually acquired
     assert held == [1, 1]  # the window never holds more than per_minute
+
+
+# ---- a bare table name on BigQuery (live audit, 2026-10-06: the model's first query almost always used one) ----
+BQ_ALLOWED = {"p.prod.fct_unified_marketing_performance", "p.stage.fct_anomaly_flags", "p.stage.tbl_forecast"}
+
+
+@pytest.mark.parametrize("sql,expected", [
+    ("SELECT platform FROM fct_unified_marketing_performance",
+     "SELECT platform FROM `p.prod.fct_unified_marketing_performance` LIMIT 100"),
+    ("SELECT g.spend FROM `fct_unified_marketing_performance` AS g JOIN fct_anomaly_flags f ON g.date = f.date LIMIT 5",
+     "SELECT g.spend FROM `p.prod.fct_unified_marketing_performance` AS g JOIN `p.stage.fct_anomaly_flags` f "
+     "ON g.date = f.date LIMIT 5"),
+    ("SELECT 'fct_unified_marketing_performance' AS t FROM FCT_UNIFIED_MARKETING_PERFORMANCE",  # a string is data
+     "SELECT 'fct_unified_marketing_performance' AS t FROM `p.prod.fct_unified_marketing_performance` LIMIT 100"),
+    ("SELECT x FROM (SELECT spend AS x FROM fct_unified_marketing_performance) LIMIT 500",
+     "SELECT x FROM (SELECT spend AS x FROM `p.prod.fct_unified_marketing_performance`) LIMIT 100"),
+])
+def test_a_bare_table_name_on_bigquery_becomes_its_one_allowed_table(sql, expected):
+    assert validate_sql(sql, BQ_ALLOWED, 100, dialect="bigquery") == expected
+
+
+@pytest.mark.parametrize("sql,allowed", [
+    ("SELECT 1 FROM users", BQ_ALLOWED),  # no allowed table ends in that name
+    ("SELECT 1 FROM t", {"p.a.t", "p.b.t"}),  # two allowed tables could be meant: never guess
+    ("SELECT 1 FROM prod.fct_unified_marketing_performance", BQ_ALLOWED),  # a partial path is not a bare name
+])
+def test_a_bare_name_that_is_not_exactly_one_allowed_table_is_still_refused(sql, allowed):
+    with pytest.raises(AdPilotError) as e:
+        validate_sql(sql, allowed, 100, dialect="bigquery")
+    assert e.value.kind == "SqlPolicy"
+
+
+def test_a_cte_named_like_a_table_is_not_rewritten():
+    sql = ("WITH fct_unified_marketing_performance AS (SELECT spend FROM fct_anomaly_flags) "
+           "SELECT spend FROM fct_unified_marketing_performance")
+    out = validate_sql(sql, BQ_ALLOWED, 100, dialect="bigquery")
+    assert out.count("`p.stage.fct_anomaly_flags`") == 1 and "p.prod" not in out
+
+
+def test_duckdb_names_are_left_as_written():
+    assert validate_sql("SELECT 1 FROM fct_unified_marketing_performance", ALLOWED, 100, dialect="duckdb") == (
+        "SELECT 1 FROM fct_unified_marketing_performance LIMIT 100")
+
+
+def test_a_with_inside_a_subquery_is_refused():
+    """Review of the bare-name rewrite: _tables knows only a leading WITH's CTEs, so a nested CTE named like a table
+    would be read as that table. Fail closed instead."""
+    with pytest.raises(AdPilotError) as e:
+        validate_sql("SELECT * FROM (WITH fct_anomaly_flags AS (SELECT * FROM fct_anomaly_flags WHERE x = 1) "
+                     "SELECT * FROM fct_anomaly_flags)", BQ_ALLOWED, 100, dialect="bigquery")
+    assert e.value.kind == "SqlPolicy" and "WITH" in e.value.message
+
+
+@pytest.mark.parametrize("sql,expected", [
+    ("SELECT fct_unified_marketing_performance.spend FROM fct_unified_marketing_performance LIMIT 99999",
+     "SELECT fct_unified_marketing_performance.spend FROM `p.prod.fct_unified_marketing_performance` LIMIT 100"),
+    ("WITH FCT_UNIFIED_MARKETING_PERFORMANCE AS (SELECT 1 AS x FROM fct_anomaly_flags) "
+     "SELECT x FROM fct_unified_marketing_performance",
+     "WITH FCT_UNIFIED_MARKETING_PERFORMANCE AS (SELECT 1 AS x FROM `p.stage.fct_anomaly_flags`) "
+     "SELECT x FROM fct_unified_marketing_performance LIMIT 100"),
+])
+def test_the_rewrite_keeps_offsets_qualified_columns_and_cte_names(sql, expected):
+    assert validate_sql(sql, BQ_ALLOWED, 100, dialect="bigquery") == expected
+
+
+def test_a_non_ascii_lookalike_is_not_matched_to_a_table():
+    with pytest.raises(AdPilotError):  # U+212A KELVIN SIGN lower-cases to "k"
+        validate_sql("SELECT 1 FROM `Key`", BQ_ALLOWED | {"p.stage.key"}, 100, dialect="bigquery")
+
+
+def test_with_as_part_of_a_type_is_not_a_cte():
+    assert validate_sql("SELECT CAST(d AS TIMESTAMP WITH TIME ZONE) FROM fct_unified_marketing_performance",
+                        BQ_ALLOWED, 100, dialect="bigquery").endswith("`p.prod.fct_unified_marketing_performance` LIMIT 100")

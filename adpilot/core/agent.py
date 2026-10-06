@@ -37,6 +37,13 @@ log = logging.getLogger(__name__)
 Agent.instrument_all()
 
 MAX_MODEL_CALLS = 4
+# Which SQL to write. Without it the free models wrote DuckDB date math on BigQuery ("Expected INTERVAL", audit
+# 2026-10-06) and spent a model call on the repair.
+DIALECTS = {
+    "bigquery": "BigQuery GoogleSQL. Date math: DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY). Write table names in full, "
+                "in backticks, exactly as listed under Tables.",
+    "duckdb": "DuckDB SQL. Date math: CURRENT_DATE - INTERVAL 7 DAY. Write table names exactly as listed under Tables.",
+}
 # The API's answers stop starting model calls after this; with one call still in flight (models.REQUEST_TIMEOUT_S) the
 # reply lands inside the dashboard's 180 s read timeout and Cloud Run's 300 s request limit.
 ANSWER_DEADLINE_S = 100
@@ -70,7 +77,8 @@ def build_agent(model: Model | str | None = None) -> Agent[AgentDeps, AnalystAns
     @agent.instructions
     def instructions(ctx: RunContext[AgentDeps]) -> str:
         pack = ctx.deps.pack
-        return f"{pack.system_prompt}\n\n# Tables\n{ctx.deps.schema_text}\n\n{pack.glossary}"
+        dialect = DIALECTS.get(ctx.deps.connector.dialect, ctx.deps.connector.dialect)
+        return f"{pack.system_prompt}\n\n# SQL dialect\n{dialect}\n\n# Tables\n{ctx.deps.schema_text}\n\n{pack.glossary}"
 
     register_tools(agent)
     return agent

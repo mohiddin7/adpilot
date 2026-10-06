@@ -169,9 +169,10 @@ def test_campaigns_with_no_sales_are_named_under_the_map():
     assert no_sales_line(rows[:1]) == md("1 campaign spent $500 with no sales: A ($500).")
 
 
-def test_the_header_names_the_product_the_page_and_the_data_date():
+def test_the_header_names_the_page_and_the_data_date():
+    """The product name lives in the sidebar logo (owner, 2026-10-06): the header is the page, in bold."""
     assert header_html("Overview", "2024-01-30") == (
-        '<div class="ad-header"><span class="ad-brand">AdPilot</span><span class="ad-page">Overview</span>'
+        '<div class="ad-header"><span class="ad-page">Overview</span>'
         '<span class="ad-asof">Data through 2024-01-30</span></div>')
     assert "ad-asof" not in header_html("Chat", None)
     assert "&lt;x&gt;" in header_html("<x>", None)
@@ -191,3 +192,18 @@ def test_every_table_column_has_a_plain_header():
     cfg = column_config({"spend": "currency"}, ["platform", "campaign_name", "sub_group_name", "spend"])
     assert [cfg[c]["label"] for c in ("platform", "campaign_name", "sub_group_name", "spend")] == [
         "Platform", "Campaign", "Ad set / ad group", "Spend"]
+
+
+def test_the_logo_uses_only_palette_colours():
+    import json
+    import re
+    from pathlib import Path
+
+    assets = Path(__file__).resolve().parents[1] / "streamlit_app" / "assets"
+    palette = json.loads((assets / "palette.json").read_text())
+    allowed = {v[t] for v in palette["colors"].values() for t in ("light", "dark")}
+    allowed |= {v for g in palette["grounds"].values() for v in g.values()}
+    for name in ("logo.svg", "logo-mark.svg"):
+        svg = (assets / name).read_text()
+        assert svg.startswith("<svg") and 'xmlns="http://www.w3.org/2000/svg"' in svg, name
+        assert set(re.findall(r"#[0-9a-fA-F]{6}", svg)) <= allowed, name

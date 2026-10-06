@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -34,11 +35,14 @@ from .glossary import METRIC_DEFINITIONS
 from .page_style import inject_page_style
 from .theme import SEVERITY, SYMBOLS, platform_colors
 
+ASSETS = Path(__file__).resolve().parents[1] / "assets"
+
 
 def start(title: str, icon: str) -> None:
     """Page setup and the header that stays on top. The data date comes from /dashboard (cached); if that read fails,
     the header just omits it: the page's own guarded(meta) says why."""
     st.set_page_config(page_title=f"{title} · AdPilot", page_icon=icon, layout="wide")
+    st.logo(str(ASSETS / "logo.svg"), size="large", icon_image=str(ASSETS / "logo-mark.svg"))  # the product's name
     inject_page_style()
     try:
         through = meta().get("date_max")

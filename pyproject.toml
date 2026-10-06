@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Agentic marketing analytics: data-agnostic AI analyst over BigQuery with evals and self-healing guardrails"
 requires-python = ">=3.11"
 dependencies = [
-  "streamlit>=1.50",
+  "streamlit>=1.64,<1.65",  # see requirements.txt
   "pandas>=2.2",
   "numpy>=2.0",
   "pyarrow>=17",

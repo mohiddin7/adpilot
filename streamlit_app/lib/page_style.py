@@ -34,8 +34,7 @@ _CSS = f"""
 .st-key-sticky_filters, [data-testid="stLayoutWrapper"]:has(> .st-key-sticky_filters) {{
   position: sticky; top: calc(var(--ad-top) + var(--ad-header)); z-index: 980; background: {GROUNDS_BG}; }}
 .ad-header {{ display: flex; align-items: baseline; gap: .75rem; height: var(--ad-header); border-bottom: 1px solid {GRID}; }}
-.ad-brand {{ font-weight: 700; font-size: 1.35rem; color: {ACCOUNT}; letter-spacing: -.01em; }}
-.ad-page {{ font-size: 1.35rem; color: {ACCOUNT}; }}
+.ad-page {{ font-weight: 700; font-size: 1.35rem; color: {ACCOUNT}; letter-spacing: -.01em; }}
 .ad-asof {{ margin-left: auto; color: {MUTED}; font-size: .875rem; }}
 </style>
 """
