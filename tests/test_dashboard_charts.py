@@ -302,3 +302,9 @@ def test_sankey_labels_are_plain_text():
     """Review focus 1: Plotly renders tags inside text; a campaign name is data."""
     s = build_figure(SANKEY, [{"source": "Google", "target": "<b>x</b>", "spend": 1.0}], None, {}).data[0]
     assert s.node.label[1] == "&lt;b&gt;x&lt;/b&gt;"
+
+
+def test_sankey_labels_have_no_text_halo():
+    """Checklist: Plotly's default sankey text shadow made labels look fuzzy; grey on pale flows read poorly."""
+    s = build_figure(SANKEY, [{"source": "Google", "target": "Brand_Q1", "spend": 1.0}], None, {}).data[0]
+    assert s.textfont.shadow == "none" and s.textfont.color == ACCOUNT

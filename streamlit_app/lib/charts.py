@@ -144,7 +144,7 @@ def _sankey(df: pd.DataFrame, source: str, target: str, value: str, formats: dic
     index = {("s", s): i for i, s in enumerate(sources)} | {("t", k): len(sources) + i for i, k in enumerate(tkeys)}
     tick, _hover, suffix = AXIS.get((formats or {}).get(value), ("", "", ""))
     fig = go.Figure(go.Sankey(
-        valueformat=tick, valuesuffix=suffix,
+        valueformat=tick, valuesuffix=suffix, textfont={"shadow": "none", "color": ACCOUNT},  # no halo; ink, not grey, on pale flows
         node={"label": [html.escape(str(lb)) for lb in labels], "color": node_colours, "pad": 14, "thickness": 14},
         link={"source": [index[("s", s)] for s in df[source]],
               "target": [index[("t", (t, c))] for t, c in zip(df[target], ids, strict=True)],
