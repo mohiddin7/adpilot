@@ -337,3 +337,26 @@ def test_a_small_number_axis_keeps_its_decimals():
     spec = {"chart_type": "scatter", "x": "frequency", "y": "ctr"}
     ax = build_figure(spec, rows, {"frequency": "number", "ctr": "percent"}).layout.xaxis
     assert ax.tickformat == ",.2~f" and ax.hoverformat == ",.2~f"
+
+
+def test_a_sankey_without_a_target_draws_nothing():
+    assert build_figure({"chart_type": "sankey", "x": "source", "y": "spend"}, [{"source": "Google", "spend": 1.0}]) is None
+
+
+def test_a_sankey_drops_null_and_non_positive_flows():
+    rows = [{"source": "Google", "target": "A", "spend": None}, {"source": "Google", "target": "B", "spend": 0},
+            {"source": "Google", "target": "C", "spend": 2.0}]
+    assert list(build_figure(SANKEY, rows).data[0].link.value) == [2.0]
+    assert build_figure(SANKEY, rows[:2]) is None
+
+
+def test_campaign_names_are_escaped_outside_the_sankey_too():
+    fig = build_figure({"chart_type": "bar_h", "x": "campaign_name", "y": "spend"},
+                       [{"campaign_name": "<b>x</b>", "spend": 1.0}])
+    assert list(fig.data[0].y) == ["&lt;b&gt;x&lt;/b&gt;"]
+
+
+def test_escaping_keeps_platform_colours():
+    fig = build_figure({"chart_type": "bar", "x": "platform", "y": "spend", "color": "platform"},
+                       [{"platform": "Google", "spend": 1.0}], None, {"Google": "#111111"})
+    assert fig.data[0].marker.color == "#111111"

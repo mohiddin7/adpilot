@@ -63,6 +63,8 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
     if not rows:
         return None
     df = pd.DataFrame(rows)
+    for c in df.columns:  # Plotly renders tags in any text; campaign names are data
+        df[c] = df[c].map(lambda v: html.escape(v) if isinstance(v, str) else v)
     kind, x, y = chart["chart_type"], chart["x"], chart["y"]
     size, z = chart.get("size"), chart.get("z")
     if any(c and c not in df.columns for c in (x, y, size, z, chart.get("target"))):
@@ -112,7 +114,10 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
                                                  "<extra></extra>"))
         return style(fig)
     elif kind == "sankey":
-        return _sankey(df, x, chart.get("target"), y, formats, colors)
+        if not chart.get("target"):
+            return None
+        df = df[pd.to_numeric(df[y], errors="coerce") > 0]  # a flow needs a positive value; NULL and 0 draw nothing
+        return _sankey(df, x, chart["target"], y, formats, colors) if len(df) else None
     else:
         return None
     if chart.get("reference") == "mean_y":
@@ -130,7 +135,7 @@ def _sankey(df: pd.DataFrame, source: str, target: str, value: str, formats: dic
     """Every source, then every target, as nodes. A target is one per (label, campaign_id), so two campaigns sharing a
     name stay two, each labelled with its source. A node naming a platform ("Google", "Now: Google") wears that
     platform's colour, any other node ink, and each flow is its source's colour, see-through. Labels are data, and
-    Plotly renders tags in text, so they are HTML-escaped."""
+    Plotly renders tags in text, so build_figure HTML-escapes them first."""
     # NaN never equals itself, so a missing id ("Other <platform>") must be None to work as a dict key
     ids = [None if pd.isna(v) else v for v in df["campaign_id"]] if "campaign_id" in df.columns else [None] * len(df)
     sources = list(dict.fromkeys(df[source]))
@@ -150,7 +155,7 @@ def _sankey(df: pd.DataFrame, source: str, target: str, value: str, formats: dic
     tick, _hover, suffix = AXIS.get((formats or {}).get(value), ("", "", ""))
     fig = go.Figure(go.Sankey(
         valueformat=tick, valuesuffix=suffix, textfont={"shadow": "none", "color": ACCOUNT},  # no halo; ink, not grey, on pale flows
-        node={"label": [html.escape(str(lb)) for lb in labels], "color": node_colours, "pad": 14, "thickness": 14},
+        node={"label": [str(lb) for lb in labels], "color": node_colours, "pad": 14, "thickness": 14},
         link={"source": [index[("s", s)] for s in df[source]],
               "target": [index[("t", (t, c))] for t, c in zip(df[target], ids, strict=True)],
               "value": [float(v) for v in df[value]],
