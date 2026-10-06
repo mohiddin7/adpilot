@@ -276,6 +276,23 @@ def test_a_failed_writer_means_templates_and_a_caveat(deps):
     assert deps.audit.calls[-1].confidence == 0.0
 
 
+
+def test_a_writer_past_its_deadline_means_templates_without_calling_a_model(deps, monkeypatch, no_waits):
+    """The writer (daily brief and /insights) had no time limit: a slow free-model chain could hold it for many
+    minutes. Past WRITER_DEADLINE_S no model call starts and the brief keeps its template wording."""
+    from adpilot.brief import writer
+    from adpilot.core.models import build_chain
+
+    calls = []
+    monkeypatch.setattr(writer, "WRITER_DEADLINE_S", 0)
+    i = item()
+    chain = build_chain(["slow"], lambda n: FunctionModel(lambda m, info: calls.append(1), model_name=n))
+    text, used, caveats = write(deps, chain, [i], [], [], "r")
+    assert calls == [] and used is None and caveats[0].startswith("BriefWriterFailed")
+    assert "took longer than" in deps.audit.calls[-1].caveats[0]
+    assert text[i.id] == {"title": i.title, "checked": i.checked, "do": i.do}
+
+
 # ---------- render ----------
 
 
@@ -527,3 +544,10 @@ def test_a_low_anomaly_keeps_its_own_action_and_a_why_in_its_direction():
     assert item.do == a.LOW_DO and "cheaper" in item.checked
     bad = a._anomaly_item("Google", "g1", "C", "low", [_flagged_day(a.split(NORMAL, PRICIER))], 100.0)
     assert bad.do == a.LOW_DO and bad.checked == a.NO_DAY_CAUSE
+
+
+def test_a_spend_mover_title_reads_as_plain_english():
+    """Live pass 2026-10-06: the title read 'Check why Google campaign "X"'s spend fell'."""
+    items = a.top_movers(camp([("Google", "g2", 1000, 100)]), camp([("Google", "g2", 5000, 100)]), T)
+    spend = next(i for i in items if i.id.endswith(":spend"))
+    assert spend.title == 'Check why the spend of Google campaign "g2_name" fell'
