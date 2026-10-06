@@ -261,6 +261,8 @@ def _tables(masked: str, code: str, dialect: str) -> tuple[list[tuple[str, int, 
     k, depth, open_from, groups = 0, 0, set(), []
     while k < len(toks):
         t = toks[k][1]
+        if t == "WITH" and word(k - 1) == "(":  # only a leading WITH's CTEs are tracked: a nested one could pass as a table
+            raise _refuse("A WITH inside a query is not supported; put every CTE in one leading WITH.")
         if t == "FROM" and (
             (groups and groups[-1])
             or (word(k - 1) == "DISTINCT" and (word(k - 2) == "IS" or (word(k - 2) == "NOT" and word(k - 3) == "IS")))
@@ -340,8 +342,9 @@ def validate_sql(sql: str, allowed_tables: set[str], max_rows: int, *, dialect: 
     if not tables:
         raise AdPilotError("SqlPolicy", "No table reference found.", hint=f"Allowed tables: {sorted(allowed_tables)}")
     full = _full_names(allowed_tables, dialect)
-    fixes = [(s, e, full[t.lower()]) for t, s, e in tables if t not in allowed_tables and t.lower() in full]
-    unknown = sorted({t for t, _, _ in tables if t not in allowed_tables and t.lower() not in full})
+    # ASCII only: Python lower-cases U+212A KELVIN SIGN to "k"; BigQuery would never resolve that name to the table.
+    fixes = [(s, e, full[t.lower()]) for t, s, e in tables if t not in allowed_tables and t.isascii() and t.lower() in full]
+    unknown = sorted({t for t, _, _ in tables if t not in allowed_tables and not (t.isascii() and t.lower() in full)})
     if unknown:
         raise AdPilotError(
             "SqlPolicy",

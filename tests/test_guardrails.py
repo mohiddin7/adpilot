@@ -844,3 +844,34 @@ def test_a_cte_named_like_a_table_is_not_rewritten():
 def test_duckdb_names_are_left_as_written():
     assert validate_sql("SELECT 1 FROM fct_unified_marketing_performance", ALLOWED, 100, dialect="duckdb") == (
         "SELECT 1 FROM fct_unified_marketing_performance LIMIT 100")
+
+
+def test_a_with_inside_a_subquery_is_refused():
+    """Review of the bare-name rewrite: _tables knows only a leading WITH's CTEs, so a nested CTE named like a table
+    would be read as that table. Fail closed instead."""
+    with pytest.raises(AdPilotError) as e:
+        validate_sql("SELECT * FROM (WITH fct_anomaly_flags AS (SELECT * FROM fct_anomaly_flags WHERE x = 1) "
+                     "SELECT * FROM fct_anomaly_flags)", BQ_ALLOWED, 100, dialect="bigquery")
+    assert e.value.kind == "SqlPolicy" and "WITH" in e.value.message
+
+
+@pytest.mark.parametrize("sql,expected", [
+    ("SELECT fct_unified_marketing_performance.spend FROM fct_unified_marketing_performance LIMIT 99999",
+     "SELECT fct_unified_marketing_performance.spend FROM `p.prod.fct_unified_marketing_performance` LIMIT 100"),
+    ("WITH FCT_UNIFIED_MARKETING_PERFORMANCE AS (SELECT 1 AS x FROM fct_anomaly_flags) "
+     "SELECT x FROM fct_unified_marketing_performance",
+     "WITH FCT_UNIFIED_MARKETING_PERFORMANCE AS (SELECT 1 AS x FROM `p.stage.fct_anomaly_flags`) "
+     "SELECT x FROM fct_unified_marketing_performance LIMIT 100"),
+])
+def test_the_rewrite_keeps_offsets_qualified_columns_and_cte_names(sql, expected):
+    assert validate_sql(sql, BQ_ALLOWED, 100, dialect="bigquery") == expected
+
+
+def test_a_non_ascii_lookalike_is_not_matched_to_a_table():
+    with pytest.raises(AdPilotError):  # U+212A KELVIN SIGN lower-cases to "k"
+        validate_sql("SELECT 1 FROM `Key`", BQ_ALLOWED | {"p.stage.key"}, 100, dialect="bigquery")
+
+
+def test_with_as_part_of_a_type_is_not_a_cte():
+    assert validate_sql("SELECT CAST(d AS TIMESTAMP WITH TIME ZONE) FROM fct_unified_marketing_performance",
+                        BQ_ALLOWED, 100, dialect="bigquery").endswith("`p.prod.fct_unified_marketing_performance` LIMIT 100")
