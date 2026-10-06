@@ -114,3 +114,20 @@ def test_no_pack_query_aggregates_one_of_its_own_output_names(pack):
                 if name.lower() in aliases:
                     offenders.append((label, name))
     assert offenders == []
+
+
+def _bq_sqls():
+    from adpilot.dashboard.config import load_dashboard
+
+    pack = load_pack("ads")
+    return [(p.id, p.sql) for p in load_dashboard(pack).panels] + [
+        (f"fallback_{i}", fq["sql"]) for i, fq in enumerate(pack.raw.get("fallback_queries", []))]
+
+
+@pytest.mark.parametrize("name,sql", _bq_sqls())
+def test_pack_sql_passes_the_guardrails_in_the_bigquery_dialect(name, sql):
+    from adpilot.core.guardrails import validate_sql
+
+    pack = load_pack("ads")
+    validate_sql(pack.render(sql, "bigquery", where="1 = 1"), pack.allowed_tables("bigquery"), 2001,
+                 dialect="bigquery")
