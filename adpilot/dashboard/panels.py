@@ -190,10 +190,22 @@ def filter_options(template: AgentDeps, cfg: DashboardConfig, page: str, flt: Fi
     categorical = {f.column for f in cfg.filters if f.type == "categorical"}
     declared = cfg.filters_for(page)
     asked = [f for f in declared if f.values is None]
-    found = _fan_out(template.connector.dialect,
-                     lambda f: _option(template, cfg, f, flt, _ancestors(cfg, f) if f.type == "categorical" else categorical),
-                     asked)
-    answers = dict(zip([f.column for f in asked], found, strict=True))
+    # One query per categorical filter; one per table for all its range filters (they share a WHERE), so the deep
+    # dive's dozen option reads are three, one round of the fan-out on BigQuery.
+    ranges: dict[str, list[FilterDef]] = {}
+    for f in asked:
+        if f.type == "range":
+            ranges.setdefault(f.tables[0], []).append(f)
+    jobs = [[f] for f in asked if f.type == "categorical"] + list(ranges.values())
+
+    def read(fs: list[FilterDef]) -> dict[str, dict]:
+        if fs[0].type == "categorical":
+            return {fs[0].column: _option(template, cfg, fs[0], flt, _ancestors(cfg, fs[0]))}
+        return _bounds(template, cfg, fs, flt, categorical)
+
+    answers: dict[str, dict] = {}
+    for part in _fan_out(template.connector.dialect, read, jobs):
+        answers.update(part)
     out = {f.column: {"values": list(f.values)} if f.values is not None else answers[f.column] for f in declared}
     if not any("error" in o for o in out.values()):
         cache.put(key, out)
@@ -210,21 +222,31 @@ def _ancestors(cfg: DashboardConfig, f: FilterDef) -> set[str]:
 
 
 def _option(template: AgentDeps, cfg: DashboardConfig, f: FilterDef, flt: Filters, only: set[str]) -> dict:
+    """A categorical filter's values, narrowed by its ancestors' choices only."""
     deps = fresh_deps(template)
     dialect, table = deps.connector.dialect, f.tables[0]
     where = build_where(cfg, table, deps.pack.raw["date_column"], flt, dialect, only=only)
-    if f.type == "categorical":
-        sql = f"SELECT DISTINCT {f.column} AS value FROM {{{table}}} WHERE {{where}} ORDER BY 1"
-    else:
-        sql = f"SELECT MIN({f.column}) AS lo, MAX({f.column}) AS hi FROM {{{table}}} WHERE {{where}}"
+    sql = f"SELECT DISTINCT {f.column} AS value FROM {{{table}}} WHERE {{where}} ORDER BY 1"
     res = execute(deps, deps.pack.render(sql, dialect, where=where), max_rows=OPTIONS_MAX_ROWS, max_bytes=cfg.max_bytes_billed)
     if isinstance(res, SqlError):
-        empty = {"values": []} if f.type == "categorical" else {}
-        return {**empty, "error": _safe_error(res.kind, res.message)}
-    if f.type == "categorical":
-        return {"values": [r["value"] for r in res.rows if r["value"] is not None], "truncated": res.truncated}
+        return {"values": [], "error": _safe_error(res.kind, res.message)}
+    return {"values": [r["value"] for r in res.rows if r["value"] is not None], "truncated": res.truncated}
+
+
+def _bounds(template: AgentDeps, cfg: DashboardConfig, fs: list[FilterDef], flt: Filters, only: set[str]) -> dict:
+    """Every range filter of one table in one query: {column: {"min", "max"}}, following every categorical choice.
+    A failed read is each of their errors."""
+    deps = fresh_deps(template)
+    dialect, table = deps.connector.dialect, fs[0].tables[0]
+    where = build_where(cfg, table, deps.pack.raw["date_column"], flt, dialect, only=only)
+    cols = ", ".join(f"MIN({f.column}) AS {f.column}__lo, MAX({f.column}) AS {f.column}__hi" for f in fs)
+    res = execute(deps, deps.pack.render(f"SELECT {cols} FROM {{{table}}} WHERE {{where}}", dialect, where=where),
+                  max_rows=OPTIONS_MAX_ROWS, max_bytes=cfg.max_bytes_billed)
+    if isinstance(res, SqlError):
+        error = _safe_error(res.kind, res.message)
+        return {f.column: {"error": error} for f in fs}
     row = res.rows[0] if res.rows else {}
-    return {"min": row.get("lo"), "max": row.get("hi")}
+    return {f.column: {"min": row.get(f"{f.column}__lo"), "max": row.get(f"{f.column}__hi")} for f in fs}
 
 
 def dashboard_meta(template: AgentDeps, cfg: DashboardConfig, cache: TtlCache) -> dict:

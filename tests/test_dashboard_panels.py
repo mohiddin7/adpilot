@@ -524,3 +524,33 @@ def test_a_campaign_with_no_revenue_has_no_roas_not_zero(pack, cfg):
     by_platform = {row["platform"]: row["roas"] for row in r.rows}
     assert all(row["roas"] is None or row["roas"] > 0 for row in r.rows) and by_platform["Google"] is not None
     assert [row["roas"] for row in r.rows if row["platform"] == "TikTok"] == [None] * 4
+
+
+def test_every_range_filter_on_a_table_is_read_in_one_query(deps, cfg, monkeypatch):
+    """Live pass 2026-10-06: the deep dive's /filters ran one MIN/MAX query per range filter (10 of its 12 queries,
+    three rounds of four on BigQuery). The bounds must not change."""
+    from adpilot.dashboard.filters import build_where
+
+    sqls: list[str] = []
+    real = panels.execute
+    monkeypatch.setattr(panels, "execute", lambda d, sql, **k: sqls.append(sql) or real(d, sql, **k))
+    out = filter_options(deps, cfg, "deep_dive", FLT, TtlCache(0))
+    ranges = [f for f in cfg.filters_for("deep_dive") if f.type == "range"]
+    assert len(ranges) > 1 and sum("MIN(" in s for s in sqls) == 1
+    where = build_where(cfg, "gold", "date", FLT, "duckdb", only={f.column for f in cfg.filters if f.type == "categorical"})
+    for f in ranges:  # the bounds a query of its own gives
+        own = real(fresh_deps(deps), deps.pack.render(
+            f"SELECT MIN({f.column}) AS lo, MAX({f.column}) AS hi FROM {{gold}} WHERE {{where}}", "duckdb", where=where))
+        assert (out[f.column]["min"], out[f.column]["max"]) == (own.rows[0]["lo"], own.rows[0]["hi"]), f.column
+
+
+def test_a_failed_range_query_is_each_range_filters_error(deps, cfg, monkeypatch):
+    real = panels.execute
+
+    def no_ranges(d, sql, **k):
+        return SqlError(kind="SqlSchema", message="boom") if "MIN(" in sql else real(d, sql, **k)
+
+    monkeypatch.setattr(panels, "execute", no_ranges)
+    out = filter_options(deps, cfg, "deep_dive", FLT, TtlCache(0))
+    assert out["spend"] == {"error": "SqlSchema: this panel could not be read"}
+    assert out["campaign_name"]["values"]  # the categorical options still load
