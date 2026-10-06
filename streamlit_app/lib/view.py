@@ -296,7 +296,7 @@ def timeline(p: dict | None) -> None:
         if fig is not None:
             fig.update_traces(marker={"size": 11})
             for trace in fig.data:
-                trace.marker.symbol = SYMBOLS.get(trace.name, "circle")
+                trace.marker.symbol = SYMBOLS.get(trace.name.upper(), "circle")  # build_figure title-cases the legend
             st.plotly_chart(fig, key="fig_timeline")
 
 

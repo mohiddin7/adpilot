@@ -315,3 +315,17 @@ def test_the_funnel_is_a_lighter_block_than_solid_ink():
     funnel = {"chart_type": "funnel", "x": "weekday", "y": "spend"}
     colour = build_figure(funnel, ROWS, None, COLORS_BY_PLATFORM).data[0].marker.color
     assert colour.startswith("rgba(") and colour.endswith(",0.75)")
+
+
+def test_a_severity_legend_reads_the_same_on_every_chart():
+    rows = [{"date": "2024-01-02", "campaign_name": "c", "severity": "SEVERE"}]
+    spec = {"chart_type": "scatter", "x": "date", "y": "campaign_name", "color": "severity"}
+    assert [t.name for t in build_figure(spec, rows, None, SEVERITY).data] == ["Severe"]
+
+
+def test_a_single_day_timeline_ticks_in_days_not_milliseconds():
+    """Live checklist: one flagged TikTok day ticked 23:59:59.999, 00:00:00.0005."""
+    rows = [{"date": "2024-01-18", "campaign_name": "c", "severity": "SEVERE"}]
+    spec = {"chart_type": "scatter", "x": "date", "y": "campaign_name", "color": "severity"}
+    ax = build_figure(spec, rows, None, SEVERITY).layout.xaxis
+    assert ax.dtick == 86400000 and ax.range is not None

@@ -91,6 +91,11 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
     elif kind in ("scatter", "bubble"):
         fig = px.scatter(df, x=x, y=y, color=color, size=size if kind == "bubble" else None, size_max=40,
                          hover_name=hover, **_colour(df, color, colors, single))
+        fig.for_each_trace(lambda t: t.update(name=t.name.title()) if t.name.isupper() else None)  # CRITICAL -> Critical
+        days = pd.to_datetime(df[x], errors="coerce", format="mixed").dt.normalize().dropna().unique()
+        if len(days) == 1 and pd.api.types.is_string_dtype(df[x]):  # one flagged day: a day either side, day ticks
+            fig.update_xaxes(range=[days[0] - pd.Timedelta(days=1), days[0] + pd.Timedelta(days=1)], dtick=86400000,
+                             tickformat="%b %-d")
     elif kind == "funnel":
         fig = go.Figure(go.Funnel(y=df[x], x=df[y], text=[fmt(v, (formats or {}).get(y)) for v in df[y]],
                                   textinfo="text+percent previous", marker={"color": _rgba(_one(colors, single), 0.75)}))  # lighter than solid
