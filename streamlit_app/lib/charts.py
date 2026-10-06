@@ -93,7 +93,7 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
                          hover_name=hover, **_colour(df, color, colors, single))
     elif kind == "funnel":
         fig = go.Figure(go.Funnel(y=df[x], x=df[y], text=[fmt(v, (formats or {}).get(y)) for v in df[y]],
-                                  textinfo="text+percent previous", marker={"color": _one(colors, single)}))
+                                  textinfo="text+percent previous", marker={"color": _rgba(_one(colors, single), 0.75)}))  # lighter than solid
         return style(fig)
     elif kind == "heatmap":
         grid = df.pivot_table(index=y, columns=x, values=z, aggfunc="sum")

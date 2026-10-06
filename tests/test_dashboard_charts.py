@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from lib.charts import add_markers, add_prior, build_figure, pacing_bullets
+from lib.charts import _rgba, add_markers, add_prior, build_figure, pacing_bullets
 from lib.formatters import fmt, label
 from lib.theme import (
     ACCOUNT,
@@ -119,7 +119,8 @@ def test_a_single_platform_view_draws_single_series_in_that_platforms_colour():
     line = build_figure({"chart_type": "line", "x": "weekday", "y": "cpa"}, ROWS, None, COLORS_BY_PLATFORM, single=google)
     bar = build_figure({"chart_type": "bar", "x": "weekday", "y": "spend"}, ROWS, None, COLORS_BY_PLATFORM, single=google)
     funnel = build_figure({"chart_type": "funnel", "x": "weekday", "y": "spend"}, ROWS, None, COLORS_BY_PLATFORM, single=google)
-    assert line.data[0].line.color == bar.data[0].marker.color == funnel.data[0].marker.color == google
+    assert line.data[0].line.color == bar.data[0].marker.color == google
+    assert funnel.data[0].marker.color == _rgba(google, 0.75)  # the funnel is the same colour, lighter
     default = build_figure({"chart_type": "line", "x": "weekday", "y": "cpa"}, ROWS, None, COLORS_BY_PLATFORM)
     assert default.data[0].line.color == ACCOUNT  # "All": the whole account, in ink (owner, final polish)
 
@@ -252,12 +253,12 @@ def test_a_whole_account_series_is_ink_never_a_platforms_colour(kind):
 def test_the_funnel_and_heatmap_follow_the_whole_account_rule():
     funnel = {"chart_type": "funnel", "x": "weekday", "y": "spend"}
     heat = {"chart_type": "heatmap", "x": "weekday", "y": "platform", "z": "spend"}
-    assert build_figure(funnel, ROWS, None, COLORS_BY_PLATFORM).data[0].marker.color == ACCOUNT
+    assert build_figure(funnel, ROWS, None, COLORS_BY_PLATFORM).data[0].marker.color == _rgba(ACCOUNT, 0.75)
     assert build_figure(heat, ROWS, None, COLORS_BY_PLATFORM).data[0].colorscale[-1][1] == ACCOUNT
     google = COLORS["forecast"]
-    assert build_figure(funnel, ROWS, None, COLORS_BY_PLATFORM, single=google).data[0].marker.color == google
+    assert build_figure(funnel, ROWS, None, COLORS_BY_PLATFORM, single=google).data[0].marker.color == _rgba(google, 0.75)
     assert build_figure(heat, ROWS, None, COLORS_BY_PLATFORM, single=google).data[0].colorscale[-1][1] == google
-    assert build_figure(funnel, ROWS).data[0].marker.color == COLORS["brand"]  # no pack colours: today's default
+    assert build_figure(funnel, ROWS).data[0].marker.color == _rgba(COLORS["brand"], 0.75)  # no pack colours: today's default
 
 
 def test_the_pacing_legend_never_shows_one_platforms_colour_for_all():
@@ -308,3 +309,9 @@ def test_sankey_labels_have_no_text_halo():
     """Checklist: Plotly's default sankey text shadow made labels look fuzzy; grey on pale flows read poorly."""
     s = build_figure(SANKEY, [{"source": "Google", "target": "Brand_Q1", "spend": 1.0}], None, {}).data[0]
     assert s.textfont.shadow == "none" and s.textfont.color == ACCOUNT
+
+
+def test_the_funnel_is_a_lighter_block_than_solid_ink():
+    funnel = {"chart_type": "funnel", "x": "weekday", "y": "spend"}
+    colour = build_figure(funnel, ROWS, None, COLORS_BY_PLATFORM).data[0].marker.color
+    assert colour.startswith("rgba(") and colour.endswith(",0.75)")
