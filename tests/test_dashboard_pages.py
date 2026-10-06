@@ -655,3 +655,19 @@ def test_blocked_or_broken_storage_keeps_the_chat_working(dash_api, monkeypatch,
     assert at.session_state["messages_chat"][-1]["answer"]["answer_md"]
     if isinstance(raw, dict):
         assert any("this tab only" in c.value for c in at.caption)
+
+
+def test_a_stored_conversation_with_a_broken_chart_and_a_duplicate_still_opens(dash_api, monkeypatch):
+    conv = json.loads(STORED)["conversations"][0]
+    conv["turns"][1]["answer"].update(data=[{"a": 1}], chart={"chart_type": "bar"})
+    _browser_holding(monkeypatch, json.dumps({"conversations": [conv, conv]}))
+    at = run("pages/3_Chat.py")
+    assert not at.exception, at.exception
+    at.button(key="open_" + "a" * 32).click().run()
+    assert not at.exception, at.exception
+
+
+def test_the_sidebar_label_leads_with_the_short_date(dash_api, monkeypatch):
+    _browser_holding(monkeypatch, STORED)
+    at = run("pages/3_Chat.py")
+    assert at.button(key="open_" + "a" * 32).label == "Oct 4 · What was spend by platform?"

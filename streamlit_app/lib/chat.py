@@ -166,6 +166,14 @@ def restore(conv: dict) -> None:
     st.session_state["session_id_chat"] = conv["id"]
 
 
+def short_date(day: str) -> str:
+    """'2026-10-05' -> 'Oct 5'; anything else as stored."""
+    try:
+        return date.fromisoformat(day).strftime("%b %-d")
+    except ValueError:
+        return day
+
+
 def forget(conv_id: str) -> None:
     st.session_state["chat_saved"] = saved_chats.forget(saved() or [], conv_id)
     if st.session_state.get("session_id_chat") == conv_id:
@@ -179,6 +187,7 @@ def remember_current() -> None:
                                                               date.today().isoformat())
 
 
+# ponytail: two tabs on the Chat page, the last to save wins; merge by id if anyone needs both.
 def sync_browser() -> None:
     """The last call on the Chat page, so the browser gets every change made above it. Nothing is written before the
     browser's copy arrives; when it does, it is loaded (plus this tab's open conversation) and the list redraws."""

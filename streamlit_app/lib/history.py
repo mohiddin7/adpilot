@@ -19,6 +19,10 @@ def _answer(a) -> dict | None:
     if not isinstance(a, dict):
         return None
     out = {k: v for k, v in a.items() if k in _ANSWER and isinstance(v, _ANSWER[k])}
+    chart = out.get("chart")
+    if chart is not None and not (all(isinstance(chart.get(k), str) for k in ("chart_type", "x", "y"))
+                                  and all(v is None or isinstance(v, str) for v in chart.values())):
+        del out["chart"]  # a chart that can't be drawn would raise on restore
     out["data"] = [r for r in out.get("data", [])[:MAX_ROWS] if isinstance(r, dict)]
     out["caveats"] = [c for c in out.get("caveats", []) if isinstance(c, str)]
     return out
@@ -38,16 +42,21 @@ def _turn(t) -> dict | None:
 
 def parse(raw) -> list[dict]:
     """The browser's copy → conversations, newest first. Whatever doesn't fit the shape is dropped, never raised."""
+    if isinstance(raw, str) and len(raw) > 4 * MAX_BYTES:
+        return []
     try:
         convs = json.loads(raw).get("conversations") if isinstance(raw, str) and raw else []
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, RecursionError):
         return []
-    out = []
+    out, seen = [], set()
     for c in convs if isinstance(convs, list) else []:
         if not isinstance(c, dict) or not isinstance(c.get("id"), str) or not _ID.match(c["id"]):
             continue
+        if c["id"] in seen:
+            continue
         turns = [t for t in map(_turn, c["turns"]) if t] if isinstance(c.get("turns"), list) else []
         if turns:
+            seen.add(c["id"])
             out.append({"id": c["id"], "title": str(c.get("title") or "")[:TITLE_CHARS] or "Untitled",
                         "updated": str(c.get("updated") or "")[:10], "turns": turns})
     return out[:MAX_CONVERSATIONS]

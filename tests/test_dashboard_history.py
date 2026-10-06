@@ -63,7 +63,30 @@ def test_answers_keep_at_most_200_rows():
                                  '{"conversations": [{"id": "../etc", "turns": []}]}',
                                  '{"conversations": [{"id": "' + A + '", "turns": [{"role": "system", "content": "x"}]}]}',
                                  json.dumps({"conversations": [{"id": A, "turns": [{"role": "user", "content": 5}]}]}),
-                                 {"unavailable": True}])
+                                 {"unavailable": True}, "[" * 200_000, "x" * (4 * history.MAX_BYTES + 1)])
 def test_anything_unexpected_in_the_browser_reads_as_no_conversations(raw):
     """Review focus 2: another version, a hand edit or junk never raises."""
     assert history.parse(raw) == []
+
+
+def _with_chart(chart):
+    return history.parse(json.dumps({"conversations": [{"id": A, "turns": [
+        {"role": "assistant", "content": "x", "answer": {"answer_md": "m", "data": [{"a": 1}], "chart": chart}}]}]}))[0]["turns"][0]["answer"]
+
+
+@pytest.mark.parametrize("chart", [{}, {"chart_type": "bar"}, {"chart_type": "bar", "x": 1, "y": "b"},
+                                   {"chart_type": "bar", "x": "a", "y": "b", "color": 5}])
+def test_a_stored_chart_that_cannot_be_drawn_is_dropped(chart):
+    assert "chart" not in _with_chart(chart)
+
+
+def test_a_valid_stored_chart_is_kept():
+    chart = {"chart_type": "bar", "x": "a", "y": "b", "color": None, "title": "T"}
+    assert _with_chart(chart)["chart"] == chart
+
+
+def test_duplicate_ids_keep_the_first():
+    turns = [{"role": "user", "content": "q"}]
+    raw = json.dumps({"conversations": [{"id": A, "title": "first", "turns": turns},
+                                        {"id": A, "title": "second", "turns": turns}]})
+    assert [c["title"] for c in history.parse(raw)] == ["first"]

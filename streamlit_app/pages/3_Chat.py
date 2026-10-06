@@ -19,7 +19,8 @@ with st.sidebar:
         st.caption("Chats stay in this tab only: this browser doesn't allow saved data.")
     for conv in chat.saved() or []:
         left, right = st.columns([5, 1])
-        if left.button(f"{md(conv['title'])} · {conv['updated']}", key=f"open_{conv['id']}", width="stretch"):
+        if left.button(f"{chat.short_date(conv['updated'])} · {md(conv['title'])}", key=f"open_{conv['id']}",
+                     help=conv["updated"], width="stretch"):
             chat.restore(conv)
             st.rerun()
         if right.button("✕", key=f"del_{conv['id']}", help="Delete this chat"):
