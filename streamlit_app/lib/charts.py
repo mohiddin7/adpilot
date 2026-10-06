@@ -83,7 +83,7 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
     elif kind == "bar_h":
         fig = px.bar(df, x=y, y=x, color=color, orientation="h", **_colour(df, color, colors, single))
         fig.update_yaxes(autorange="reversed")
-        if color == x:  # bars coloured by their own label need no legend
+        if color == x or _one_platform(df, color):  # bars named by their own label, or one platform in view
             fig.update_layout(showlegend=False)
         return style(fig, formats, x=y)
     elif kind == "line":
@@ -122,7 +122,24 @@ def build_figure(chart: dict, rows: list[dict], formats: dict | None = None, col
         return None
     if chart.get("reference") == "mean_y":
         _reference(fig, df, y, size, formats, quadrants=kind == "bubble", x=x)
+    if kind in ("scatter", "bubble") and _one_platform(df, color):
+        fig.update_layout(showlegend=False)
     return style(fig, formats, x=x, y=y)
+
+
+def _one_platform(df: pd.DataFrame, color: str | None) -> bool:
+    """A legend of one platform repeats what the page already says (a one-platform deep dive)."""
+    return color == "platform" and df[color].nunique() == 1
+
+
+SEVERITY_ORDER = ("MODERATE", "SEVERE", "CRITICAL")
+
+
+def severity_order(fig: go.Figure) -> go.Figure:
+    """Severity traces mildest first, whatever order the rows came in, so every chart's legend reads the same way."""
+    fig.data = tuple(sorted(fig.data, key=lambda t: SEVERITY_ORDER.index(t.name.upper())
+                            if t.name and t.name.upper() in SEVERITY_ORDER else len(SEVERITY_ORDER)))
+    return fig
 
 
 def _rgba(hex_: str, alpha: float) -> str:
