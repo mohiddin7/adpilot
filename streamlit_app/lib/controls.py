@@ -125,6 +125,7 @@ def md(text: str) -> str:
 
 
 _FENCE = re.compile(r"^\s{0,3}(```|~~~)")
+_CODE_SPAN = re.compile(r"`[^`]*`")
 _ATX = re.compile(r"^\s{0,3}#{1,6}(?:\s+(.*?))?\s*#*\s*$")
 _UNDERLINE = re.compile(r"^\s{0,3}(=+|-+|(?:\*\s*){3,})\s*$")
 
@@ -150,10 +151,11 @@ def answer_md(text: str) -> str:
                 prose.append(len(out))
             line = line.replace("$", "\\$")
         out.append(line)
+    bare = {i: _CODE_SPAN.sub(lambda m: " " * len(m.group()), out[i]) for i in prose}  # markers in `code` don't count
     for marker in ("**", "__"):
-        if sum(out[i].count(marker) for i in prose) % 2:
-            i = max(i for i in prose if marker in out[i])
-            at = out[i].rfind(marker)
+        if sum(bare[i].count(marker) for i in prose) % 2:
+            i = max(i for i in prose if marker in bare[i])
+            at = bare[i].rfind(marker)
             out[i] = f"{out[i][:at]}\\{marker[0]}\\{marker[1]}{out[i][at + 2:]}"
     return "\n".join(out)
 

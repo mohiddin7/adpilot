@@ -111,6 +111,7 @@ def test_md_shows_data_as_typed():
     ("# Title\nbody", "**Title**\nbody"),
     ("### Spend by **platform** ###", "**Spend by platform**"),
     ("**Spend rose 5%", "\\*\\*Spend rose 5%"),
+    ("Spend `a**b` rose **5%** today", "Spend `a**b` rose **5%** today"),  # ** inside a code span is not a marker
     ("You spent $5K", "You spent \\$5K"),
     ("```sql\n# not a heading\nSELECT '$1', '**'\n```", "```sql\n# not a heading\nSELECT '$1', '**'\n```"),  # review focus 5
     ("| a | b |\n|---|---|\n| 1 | 2 |", "| a | b |\n|---|---|\n| 1 | 2 |"),
