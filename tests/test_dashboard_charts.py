@@ -360,3 +360,25 @@ def test_escaping_keeps_platform_colours():
     fig = build_figure({"chart_type": "bar", "x": "platform", "y": "spend", "color": "platform"},
                        [{"platform": "Google", "spend": 1.0}], None, {"Google": "#111111"})
     assert fig.data[0].marker.color == "#111111"
+
+
+@pytest.mark.parametrize("kind", ["bar_h", "bubble"])
+def test_one_platform_in_view_needs_no_platform_legend(kind):
+    """Live pass 2026-10-06: the Google deep dive's leaderboard and map each carried a legend of one entry, "Google"."""
+    rows = [{"campaign_name": c, "platform": "Google", "spend": s, "cpa": 5.0, "conversions": 9} for c, s in (("a", 1), ("b", 2))]
+    chart = {"chart_type": kind, "x": "campaign_name" if kind == "bar_h" else "spend", "y": "spend" if kind == "bar_h" else "cpa",
+             "color": "platform", "size": "conversions"}
+    assert build_figure(chart, rows, None, COLORS_BY_PLATFORM).layout.showlegend is False
+    two = rows + [{**rows[0], "platform": "TikTok", "campaign_name": "c"}]
+    assert build_figure(chart, two, None, COLORS_BY_PLATFORM).layout.showlegend is not False
+
+
+def test_the_severity_legend_reads_in_order_of_severity():
+    """Live pass 2026-10-06: the anomaly timeline's legend order followed the rows (Moderate, Critical, Severe)."""
+    from lib.charts import severity_order
+
+    rows = [{"date": d, "campaign_name": "c", "severity": s} for d, s in
+            (("2026-10-01", "MODERATE"), ("2026-10-02", "CRITICAL"), ("2026-10-03", "SEVERE"))]
+    fig = severity_order(build_figure({"chart_type": "scatter", "x": "date", "y": "campaign_name", "color": "severity"},
+                                      rows, None, SEVERITY))
+    assert [t.name for t in fig.data] == ["Moderate", "Severe", "Critical"]

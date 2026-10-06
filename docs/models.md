@@ -118,6 +118,6 @@ JUDGE_LLM_MODELS=vendor/model:free ADPILOT_AUDIT=memory \
   adpilot eval --tier model --family narrative --limit 3 --repeat 1 --out /tmp/probe
 ```
 
-Then change the defaults in `adpilot/core/models.py` / `evals/judge.py` and this page, and re-baseline the model tier.
+Then change the defaults in `adpilot/core/models.py` / `evals/judge.py` and this page. The next nightly scorecard you merge becomes the model tier's new baseline.
 
 > ponytail: manual re-probe. Promote the throwaway probe script to `adpilot models probe` when a second free slug disappears.

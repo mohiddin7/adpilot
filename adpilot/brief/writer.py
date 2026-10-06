@@ -26,12 +26,14 @@ from adpilot.core.audit import (
     summarize_messages,
 )
 from adpilot.core.guardrails import redact_output
-from adpilot.core.models import NoNullSchemas
+from adpilot.core.models import DEADLINE, NoNullSchemas
 from adpilot.core.tools import AgentDeps
 
 # Not a digit glued to a letter ("Q3" is not a figure), and a comma only as a thousands separator.
 _NUM = re.compile(r"(?<![A-Za-z_\d])\d+(?:,\d{3})*(?:\.\d+)?")
 LIMITS = {"headline": 100, "story": 500, "title": 90, "checked": 300, "do": 200}
+# The writer only rewords: past this no model call starts and the brief (or /insights) keeps its template wording.
+WRITER_DEADLINE_S = 90
 
 INSTRUCTIONS = """\
 You write the daily ad brief for the person who owns the budget. They are busy and not an analyst.
@@ -113,12 +115,15 @@ def write(deps: AgentDeps, model: Model | None, items: list[Item], ahead: list[s
                                         model_settings={"max_tokens": 1500})
     started, t0 = datetime.now(UTC), time.perf_counter()
     written, messages, usage, kind, detail = None, [], None, None, ""
+    limit = DEADLINE.set((time.monotonic() + WRITER_DEADLINE_S, WRITER_DEADLINE_S))
     try:
         result = agent.run_sync(json.dumps(brief_facts, indent=1))
         written, messages = result.output, result.new_messages()
         usage = result.usage() if callable(result.usage) else result.usage
     except Exception as exc:  # noqa: BLE001 — a failed call means template wording, never a lost brief
         kind, detail = _classify(exc)
+    finally:
+        DEADLINE.reset(limit)
     deps.audit.record(build_record(
         trace_id=new_trace_id(), ts=started, latency_s=time.perf_counter() - t0,
         question="brief writer over " + ", ".join(i.id for i in items),

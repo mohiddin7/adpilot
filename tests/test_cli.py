@@ -56,7 +56,7 @@ def test_eval_check_cases_prints_no_audit_notice():
 
 
 def test_eval_summary_uses_the_baseline_it_gated_against(tmp_path):
-    assert main(["eval", "--tier", "deterministic", "--out", str(tmp_path), "--baseline-update"], out=io.StringIO()) == 0
+    assert main(["eval", "--tier", "deterministic", "--out", str(tmp_path)], out=io.StringIO()) == 0
     out = io.StringIO()
     assert main(["eval", "--tier", "deterministic", "--out", str(tmp_path)], out=out) == 0
     assert "(no baseline)" not in out.getvalue()

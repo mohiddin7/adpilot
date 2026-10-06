@@ -11,7 +11,7 @@ import streamlit as st
 
 from . import api_client
 from .api_client import ApiError
-from .charts import add_markers, add_prior, build_figure, pacing_bullets
+from .charts import add_markers, add_prior, build_figure, pacing_bullets, severity_order
 from .controls import (
     LOWER_IS_BETTER,
     MAX_RANGE_DAYS,
@@ -336,6 +336,7 @@ def timeline(p: dict | None) -> None:
             return
         fig = build_figure(p["chart"], p["rows"], p["formats"], SEVERITY)
         if fig is not None:
+            severity_order(fig)
             fig.update_traces(marker={"size": 11})
             for trace in fig.data:
                 trace.marker.symbol = SYMBOLS.get(trace.name.upper(), "circle")  # build_figure title-cases the legend
@@ -395,7 +396,9 @@ def pacing_card(pc: dict, colors: dict | None = None) -> None:
                            f"({r['off_pct']:+.0f}% vs budget)")
 
 
-SEVERITY_BADGE = {"high": "🔴 HIGH", "medium": "🟠 MEDIUM", "low": "⚪ LOW"}
+# "priority": the size of what is at stake, not the direction of the finding (a LOW badge on a costly-day anomaly read as
+# "low cost", owner 2026-10-06)
+SEVERITY_BADGE = {"high": "🔴 High priority", "medium": "🟠 Medium priority", "low": "⚪ Low priority"}
 
 
 def stake_label(card: dict) -> str:

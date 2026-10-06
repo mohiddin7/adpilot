@@ -499,7 +499,7 @@ def top_movers(cur: pd.DataFrame, prev: pd.DataFrame, t: dict) -> list[Item]:
                         else f"{subject} spent {money(s1)}, {pct(d / s0)} from {money(s0)} the period before.")
             items.append(Item(
                 id=f"mover:{plat}:{cid}:spend", kind="mover", subject=subject, stake=abs(d), happened=happened,
-                title=f"Check why {subject}'s spend {'rose' if d > 0 else 'fell'}",
+                title=f"Check why the spend of {subject} {'rose' if d > 0 else 'fell'}",
                 checked="Spend moved more than usual between the two periods.",
                 do="Confirm the change was intended; if not, check the campaign's budget, bids and schedule.",
                 confidence="high (spend is exact)", check_line="",

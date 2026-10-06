@@ -321,7 +321,7 @@ def test_card_text_shows_dollar_amounts_literally(dash_api, monkeypatch):
     at = run("pages/2_AI_Insights.py")
     assert not at.exception, at.exception
     assert any("\\$1.2K" in m.value for m in at.markdown)
-    assert any("HIGH" in m.value for m in at.markdown)  # a text badge, not colour alone
+    assert any("High priority" in m.value for m in at.markdown)  # a text badge, not colour alone
 
 
 def test_ask_in_chat_goes_to_this_pages_chat(dash_api, monkeypatch):
@@ -443,8 +443,9 @@ def test_a_card_says_what_its_stake_is_and_only_losses_are_summed(dash_api, monk
     assert not at.exception, at.exception
     shown = [m.value for m in at.markdown]
     assert "**2 findings · about \\$5.0K at stake**" in shown  # not 5,000 + 1,234.5
-    assert any(m.endswith("HIGH · about \\$5.0K at stake") for m in shown)
-    assert any(m.endswith("HIGH · about \\$1.2K to reallocate") for m in shown)
+    # "priority", so a LOW badge on a costly-day anomaly does not read as "low cost" (owner, 2026-10-06)
+    assert any(m.endswith("High priority · about \\$5.0K at stake") for m in shown)
+    assert any(m.endswith("High priority · about \\$1.2K to reallocate") for m in shown)
     assert shown.count("Also: It also paid \\$28.39 per sale, +38% from \\$20.60.") == 1
 
 

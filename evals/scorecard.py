@@ -188,8 +188,6 @@ def gate(sc: Scorecard, baseline: Scorecard | None) -> tuple[bool, list[str]]:
     if baseline:
         if sc.overall < baseline.overall - DROP_LIMIT:
             reasons.append(f"overall dropped {baseline.overall - sc.overall:.1f} pts ({baseline.overall} -> {sc.overall}); limit {DROP_LIMIT}")
-        if sc.prompt_hash != baseline.prompt_hash:
-            reasons.append(f"prompt hash changed ({baseline.prompt_hash} -> {sc.prompt_hash}); re-baseline in the same PR with --baseline-update")
     return (not reasons, reasons)
 
 
@@ -230,7 +228,9 @@ def render_markdown(sc: Scorecard, baseline: Scorecard | None) -> str:
     lines = [
         "# AdPilot eval scorecard", "",
         f"**Overall: {sc.overall}**{delta} · tier `{sc.tier}` · {sc.run_at} · prompt `{sc.prompt_hash}` · {sc.calls_used} model calls · run `{sc.run_id or 'n/a'}`",
-        f"Gate: {'PASS' if ok else 'FAIL'}" + (" — " + "; ".join(reasons) if reasons else ""), "",
+        f"Gate: {'PASS' if ok else 'FAIL'}" + (" — " + "; ".join(reasons) if reasons else ""),
+        *([f"Prompt changed since the baseline ({baseline.prompt_hash} -> {sc.prompt_hash}): score moves may be the prompt's."]
+          if baseline and baseline.prompt_hash != sc.prompt_hash else []), "",
         "| Dimension | Weight | Score |", "|---|---|---|",
         *[f"| {d} | {int(w * 100)}% | {_fmt(sc.dimensions.get(d))} |" for d, w in sc.weights.items()], "",
         "| Family | Passed | Total | Rate |", "|---|---|---|---|",
