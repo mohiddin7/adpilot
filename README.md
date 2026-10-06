@@ -1,6 +1,6 @@
 # AdPilot
 
-![ci](https://github.com/mohiddin7/adpilot/actions/workflows/ci.yml/badge.svg) ![evals](https://img.shields.io/badge/evals-90%25-brightgreen)
+![ci](https://github.com/mohiddin7/adpilot/actions/workflows/ci.yml/badge.svg) ![evals](https://img.shields.io/badge/evals-84%25-brightgreen)
 
 **An agentic analytics platform for marketing data.** Unifies multi-channel ad performance in a BigQuery lakehouse, enriches it with anomaly detection, forecasting and budget optimization, and puts an AI analyst on top that answers questions in plain English — with guardrails, self-healing SQL and an evaluation harness.
 
