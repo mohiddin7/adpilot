@@ -127,7 +127,7 @@ other caller in the process.
 ## Dashboard endpoints
 
 The Streamlit dashboard's only data source. Same `X-API-Key`; a separate rate bucket (`ADPILOT_DASHBOARD_RPM`,
-default 120/min) so browsing never uses up the chat's `ADPILOT_API_RPM`. All four return `404` when the pack has no
+default 120/min) so browsing never uses up the chat's `ADPILOT_API_RPM`. All five return `404` when the pack has no
 `dashboard:` section.
 
 | Endpoint | Returns |
