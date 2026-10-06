@@ -8,19 +8,36 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Hashable
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, timedelta
+from typing import TypeVar
 
 from pydantic import BaseModel
 
 from adpilot.brief import load, settings
 from adpilot.brief.analyses import pace_numbers
-from adpilot.core.chart import ChartSpec, validate_spec
+from adpilot.core.chart import PanelChartSpec, validate_spec
 from adpilot.core.errors import AdPilotError
 from adpilot.core.runtime import fresh_deps
 from adpilot.core.tools import AgentDeps, SqlError, execute
 from adpilot.dashboard.config import DashboardConfig, FilterDef, PanelDef
-from adpilot.dashboard.filters import Filters, build_where
+from adpilot.dashboard.filters import FilterError, Filters, build_where
 
 log = logging.getLogger(__name__)
+
+T, R = TypeVar("T"), TypeVar("R")
+# Per request. Cloud Run runs 4 requests per instance and at most 2 instances, so at most 32 BigQuery jobs at once,
+# far under the project's concurrent-query quota.
+PANEL_WORKERS = 4
+
+
+def _fan_out(dialect: str, fn: Callable[[T], R], items: list[T]) -> list[R]:
+    """fn over items, results in item order. Concurrent on BigQuery: each query is its own job, the client is
+    thread-safe. Sequential on DuckDB: its one connection runs one query at a time anyway."""
+    if dialect != "bigquery" or len(items) < 2:
+        return [fn(i) for i in items]
+    with ThreadPoolExecutor(max_workers=min(PANEL_WORKERS, len(items))) as pool:
+        return list(pool.map(fn, items))
 
 OPTIONS_MAX_ROWS = 500
 # Kinds our own guards raise with fixed, safe-to-show text (adpilot/core/guardrails.py). Everything else reaching
@@ -64,12 +81,14 @@ class PanelResult(BaseModel):
     title: str
     kind: str
     table: str
-    chart: ChartSpec | None = None
+    role: str
+    chart: PanelChartSpec | None = None
     columns: list[str] = []
     rows: list[dict] = []
     truncated: bool = False
     note: str = ""
     error: str | None = None
+    formats: dict[str, str] = {}
 
 
 def panel_applies(panel: PanelDef, flt: Filters) -> bool:
@@ -86,11 +105,16 @@ def run_panel(template: AgentDeps, cfg: DashboardConfig, panel: PanelDef, flt: F
     query did not return — comes back as this panel's `error`, so one bad panel never blanks the page."""
     deps = fresh_deps(template)  # a fresh SQL budget per panel: a page has more panels than a question has queries
     dialect = deps.connector.dialect
-    result = PanelResult(id=panel.id, title=panel.title, kind=panel.kind, table=panel.table)
+    result = PanelResult(id=panel.id, title=panel.title, kind=panel.kind, table=panel.table, role=panel.role,
+                          formats=dict(panel.formats))
     where = build_where(cfg, panel.table, deps.pack.raw["date_column"], flt, dialect)
-    res = execute(deps, deps.pack.render(panel.sql, dialect, where=where), max_rows=cfg.max_rows)
+    res = execute(deps, deps.pack.render(panel.sql, dialect, where=where), max_rows=cfg.max_rows,
+                  max_bytes=cfg.max_bytes_billed)
     if isinstance(res, SqlError):
         return result.model_copy(update={"error": _safe_error(res.kind, res.message)})
+    missing = sorted(set(panel.formats) - set(res.columns))
+    if missing:
+        return result.model_copy(update={"error": f"formats: column(s) {missing} not in result"})
     chart = None
     if panel.chart is not None:
         try:
@@ -103,21 +127,55 @@ def run_panel(template: AgentDeps, cfg: DashboardConfig, panel: PanelDef, flt: F
     })
 
 
+def last_week(template: AgentDeps, cfg: DashboardConfig, cache: TtlCache, flt: Filters) -> Filters:
+    """The flag rule (spec 3.1.5): an attention panel reads the last 7 days of the flags' horizon — the newest day
+    less mature_lag_days, where anomaly flags stop and /insights' as_of sits — whatever window the viewer picked.
+    Platform and campaign choices still apply."""
+    try:
+        lag = settings(template.pack)[0]["mature_lag_days"]
+    except ValueError:  # a bad `briefing:` is pacing's problem to report; the anchor just uses the newest day
+        lag = 0
+    hi = date.fromisoformat(dashboard_meta(template, cfg, cache)["date_max"]) - timedelta(days=lag)
+    return dataclasses.replace(flt, date_from=hi - timedelta(days=6), date_to=hi)
+
+
 def run_page(template: AgentDeps, cfg: DashboardConfig, page: str, flt: Filters, cache: TtlCache,
              ids: tuple[str, ...] = ()) -> list[PanelResult]:
     """The page's panels that apply to this selection (or only `ids`), in pack order. Cached per panel, and only
-    when that panel succeeded, so one always-failing panel is retried every load without evicting the rest."""
+    when that panel succeeded, so one always-failing panel is retried every load without evicting the rest.
+    A `role: attention` panel ignores the viewer's date range and reads the last 7 days instead (last_week).
+    The attention anchor is read once, before the panels fan out."""
     wanted = [p for p in cfg.panels_for(page) if (not ids or p.id in ids) and panel_applies(p, flt)]
-    out = []
-    for p in wanted:
-        key = ("panel", p.id, flt)
+    anchor: Filters | AdPilotError | None = None
+    if any(p.role == "attention" for p in wanted):
+        try:
+            anchor = last_week(template, cfg, cache, flt)
+        except AdPilotError as exc:
+            log.warning("attention anchor failed: %s: %s", exc.kind, exc.message)
+            anchor = exc
+
+    def one(p: PanelDef) -> PanelResult:
+        failed = PanelResult(id=p.id, title=p.title, kind=p.kind, table=p.table, role=p.role)
+        pflt = flt
+        if p.role == "attention":
+            if isinstance(anchor, AdPilotError):
+                return failed.model_copy(update={"error": f"{anchor.kind}: this panel could not be read"})
+            pflt = anchor
+        key = ("panel", p.id, pflt)
         result = cache.get(key)
         if result is None:
-            result = run_panel(template, cfg, p, flt)
+            try:
+                result = run_panel(template, cfg, p, pflt)
+            except FilterError:
+                raise  # the viewer's selection is bad: the route answers 422, not a page of failed panels
+            except Exception:  # noqa: BLE001 — one panel's bug is that panel's error, never the page's 500
+                log.exception("panel %s failed", p.id)
+                return failed.model_copy(update={"error": "this panel could not be read"})
             if result.error is None:
                 cache.put(key, result)
-        out.append(result)
-    return out
+        return result
+
+    return _fan_out(template.connector.dialect, one, wanted)
 
 
 def filter_options(template: AgentDeps, cfg: DashboardConfig, page: str, flt: Filters,
@@ -130,16 +188,26 @@ def filter_options(template: AgentDeps, cfg: DashboardConfig, page: str, flt: Fi
     if hit is not None:
         return hit
     categorical = {f.column for f in cfg.filters if f.type == "categorical"}
-    out: dict[str, dict] = {}
-    failed = False
-    for f in cfg.filters_for(page):
-        if f.values is not None:
-            out[f.column] = {"values": list(f.values)}
-            continue
-        option = _option(template, cfg, f, flt, _ancestors(cfg, f) if f.type == "categorical" else categorical)
-        failed = failed or "error" in option
-        out[f.column] = option
-    if not failed:
+    declared = cfg.filters_for(page)
+    asked = [f for f in declared if f.values is None]
+    # One query per categorical filter; one per table for all its range filters (they share a WHERE), so the deep
+    # dive's dozen option reads are three, one round of the fan-out on BigQuery.
+    ranges: dict[str, list[FilterDef]] = {}
+    for f in asked:
+        if f.type == "range":
+            ranges.setdefault(f.tables[0], []).append(f)
+    jobs = [[f] for f in asked if f.type == "categorical"] + list(ranges.values())
+
+    def read(fs: list[FilterDef]) -> dict[str, dict]:
+        if fs[0].type == "categorical":
+            return {fs[0].column: _option(template, cfg, fs[0], flt, _ancestors(cfg, fs[0]))}
+        return _bounds(template, cfg, fs, flt, categorical)
+
+    answers: dict[str, dict] = {}
+    for part in _fan_out(template.connector.dialect, read, jobs):
+        answers.update(part)
+    out = {f.column: {"values": list(f.values)} if f.values is not None else answers[f.column] for f in declared}
+    if not any("error" in o for o in out.values()):
         cache.put(key, out)
     return out
 
@@ -154,21 +222,31 @@ def _ancestors(cfg: DashboardConfig, f: FilterDef) -> set[str]:
 
 
 def _option(template: AgentDeps, cfg: DashboardConfig, f: FilterDef, flt: Filters, only: set[str]) -> dict:
+    """A categorical filter's values, narrowed by its ancestors' choices only."""
     deps = fresh_deps(template)
     dialect, table = deps.connector.dialect, f.tables[0]
     where = build_where(cfg, table, deps.pack.raw["date_column"], flt, dialect, only=only)
-    if f.type == "categorical":
-        sql = f"SELECT DISTINCT {f.column} AS value FROM {{{table}}} WHERE {{where}} ORDER BY 1"
-    else:
-        sql = f"SELECT MIN({f.column}) AS lo, MAX({f.column}) AS hi FROM {{{table}}} WHERE {{where}}"
-    res = execute(deps, deps.pack.render(sql, dialect, where=where), max_rows=OPTIONS_MAX_ROWS)
+    sql = f"SELECT DISTINCT {f.column} AS value FROM {{{table}}} WHERE {{where}} ORDER BY 1"
+    res = execute(deps, deps.pack.render(sql, dialect, where=where), max_rows=OPTIONS_MAX_ROWS, max_bytes=cfg.max_bytes_billed)
     if isinstance(res, SqlError):
-        empty = {"values": []} if f.type == "categorical" else {}
-        return {**empty, "error": _safe_error(res.kind, res.message)}
-    if f.type == "categorical":
-        return {"values": [r["value"] for r in res.rows if r["value"] is not None], "truncated": res.truncated}
+        return {"values": [], "error": _safe_error(res.kind, res.message)}
+    return {"values": [r["value"] for r in res.rows if r["value"] is not None], "truncated": res.truncated}
+
+
+def _bounds(template: AgentDeps, cfg: DashboardConfig, fs: list[FilterDef], flt: Filters, only: set[str]) -> dict:
+    """Every range filter of one table in one query: {column: {"min", "max"}}, following every categorical choice.
+    A failed read is each of their errors."""
+    deps = fresh_deps(template)
+    dialect, table = deps.connector.dialect, fs[0].tables[0]
+    where = build_where(cfg, table, deps.pack.raw["date_column"], flt, dialect, only=only)
+    cols = ", ".join(f"MIN({f.column}) AS {f.column}__lo, MAX({f.column}) AS {f.column}__hi" for f in fs)
+    res = execute(deps, deps.pack.render(f"SELECT {cols} FROM {{{table}}} WHERE {{where}}", dialect, where=where),
+                  max_rows=OPTIONS_MAX_ROWS, max_bytes=cfg.max_bytes_billed)
+    if isinstance(res, SqlError):
+        error = _safe_error(res.kind, res.message)
+        return {f.column: {"error": error} for f in fs}
     row = res.rows[0] if res.rows else {}
-    return {"min": row.get("lo"), "max": row.get("hi")}
+    return {f.column: {"min": row.get(f"{f.column}__lo"), "max": row.get(f"{f.column}__hi")} for f in fs}
 
 
 def dashboard_meta(template: AgentDeps, cfg: DashboardConfig, cache: TtlCache) -> dict:
@@ -181,7 +259,8 @@ def dashboard_meta(template: AgentDeps, cfg: DashboardConfig, cache: TtlCache) -
     deps = fresh_deps(template)
     pack, dialect = deps.pack, deps.connector.dialect
     dc = pack.raw["date_column"]
-    res = execute(deps, pack.render(f"SELECT MIN({dc}) AS lo, MAX({dc}) AS hi FROM {{gold}}", dialect))
+    res = execute(deps, pack.render(f"SELECT MIN({dc}) AS lo, MAX({dc}) AS hi FROM {{gold}}", dialect),
+                  max_bytes=cfg.max_bytes_billed)
     if isinstance(res, SqlError) or not res.rows or res.rows[0]["hi"] is None:
         raise AdPilotError("DataSourceUnavailable", "could not read the data window from the gold table")
     meta = {
@@ -191,11 +270,12 @@ def dashboard_meta(template: AgentDeps, cfg: DashboardConfig, cache: TtlCache) -
         "date_max": str(res.rows[0]["hi"])[:10],
         "filters": [f.model_dump(exclude_none=True) for f in cfg.filters],
         "panels": {
-            page: [{"id": p.id, "title": p.title, "kind": p.kind, "table": p.table, "platforms": p.platforms}
-                   for p in cfg.panels_for(page)]
+            page: [{"id": p.id, "title": p.title, "kind": p.kind, "table": p.table, "platforms": p.platforms,
+                    "role": p.role} for p in cfg.panels_for(page)]
             for page in ("overview", "deep_dive")
         },
         "insights": list(cfg.insights),
+        "colors": dict(cfg.colors),
     }
     cache.put(("meta",), meta)
     return meta

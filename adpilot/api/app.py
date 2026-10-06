@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 
-from adpilot.core.agent import ask, build_agent
+from adpilot.core.agent import ANSWER_DEADLINE_S, ask, build_agent
 from adpilot.core.audit import RunContextInfo
 from adpilot.core.errors import AdPilotError
 from adpilot.core.guardrails import RateLimiter
@@ -52,6 +52,7 @@ from adpilot.core.runtime import (
     record_schema_read,
 )
 from adpilot.core.tools import AgentDeps
+from adpilot.dashboard import insights as dash_insights
 from adpilot.dashboard import panels as dash
 from adpilot.dashboard.config import load_dashboard
 from adpilot.dashboard.filters import FilterError, Filters, parse_filters
@@ -155,6 +156,7 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
     model = build_model()
     if model is None:
         log.warning("no AGENT_LLM_BEARER_TOKEN — answering from pre-defined queries only, every question")
+    app.state.model = model
     app.state.agent = build_agent(model)
     app.state.limiter = RateLimiter(per_minute=int(os.environ.get("ADPILOT_API_RPM", "20")))
     # schema.summary() queries the data source, so the connector and schema text are built once and shared;
@@ -214,7 +216,8 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         deps = request_deps(app)
         deps.run_context = RunContextInfo(source="api", session_id=req.session_id)
         history = sink.load_session(req.session_id) if req.session_id else None
-        answer, _messages, trace_id = ask(app.state.agent, deps, req.question, history=history)
+        answer, _messages, trace_id = ask(app.state.agent, deps, req.question, history=history,
+                                         deadline_s=ANSWER_DEADLINE_S)
         # ask() has already buffered the record; flushing after the response keeps a BigQuery load job
         # out of the caller's latency. A failure leaves the rows buffered for the next request.
         background.add_task(flush_audit, sink)
@@ -243,7 +246,8 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         def run() -> None:
             try:
                 answer, _messages, trace_id = ask(
-                    app.state.agent, deps, question, history=history, event_stream_handler=handler
+                    app.state.agent, deps, question, history=history, event_stream_handler=handler,
+                    deadline_s=ANSWER_DEADLINE_S,
                 )
                 events.put(("answer", answer_body(answer, trace_id).model_dump(mode="json")))
             except Exception as exc:  # ask() maps its own failures; anything reaching here is transport or threading
@@ -346,6 +350,24 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         dashboard_config()
         out = dash.pacing_rows(app.state.deps_template, app.state.dash_cache)
         dashboard_audit("pacing")
+        return out
+
+    @app.get("/insights", dependencies=[Depends(require_key)])
+    def get_insights(request: Request) -> dict:
+        cfg = dashboard_config()
+        items = list(request.query_params.multi_items())
+        extra = sorted({k for k, _ in items} - {"date_from", "date_to", "platform"})
+        if extra:
+            raise HTTPException(status_code=422, detail=f"/insights takes date_from, date_to and platform only, not: {', '.join(extra)}")
+        try:
+            flt = parse_filters(cfg, "overview", items)
+        except FilterError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        try:
+            out = dash_insights.run_insights(app.state.deps_template, cfg, flt, app.state.model, app.state.dash_cache)
+        except AdPilotError as exc:
+            raise HTTPException(status_code=503, detail=exc.message) from None
+        dashboard_audit("insights")
         return out
 
     return app

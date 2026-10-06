@@ -1,0 +1,24 @@
+<!doctype html>
+<html><head><meta charset="utf-8"></head><body><script>
+// AdPilot chat list bridge: Streamlit's component protocol over postMessage, no build step. Reads one localStorage
+// key once per mount and sends it to Python; writes whatever string Python passes as `save`. Python owns parsing
+// and trimming (lib/history.py). Storage blocked (private window): sends {unavailable: true}.
+const KEY = "adpilot.chat.v1";
+let sent = false;
+function post(type, data) { window.parent.postMessage(Object.assign({isStreamlitMessage: true, type: type}, data), "*"); }
+window.addEventListener("message", function (event) {
+  if (event.source !== window.parent || !event.data || event.data.type !== "streamlit:render") return;
+  const save = (event.data.args || {}).save;
+  if (typeof save === "string") {
+    try { if (localStorage.getItem(KEY) !== save) localStorage.setItem(KEY, save); } catch (e) { /* full or blocked */ }
+  }
+  if (!sent) {
+    sent = true;
+    let value;
+    try { value = localStorage.getItem(KEY) || ""; } catch (e) { value = {unavailable: true}; }
+    post("streamlit:setComponentValue", {value: value, dataType: "json"});
+  }
+});
+post("streamlit:componentReady", {apiVersion: 1});
+post("streamlit:setFrameHeight", {height: 0});
+</script></body></html>

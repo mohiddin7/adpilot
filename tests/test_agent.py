@@ -539,3 +539,52 @@ def test_a_query_with_rows_carries_no_note(agent, deps):
     answer, msgs, _ = ask(agent, deps, "What was total spend per platform?", model=scripted(GOOD_SQL))
     ret = [p.content for m in msgs if m.kind == "request" for p in m.parts if p.part_kind == "tool-return"][0]
     assert ret.rows and ret.note == ""
+
+
+def test_an_answer_past_its_deadline_falls_back_to_the_canned_query(agent, deps, no_waits):
+    """Live pass, 2026-10-06: a free-model chain ran past Cloud Run's 300 s (four models, retries, slow reads). Past the
+    API's deadline no further model call starts, and the viewer gets the pre-defined answer at once."""
+    calls = []
+
+    def late(messages, info):
+        calls.append(1)
+        return final("too late")
+
+    chain = build_chain(["slow"], lambda n: FunctionModel(late, model_name=n))
+    answer, _, _ = ask(agent, deps, "What was spend by platform?", model=chain, deadline_s=0)
+    assert calls == []
+    assert answer.caveats[0].startswith("ModelUnavailable") and "took longer than" in answer.caveats[0]
+    assert {r["platform"] for r in answer.data} == {"Facebook", "Google", "TikTok"}
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_passed_deadline_tries_no_other_model_on_either_path(agent, deps, no_waits, stream):
+    """Past the deadline the chain stops instead of falling over to the next model; the streaming path too."""
+    calls = []
+
+    def late(messages, info):
+        calls.append(1)
+        return final("too late")
+
+    async def late_stream(messages, info):
+        calls.append(1)
+        yield "too late"
+
+    chain = build_chain(["a", "b"], lambda n: FunctionModel(late, stream_function=late_stream, model_name=n))
+
+    async def handler(ctx, events):
+        async for _ in events:
+            pass
+
+    answer, _, _ = ask(agent, deps, "What was spend by platform?", model=chain, deadline_s=0,
+                       event_stream_handler=handler if stream else None)
+    assert calls == [] and "took longer than" in answer.caveats[0]
+    from adpilot.core.models import DEADLINE
+    assert DEADLINE.get() is None  # reset for whatever runs next in this thread
+
+
+def test_without_a_deadline_the_answer_runs_to_completion(agent, deps, no_waits):
+    """Evals and the CLI pass none: a slow model is slow, not a fallback."""
+    chain = build_chain(["a"], lambda n: scripted(GOOD_SQL, name=n))
+    answer, _, _ = ask(agent, deps, "spend per platform", model=chain)
+    assert answer.answer_md == "ok" and answer.data

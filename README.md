@@ -12,7 +12,7 @@
 - **Packs** (`packs/ads/`): everything domain-specific — table allowlist, column descriptions, glossary, system prompt, canned fallback queries and a DuckDB bootstrap. Swap the directory to point the same agent at different data.
 - **Connectors**: BigQuery (bytes-billed cap) and DuckDB over the raw CSVs, so the agent and tests run with zero credentials.
 - **Pipeline** (`pipelines/`, daily at 02:00 UTC on Cloud Run functions — see docs/deploy.md): calibrated synthetic source → validate → Bronze MERGE → Gold MERGE (30-column contract) → anomaly flags (MAD z-score) → budget optimizer (LP) → 14-day forecast (Holt-Winters) → QA reconciliation. Idempotent, audited, cost-capped.
-- **Dashboard** (`streamlit_app/`): performance overview, per-channel deep dives, AI insight cards and chat. Being replaced by a pack-driven dashboard in Phase 4.
+- **Dashboard** (`streamlit_app/`): four pages over the same pack-driven data — an Overview cockpit (KPIs, trends, efficiency, mix, funnel, pacing, needs attention), a channel deep dive, an AI Insights page (a feed of findings ranked by dollars at stake, each with an evidence chart, a computed "why this happened" breakdown and "ask in chat"), and a Chat page. The Chat page keeps the viewer's past conversations in their own browser (nothing is stored on the server). Two charts are Sankey flows: where the budget moves (Overview) and where the money goes (deep dive). Each page's sidebar chat keeps its own history and session (a "show thinking" toggle streams each step). It holds no database or model credentials: every number and answer comes from the API (`/dashboard`, `/filters`, `/panels`, `/pacing`, `/insights`, `/ask`).
 
 ## Roadmap
 
@@ -22,7 +22,7 @@
 | 1 | Data-agnostic agent core (Pydantic AI), typed tools, guardrails, `adpilot chat` CLI ✅ |
 | 2 | Eval harness: golden cases, red-team, self-heal rate, LLM judge, scorecard ✅ |
 | 3 | Three surfaces over the same agent: FastAPI service ✅ · daily brief ✅ · MCP server ✅ |
-| 4 | Pack-driven dashboard + human-in-the-loop budget approvals |
+| 4 | Pack-driven dashboard ✅ · human-in-the-loop budget approvals |
 | 5 | Production rollout: Docker ✅, tracing ✅, deployed Cloud Run service |
 
 ## Quick start
@@ -91,10 +91,12 @@ python pipelines/07_qa_validation.py
 adpilot --connector bigquery chat
 ```
 
-Dashboard:
+The dashboard is a client of the API: start the API (above), or set `ADPILOT_API_URL` to the deployed service. It
+reads `ADPILOT_API_URL` and `ADPILOT_API_KEY` from the environment / `.env`, or from an `[api]` section in Streamlit
+secrets.
 
 ```bash
-cd streamlit_app && streamlit run Home.py
+streamlit run streamlit_app/Home.py
 ```
 
 Tests (deterministic — the model is scripted with pydantic-ai's `TestModel`/`FunctionModel`, the data is DuckDB):
@@ -135,7 +137,7 @@ Code computes and formats every number from four fixed read-only queries; nothin
 
 ## Configuration
 
-All names and keys come from `.env` (local) or `secrets.toml` (Streamlit Cloud). See `.env.example`. The connector is picked by `--connector`, `ADPILOT_CONNECTOR`, or the pack default.
+All names and keys come from `.env` (see `.env.example`) or, for the deployed API, its Cloud Run environment. The Streamlit Cloud secrets hold only the dashboard's `[api]` section (`ADPILOT_API_URL`, `ADPILOT_API_KEY`). The connector is picked by `--connector`, `ADPILOT_CONNECTOR`, or the pack default.
 
 The agent and the eval judge have separate chains, so the agent's model never grades its own answers. Each variable is read under one name only — a legacy spelling is ignored with a warning, never silently aliased.
 

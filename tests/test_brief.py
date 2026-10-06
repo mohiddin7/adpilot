@@ -391,3 +391,139 @@ def test_pace_numbers_projects_month_end_from_the_run_rate():
     assert g["projected"] == 1000.0 + 20 * 100.0  # 7-day run rate is $100/day
     assert g["basis"] == "last 7 days" and g["budget"] == 3000.0
     assert out["Bing"]["budget"] is None and out["Bing"]["projected"] is None
+
+
+# ---------- window-vs-window analyses (the dashboard's /insights) ----------
+
+
+def camp(rows):
+    """rows: (platform, campaign_id, spend, conversions) → one day of gold rows."""
+    return pd.DataFrame([dict(date=LATEST, platform=p, campaign_id=c, campaign_name=f"{c}_name", impressions=1e5,
+                              clicks=2e3, spend=float(s), conversions=float(v)) for p, c, s, v in rows])
+
+
+def test_top_movers_ranks_by_dollars_and_counts_new_and_stopped_campaigns():
+    prev = camp([("Google", "g1", 1000, 100), ("Google", "g2", 5000, 100), ("TikTok", "t1", 2000, 50)])
+    cur = camp([("Google", "g1", 1050, 100), ("Google", "g2", 9000, 100), ("Facebook", "f1", 3000, 60)])
+    items = a.top_movers(cur, prev, T)
+    assert [i.id for i in items] == ["mover:Google:g2:spend", "mover:Google:g2:cpa", "mover:Facebook:f1:spend"]
+    assert [i.stake for i in items] == pytest.approx([4000, (90 - 50) * 100, 3000])  # a stable sort keeps ties in order
+    assert all(i.stake >= T["mover_min_usd"] for i in items)
+    assert "mover:Google:g1:spend" not in {i.id for i in items}  # +5 % and $50: below both thresholds
+
+
+def test_top_movers_needs_enough_sales_for_a_cpa_move():
+    prev, cur = camp([("Google", "g1", 1000, 5)]), camp([("Google", "g1", 1000, 2)])
+    assert [i.id for i in a.top_movers(cur, prev, T)] == []
+
+
+def test_top_movers_survives_a_campaign_rename_between_windows():
+    """A rename must not make the outer join see a "new" row and a "stopped" row for the same campaign."""
+    prev = camp([("Google", "g1", 1000, 100), ("Google", "g2", 5000, 100)])
+    prev.loc[prev["campaign_id"] == "g1", "campaign_name"] = "Summer Sale"
+    cur = camp([("Google", "g1", 1050, 100), ("Google", "g2", 9000, 100)])
+    cur.loc[cur["campaign_id"] == "g1", "campaign_name"] = "Autumn Sale"
+    items = a.top_movers(cur, prev, T)
+    ids = [i.id for i in items]
+    assert "mover:Google:g1:spend" not in ids  # $50 / 5%: below both thresholds, rename or not
+    assert ids == ["mover:Google:g2:spend", "mover:Google:g2:cpa"]  # g1's rename must not fake a "started"+"stopped" pair
+    assert len(ids) == len(set(ids))  # at most one item per id
+
+
+def test_efficiency_outliers_flag_expensive_campaigns_with_real_spend():
+    cur = camp([("Google", "g1", 10_000, 1000), ("Google", "g2", 4000, 100), ("TikTok", "t1", 100, 1)])
+    items = a.efficiency_outliers(cur, T)
+    assert [i.id for i in items] == ["outlier:Google:g2"]  # t1 is pricier but under 5 % of spend
+    account = 14_100 / 1101
+    assert items[0].stake == pytest.approx(4000 - account * 100)
+
+
+def test_efficiency_outliers_zero_sales_is_an_outlier_without_a_cpa():
+    items = a.efficiency_outliers(camp([("Google", "g1", 10_000, 1000), ("Google", "g2", 2000, 0)]), T)
+    assert items[0].check["cpa"] is None and "no sales" in items[0].happened
+    assert items[0].stake == pytest.approx(2000)
+
+
+def test_mix_gaps_flag_platforms_whose_spend_share_outruns_their_sales_share():
+    cur = camp([("Google", "g1", 6000, 100), ("TikTok", "t1", 4000, 300)])
+    items = a.mix_gaps(cur, T)
+    assert [i.id for i in items] == ["mix:Google"]
+    assert "60%" in items[0].happened and "25%" in items[0].happened
+
+
+def test_mix_gaps_needs_two_platforms():
+    assert a.mix_gaps(camp([("Google", "g1", 6000, 100)]), T) == []
+
+
+def test_new_analyses_with_zero_conversions_everywhere_return_nothing():
+    cur = camp([("Google", "g1", 6000, 0), ("TikTok", "t1", 4000, 0)])
+    assert a.efficiency_outliers(cur, T) == [] and a.mix_gaps(cur, T) == []
+    assert all(i.id.endswith(":spend") for i in a.top_movers(cur, camp([("Google", "g1", 1000, 0)]), T))
+
+
+def test_all_values_equal_flags_nothing():
+    same = camp([("Google", "g1", 1000, 100), ("TikTok", "t1", 1000, 100)])
+    assert a.top_movers(same, same, T) == [] and a.efficiency_outliers(same, T) == [] and a.mix_gaps(same, T) == []
+
+
+def test_writer_records_the_callers_source(deps):
+    item = a.mix_gaps(camp([("Google", "g1", 6000, 100), ("TikTok", "t1", 4000, 300)]), T)[0]
+    fn = FunctionModel(lambda m, info: ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {
+        "headline": "One thing.", "items": [], "story": ""})]))
+    write(deps, fn, [item], [], [], "run1", source="dashboard", case_name="insights_writer")
+    rec = deps.audit.calls[-1]
+    assert (rec.source, rec.case_name) == ("dashboard", "insights_writer")
+
+
+def test_a_cheaper_than_usual_day_is_explained_in_the_cheaper_direction():
+    """Review round 3: the brief's "low" anomaly line named a rising cause for a falling cost per sale."""
+    before = {"impressions": 1000.0, "clicks": 100.0, "spend": 100.0, "conversions": 10.0}
+    day = {"date": date(2024, 1, 29), "spend": 50.0, "sales": 10.0, "clicks": 100.0, "cpa": 5.0, "normal_cpa": 10.0,
+           "stake": 50.0, "confidence": "high", "split": a.split(before, {**before, "spend": 50.0})}
+    item = a._anomaly_item("Google", "c1", "Brand", "low", [day], 50.0)
+    assert item.checked.endswith("Mostly ads got cheaper, which points to less competition in the ad auction.")
+    assert "pricier" not in item.checked and "more competition" not in item.checked
+    assert item.do == "If it stays this cheap for another day, give it more budget."
+    high = a._anomaly_item("Google", "c1", "Brand", "high", [{**day, "cpa": 20.0, "split": a.split(before, {**before, "spend": 200.0})}], 100.0)
+    assert high.checked.endswith("Mostly ads got pricier, which points to more competition in the ad auction.")
+
+
+def test_a_renamed_campaign_keeps_its_history_for_the_tracking_check():
+    """Grouping by name split a campaign renamed 5 days ago into two short histories; by id it is one."""
+    days = [date(2024, 1, 1) + timedelta(days=i) for i in range(21)]
+    rows = [{"date": d, "platform": "Google", "campaign_id": "g1", "campaign_name": "Old" if i < 16 else "New",
+             "impressions": 10_000.0, "clicks": 500.0, "spend": 1_000.0, "conversions": 20.0 if i < 20 else 2.0}
+            for i, d in enumerate(days)]
+    gold = pd.DataFrame(rows)
+    flags = pd.DataFrame(columns=["date", "platform", "campaign_id", "campaign_name", "is_anomaly"])
+    items, _ = a.anomaly_items(gold, flags, days[-1], T)
+    assert [i.id for i in items] == ["anomaly:Google:g1:tracking"]
+    assert '"New"' in items[0].subject  # the current name
+
+
+def _flagged_day(split):
+    return {"date": date(2024, 1, 20), "spend": 200.0, "sales": 10.0, "clicks": 100.0, "cpa": 20.0, "normal_cpa": 10.0,
+            "stake": 100.0, "confidence": "high", "split": split}
+
+
+NORMAL = {"impressions": 1000.0, "clicks": 100.0, "spend": 100.0, "conversions": 10.0}
+PRICIER = {**NORMAL, "spend": 200.0}
+
+
+def test_a_high_anomaly_keeps_its_own_action_and_a_why_in_its_direction():
+    item = a._anomaly_item("Google", "g1", "C", "high", [_flagged_day(a.split(NORMAL, PRICIER))], 100.0)
+    assert item.do == a.HIGH_DO and "pricier" in item.checked
+    assert item.check["split"]["total"] > 0
+    json.dumps(item.check)
+
+
+def test_a_high_anomaly_whose_split_disagrees_says_so_neutrally():
+    item = a._anomaly_item("Google", "g1", "C", "high", [_flagged_day(a.split(PRICIER, NORMAL))], 100.0)
+    assert item.do == a.HIGH_DO and item.checked == a.NO_DAY_CAUSE
+
+
+def test_a_low_anomaly_keeps_its_own_action_and_a_why_in_its_direction():
+    item = a._anomaly_item("Google", "g1", "C", "low", [_flagged_day(a.split(PRICIER, NORMAL))], 100.0)
+    assert item.do == a.LOW_DO and "cheaper" in item.checked
+    bad = a._anomaly_item("Google", "g1", "C", "low", [_flagged_day(a.split(NORMAL, PRICIER))], 100.0)
+    assert bad.do == a.LOW_DO and bad.checked == a.NO_DAY_CAUSE

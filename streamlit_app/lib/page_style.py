@@ -1,102 +1,45 @@
-"""
-lib/page_style.py — Shared dashboard CSS, applied once per page.
+"""Shared dashboard CSS, applied once per page. Colours come from lib.theme (assets/palette.json); the base theme is
+.streamlit/config.toml at the repo root."""
 
-Why centralize:
-  - Equal-height columns (cards line up) require a single CSS rule across pages.
-  - KPI font sizes, border styles, scrollbars — all standardised here.
-  - Each page just calls inject_page_style() right after st.set_page_config().
-"""
 from __future__ import annotations
 
 import streamlit as st
 
-_CSS = """
+from .theme import ACCOUNT, COLORS, GRID, GROUNDS, MUTED
+
+GROUNDS_BG = GROUNDS["bg"]
+
+_CSS = f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif; }
-
-/* ── KPI metric cards (st.metric) ──────────────────────────────────────── */
-[data-testid="metric-container"] {
-    background: linear-gradient(135deg, #1A1D27 0%, #1E2235 100%);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 12px;
-    padding: 18px 22px;
-    min-height: 110px;
-    position: relative;
-    overflow: hidden;
-}
-[data-testid="metric-container"]::before {
-    content: '';
-    position: absolute; top: 0; left: 0; right: 0;
-    height: 3px;
-    background: linear-gradient(90deg, #2563EB, #7C3AED);
-}
-[data-testid="metric-container"] [data-testid="stMetricLabel"] p {
-    font-size: 12px !important;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: rgba(255,255,255,0.65) !important;
-    font-weight: 500;
-}
-[data-testid="metric-container"] [data-testid="stMetricValue"] {
-    font-size: 30px !important;
-    font-weight: 700 !important;
-    line-height: 1.2 !important;
-}
-[data-testid="metric-container"] [data-testid="stMetricDelta"] {
-    font-size: 13px !important;
-}
-
-/* ── Bordered containers ───────────────────────────────────────────────── */
-[data-testid="stVerticalBlockBorderWrapper"] {
-    border-radius: 12px !important;
-    border: 1px solid rgba(255,255,255,0.08) !important;
-    background: #1A1D27 !important;
-}
-/* Internal padding so content doesn't crash into the border */
-[data-testid="stVerticalBlockBorderWrapper"] > div:first-child {
-    padding: 14px 18px !important;
-}
-
-/* ── Equal-height side-by-side cards ──────────────────────────────────── */
-/* When cards live inside columns, make them stretch so they line up. */
-div[data-testid="column"] {
-    display: flex;
-    flex-direction: column;
-}
-div[data-testid="column"] > div {
-    width: 100%;
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-}
-div[data-testid="column"] > div > [data-testid="stVerticalBlockBorderWrapper"] {
-    height: 100%;
-}
-
-/* ── Sidebar styling ───────────────────────────────────────────────────── */
-section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0F1117 0%, #141720 100%);
-    border-right: 1px solid rgba(255,255,255,0.07);
-}
-
-/* ── Headings + dividers ──────────────────────────────────────────────── */
-hr { border-color: rgba(255,255,255,0.07) !important; }
-h1, h2, h3 { letter-spacing: -0.02em; }
-
-/* ── Custom scrollbar ─────────────────────────────────────────────────── */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
-
-/* ── Tab styling for cleaner look ─────────────────────────────────────── */
-button[data-baseweb="tab"] {
-    font-size: 14px !important;
-    font-weight: 500 !important;
-}
+[data-testid="stMetric"] {{ background: {GROUNDS["surface"]}; border-top: 3px solid {COLORS["brand"]}; }}
+/* These selectors are Streamlit's own data-testid names (1.64): look at the tiles again after a Streamlit upgrade. */
+/* A tile never truncates. Streamlit's own style is one line with an ellipsis; here the label wraps (two lines are
+   reserved, so the values line up) and both sizes follow the tile's width (cqw), not the window's. */
+[data-testid="stMetric"] {{ container-type: inline-size; }}
+[data-testid="stMetric"] [data-testid="stMarkdownContainer"],
+[data-testid="stMetric"] [data-testid="stMarkdownContainer"] p {{ white-space: normal; overflow: visible; text-overflow: clip; }}
+[data-testid="stMetricLabel"] [data-testid="stMarkdownContainer"] {{ font-size: clamp(9px, 7.7cqw, 12px); min-height: 2.6em; }}
+[data-testid="stMetricLabel"] p {{ font-size: inherit; line-height: 1.3; text-transform: uppercase; letter-spacing: .03em; }}
+[data-testid="stMetric"] [data-testid="stMetricValue"] {{ font-size: clamp(1rem, 19cqw, 2.25rem); }}
+[data-testid="stMetric"] [data-testid="stMetricValue"] p {{ white-space: nowrap; }}
+/* The header and the filter bar stay on top while scrolling. Selectors are Streamlit's st-key-<key> classes and its
+   stLayoutWrapper (1.64): look again after an upgrade. --ad-top clears Streamlit's own top bar; tune it if the
+   screenshots show a gap or an overlap. */
+:root {{ --ad-top: 3.75rem; --ad-header: 3rem; }}
+.stVerticalBlock.st-key-ad_header {{ height: var(--ad-header); overflow: hidden; }}
+.stVerticalBlock.st-key-ad_header, .stVerticalBlock.st-key-sticky_filters, [data-testid="stLayoutWrapper"]:has(> .st-key-ad_header),
+[data-testid="stLayoutWrapper"]:has(> .st-key-sticky_filters) {{ flex: none; }}
+.st-key-ad_header, [data-testid="stLayoutWrapper"]:has(> .st-key-ad_header) {{
+  position: sticky; top: var(--ad-top); z-index: 990; background: {GROUNDS_BG}; }}
+.st-key-sticky_filters, [data-testid="stLayoutWrapper"]:has(> .st-key-sticky_filters) {{
+  position: sticky; top: calc(var(--ad-top) + var(--ad-header)); z-index: 980; background: {GROUNDS_BG}; }}
+.ad-header {{ display: flex; align-items: baseline; gap: .75rem; height: var(--ad-header); border-bottom: 1px solid {GRID}; }}
+.ad-brand {{ font-weight: 700; font-size: 1.35rem; color: {ACCOUNT}; letter-spacing: -.01em; }}
+.ad-page {{ font-size: 1.35rem; color: {ACCOUNT}; }}
+.ad-asof {{ margin-left: auto; color: {MUTED}; font-size: .875rem; }}
 </style>
 """
 
 
 def inject_page_style() -> None:
-    """Inject the shared CSS once. Call at the top of every page."""
     st.markdown(_CSS, unsafe_allow_html=True)

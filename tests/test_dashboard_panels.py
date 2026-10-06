@@ -6,7 +6,7 @@ import pytest
 
 from adpilot.core.chart import ChartSpec
 from adpilot.core.runtime import fresh_deps
-from adpilot.core.tools import SqlError, execute
+from adpilot.core.tools import SqlError, SqlResult, execute
 from adpilot.dashboard import panels
 from adpilot.dashboard.config import load_dashboard
 from adpilot.dashboard.filters import Filters
@@ -52,14 +52,14 @@ def test_every_ads_panel_runs_cleanly_on_duckdb(deps, cfg, page, platform):
 
 
 def test_platform_specific_panels_follow_the_platform_selection(cfg):
-    google = next(p for p in cfg.panels if p.id == "google_quality")
+    google = next(p for p in cfg.panels if p.id == "google_quality_dist")
     assert panel_applies(google, _flt("Google"))
     assert not panel_applies(google, _flt())
     assert not panel_applies(google, _flt("Google", "TikTok"))
 
 
 def test_a_chart_naming_a_missing_column_fails_only_that_panel(deps, cfg):
-    trend = next(p for p in cfg.panels if p.id == "spend_trend")
+    trend = next(p for p in cfg.panels if p.id == "kpi_daily")
     bad = trend.model_copy(update={"chart": ChartSpec(chart_type="line", x="date", y="nope")})
     r = run_panel(deps, cfg, bad, FLT)
     assert r.error.startswith("chart:") and r.rows == []
@@ -124,7 +124,7 @@ def test_filter_options_cascade(deps, cfg):
 def test_meta_reports_the_data_window_and_hides_sql(deps, cfg):
     m = dashboard_meta(deps, cfg, TtlCache(0))
     assert (m["date_min"], m["date_max"]) == ("2024-01-01", "2024-01-30")
-    assert all(set(p) == {"id", "title", "kind", "table", "platforms"} for p in m["panels"]["overview"])
+    assert all(set(p) == {"id", "title", "kind", "table", "platforms", "role"} for p in m["panels"]["overview"])
     assert m["insights"] and {f["column"] for f in m["filters"]} >= {"platform", "severity"}
 
 
@@ -194,15 +194,363 @@ def test_filter_options_cache_key_ignores_range_values(deps, cfg, monkeypatch):
 def test_a_failed_panel_does_not_stop_others_from_caching(deps, cfg, monkeypatch):
     """Final-review finding 3: page caching is per panel, so an always-failing panel is retried every load without
     evicting the panels next to it from the cache."""
-    trend = next(p for p in cfg.panels if p.id == "spend_trend")
+    trend = next(p for p in cfg.panels if p.id == "kpi_daily")
     bad = trend.model_copy(update={"chart": ChartSpec(chart_type="line", x="date", y="nope")})
-    local_cfg = cfg.model_copy(update={"panels": [bad if p.id == "spend_trend" else p for p in cfg.panels]})
+    local_cfg = cfg.model_copy(update={"panels": [bad if p.id == "kpi_daily" else p for p in cfg.panels]})
     calls = []
     real = panels.execute
     monkeypatch.setattr(panels, "execute", lambda *a, **k: calls.append(1) or real(*a, **k))
     cache = TtlCache(60)
-    run_page(deps, local_cfg, "overview", FLT, cache, ids=("kpis", "spend_trend"))
+    run_page(deps, local_cfg, "overview", FLT, cache, ids=("kpis", "kpi_daily"))
     first = len(calls)
-    results = run_page(deps, local_cfg, "overview", FLT, cache, ids=("kpis", "spend_trend"))
-    assert len(calls) == first + 1  # only spend_trend (still failing) re-ran; kpis served from cache
-    assert next(r for r in results if r.id == "spend_trend").error is not None
+    results = run_page(deps, local_cfg, "overview", FLT, cache, ids=("kpis", "kpi_daily"))
+    assert len(calls) == first + 1  # only kpi_daily (still failing) re-ran; kpis served from cache
+    assert next(r for r in results if r.id == "kpi_daily").error is not None
+
+
+def test_a_format_on_a_missing_column_fails_only_that_panel(deps, cfg):
+    kpis = next(p for p in cfg.panels if p.id == "kpis")
+    r = run_panel(deps, cfg, kpis.model_copy(update={"formats": {"nope": "currency"}}), FLT)
+    assert r.error.startswith("formats:") and r.rows == []
+
+
+def test_results_carry_role_and_formats(deps, cfg):
+    r = run_page(deps, cfg, "overview", FLT, TtlCache(0), ids=("kpis",))[0]
+    assert r.role == "kpi" and r.formats["spend"] == "currency"
+
+
+def test_meta_returns_roles_and_colours(deps, cfg):
+    m = dashboard_meta(deps, cfg, TtlCache(0))
+    assert m["colors"]["Google"] == "forecast"
+    assert all("role" in p for page in m["panels"].values() for p in page)
+
+
+def test_format_date_is_the_same_on_duckdb(deps):
+    sql = deps.pack.render("SELECT FORMAT_DATE('%a', DATE '2024-01-01') AS d FROM {gold} LIMIT 1", "duckdb")
+    assert execute(deps, sql).rows == [{"d": "Mon"}]
+
+
+def _numeric_columns(result):
+    return {c for r in result.rows for c, v in r.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+
+@pytest.mark.parametrize("page", ["overview", "deep_dive"])
+@pytest.mark.parametrize("platform", [(), ("Facebook",), ("Google",), ("TikTok",)])
+def test_every_numeric_column_has_a_format(eval_deps, cfg, page, platform):
+    """Spec 5: a missing format falls back to plain numbers, and this test flags it. eval_deps has pipeline rows."""
+    for r in run_page(eval_deps, cfg, page, _flt(*platform), TtlCache(0)):
+        assert _numeric_columns(r) <= set(r.formats), (r.id, _numeric_columns(r) - set(r.formats))
+
+
+def test_every_role_the_pages_lay_out_is_present(cfg):
+    roles = {page: {p.role for p in cfg.panels_for(page)} for page in ("overview", "deep_dive")}
+    assert roles["overview"] >= {"kpi", "kpi_series", "trend", "map", "compare", "funnel", "attention", "flow"}
+    assert roles["deep_dive"] >= {"kpi", "kpi_series", "markers", "attention", "details", "heatmap", "platform",
+                                  "funnel", "flow"}
+
+
+def _flagged_con(pack, rows):
+    """A private DuckDB with anomaly rows on real gold campaigns (the shared fixture must stay empty)."""
+    from adpilot.connectors import get_connector
+    from adpilot.core import schema
+    from adpilot.core.audit import MemorySink
+    from adpilot.core.tools import AgentDeps
+
+    con = get_connector("duckdb", pack)
+    camp = con.query("SELECT DISTINCT platform, campaign_id, campaign_name FROM fct_unified_marketing_performance "
+                     "WHERE platform = 'Google' ORDER BY campaign_id LIMIT 3")
+    values = []
+    for (day, sev, observed, usual), c in zip(rows, camp.itertuples(), strict=False):
+        values.append(f"('{day}', 'Google', '{c.campaign_id}', '{c.campaign_name}', {observed}, {usual}, 1.0, 5.0, 1, "
+                      f"'HIGH_CPA', 5.0, '{sev}', 'rolling_14d', 14, 'high', 20)")
+    con.execute_script("INSERT INTO fct_anomaly_flags VALUES " + ", ".join(values))
+    return AgentDeps(connector=con, pack=pack, schema_text=schema.summary(con, pack), audit=MemorySink()), camp
+
+
+def test_the_flag_rule_is_severe_or_critical_in_the_last_7_days_of_data(pack, cfg):
+    """date_max is 2024-01-30 and flags stop mature_lag_days (2) before it, so the anchor is 01-22..01-28 — the last
+    7 days of the flags' horizon — whatever window the viewer picked."""
+    deps, camp = _flagged_con(pack, [("2024-01-28", "CRITICAL", 90, 30),   # in: date_max - 2, critical
+                                     ("2024-01-25", "MODERATE", 90, 30),   # out: moderate
+                                     ("2024-01-21", "SEVERE", 90, 30)])    # out: one day older than the 7 days
+    viewer = Filters(date(2024, 1, 1), date(2024, 1, 15))  # the anchor ignores this window
+    r = next(x for x in run_page(deps, cfg, "overview", viewer, TtlCache(0)) if x.role == "attention")
+    assert r.error is None
+    assert [row["campaign_name"] for row in r.rows] == [camp.campaign_name.iloc[0]]
+    assert r.rows[0]["worst"] == "CRITICAL" and r.rows[0]["flagged_days"] == 1 and r.rows[0]["excess_cost"] > 0
+    assert r.rows[0]["campaign_id"] == camp.campaign_id.iloc[0]
+
+
+def _record_bytes(monkeypatch, deps) -> list:
+    """Patched on the instance: test_agent's instance-level monkeypatch leaves a bound `query` on the shared
+    session connector, which would shadow a class-level patch."""
+    seen: list = []
+    real = deps.connector.query
+
+    def record(sql, max_bytes=None):
+        seen.append(max_bytes)
+        return real(sql, max_bytes)
+
+    monkeypatch.setattr(deps.connector, "query", record)
+    return seen
+
+
+def test_execute_takes_an_explicit_byte_cap_else_the_packs(deps, monkeypatch):
+    """Final review C1: the model path (run_sql calls execute(deps, sql)) keeps the pack's 10 MB."""
+    seen = _record_bytes(monkeypatch, deps)
+    sql = deps.pack.render("SELECT 1 AS x FROM {gold} LIMIT 1", "duckdb")
+    execute(deps, sql)
+    execute(fresh_deps(deps), sql, max_bytes=123)
+    assert seen == [10485760, 123] and deps.pack.raw["max_bytes_billed"] == 10485760
+
+
+def test_every_dashboard_read_uses_the_dashboard_byte_cap(deps, cfg, monkeypatch):
+    from adpilot.dashboard import insights
+
+    seen = _record_bytes(monkeypatch, deps)
+    run_page(deps, cfg, "overview", FLT, TtlCache(0))  # also reads dashboard_meta (the attention anchor)
+    filter_options(deps, cfg, "deep_dive", FLT, TtlCache(0))
+    insights.run_insights(deps, cfg, FLT, None, TtlCache(0))
+    assert seen and set(seen) == {20971520} and cfg.max_bytes_billed == 20971520
+
+
+def test_the_dashboard_byte_cap_pays_for_every_table_a_query_reads(pack, cfg):
+    """BigQuery bills at least 10 MB per table a query references, and rejects a query whose minimum is over its
+    maximum_bytes_billed: the attention panel reads {anomalies} and {gold}, so it needs 20 MB."""
+    from adpilot.dashboard import insights
+
+    sqls = {p.id: p.sql for p in cfg.panels} | {n: getattr(insights, n) for n in
+                                                  ("GOLD_SQL", "FLAGS_SQL", "PLAN_SQL", "FORECAST_SQL")}
+    for name, sql in sqls.items():
+        tables = {t for t in pack.tables if "{" + t + "}" in sql}
+        assert len(tables) * 10485760 <= cfg.max_bytes_billed, (name, sorted(tables))
+
+
+def test_a_failed_attention_anchor_is_a_fixed_sentence_and_the_rest_run(deps, cfg, monkeypatch):
+    from adpilot.core.errors import AdPilotError
+
+    def down(*a, **k):
+        raise AdPilotError("DataSourceUnavailable", "Not found: project.secret_dataset.fct_unified_marketing_performance")
+
+    monkeypatch.setattr(panels, "dashboard_meta", down)
+    results = run_page(deps, cfg, "overview", FLT, TtlCache(0))
+    attention = next(r for r in results if r.role == "attention")
+    assert attention.error == "DataSourceUnavailable: this panel could not be read" and "secret" not in attention.error
+    assert [r.id for r in results if r.error] == [attention.id]
+    assert all(r.rows for r in results if r.role == "kpi")
+
+
+def test_the_attention_week_ends_where_the_flags_do(deps, cfg):
+    """Final review M4: anomaly flags (and /insights' as_of) stop mature_lag_days (2) before the newest day."""
+    week = panels.last_week(deps, cfg, TtlCache(0), FLT)
+    assert (week.date_from, week.date_to) == (date(2024, 1, 22), date(2024, 1, 28))
+
+
+def test_truncated_is_true_only_when_rows_were_cut(deps):
+    sql = deps.pack.render("SELECT * FROM {gold}", "duckdb")  # 330 rows
+    cut = execute(deps, sql, max_rows=329)
+    assert len(cut.rows) == 329 and cut.row_count == 329 and cut.truncated
+    assert len(deps.last_result) == 329  # the probe row never reaches the model's data
+    whole = execute(fresh_deps(deps), sql, max_rows=330)
+    assert len(whole.rows) == 330 and not whole.truncated
+
+
+def test_parallel_tool_calls_on_one_deps_never_overspend_the_budget(deps):
+    """pydantic-ai runs a turn's parallel tool calls in threads on ONE deps: the budget must hold without a global
+    query lock. (Passes before the change too: it guards the lock's removal.)"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    sql = deps.pack.render("SELECT 1 AS x FROM {gold} LIMIT 1", "duckdb")
+    with ThreadPoolExecutor(8) as pool:
+        out = list(pool.map(lambda _: execute(deps, sql), range(24)))
+    assert sum(isinstance(r, SqlResult) for r in out) == deps.budget.max_sql == len(deps.results)
+
+
+def test_fan_out_runs_concurrently_on_bigquery_and_keeps_order():
+    import threading
+
+    barrier = threading.Barrier(3, timeout=5)
+
+    def fn(i):
+        barrier.wait()  # BrokenBarrierError unless all three run at once
+        return i * 10
+
+    assert panels._fan_out("bigquery", fn, [1, 2, 3]) == [10, 20, 30]
+
+
+def test_fan_out_is_sequential_on_duckdb():
+    import threading
+
+    threads = []
+    assert panels._fan_out("duckdb", lambda i: threads.append(threading.get_ident()) or i, [1, 2, 3]) == [1, 2, 3]
+    assert set(threads) == {threading.get_ident()}
+
+
+def _parallel(monkeypatch):
+    """Run the BigQuery (parallel) path over the DuckDB fixture: the connector's own lock serialises the queries."""
+    real = panels._fan_out
+    monkeypatch.setattr(panels, "_fan_out", lambda _dialect, fn, items: real("bigquery", fn, items))
+
+
+@pytest.mark.parametrize("page", ["overview", "deep_dive"])
+def test_a_page_run_in_parallel_matches_the_sequential_run(deps, cfg, monkeypatch, page):
+    seq = run_page(deps, cfg, page, _flt("Google"), TtlCache(0))
+    _parallel(monkeypatch)
+    par = run_page(deps, cfg, page, _flt("Google"), TtlCache(0))
+    assert [r.model_dump() for r in par] == [r.model_dump() for r in seq]
+
+
+def test_filter_options_in_parallel_match_the_sequential_run(deps, cfg, monkeypatch):
+    seq = filter_options(deps, cfg, "deep_dive", FLT, TtlCache(0))
+    _parallel(monkeypatch)
+    assert filter_options(deps, cfg, "deep_dive", FLT, TtlCache(0)) == seq
+
+
+def test_one_panel_raising_is_that_panels_error_only(deps, cfg, monkeypatch):
+    """Review focus 4: an unexpected exception in one parallel panel never blanks the page or becomes a 500."""
+    real = panels.run_panel
+
+    def boom(template, cfg_, p, flt):
+        if p.id == "dd_weekday":
+            raise RuntimeError("a bug")
+        return real(template, cfg_, p, flt)
+
+    monkeypatch.setattr(panels, "run_panel", boom)
+    _parallel(monkeypatch)
+    out = run_page(deps, cfg, "deep_dive", FLT, TtlCache(0))
+    assert [(r.id, r.error) for r in out if r.error] == [("dd_weekday", "this panel could not be read")]
+    assert len(out) > 5
+
+
+def _con_with(pack, *scripts):
+    """A private DuckDB with fixture edits (the shared fixture must stay as loaded)."""
+    from adpilot.connectors import get_connector
+    from adpilot.core import schema
+    from adpilot.core.audit import MemorySink
+    from adpilot.core.tools import AgentDeps
+
+    con = get_connector("duckdb", pack)
+    for sql in scripts:
+        con.execute_script(sql)
+    return AgentDeps(connector=con, pack=pack, schema_text=schema.summary(con, pack), audit=MemorySink())
+
+
+# Two Google campaigns renamed to one name: grouping by name would merge them.
+SAME_NAME = ("UPDATE fct_unified_marketing_performance SET campaign_name = 'Shared_Name' WHERE campaign_id IN "
+             "(SELECT campaign_id FROM fct_unified_marketing_performance WHERE platform = 'Google' "
+             "GROUP BY campaign_id ORDER BY campaign_id LIMIT 2)")
+
+
+@pytest.mark.parametrize("panel_id,page", [("efficiency", "overview"), ("dd_campaigns", "deep_dive")])
+def test_two_campaigns_sharing_a_name_stay_two_rows(pack, cfg, panel_id, page):
+    deps = _con_with(pack, SAME_NAME)
+    r = next(x for x in run_page(deps, cfg, page, FLT, TtlCache(0)) if x.id == panel_id)
+    shared = [row for row in r.rows if row["campaign_name"] == "Shared_Name"]
+    assert len(shared) == 2 and len({row["campaign_id"] for row in shared}) == 2
+
+
+def test_ad_sets_of_two_campaigns_sharing_a_name_keep_their_campaign_id(pack, cfg):
+    deps = _con_with(pack, SAME_NAME)
+    r = next(x for x in run_page(deps, cfg, "deep_dive", FLT, TtlCache(0)) if x.id == "dd_subgroups")
+    assert len({row["campaign_id"] for row in r.rows if row["campaign_name"] == "Shared_Name"}) == 2
+
+
+def test_the_efficiency_panel_returns_campaigns_with_no_sales(pack, cfg):
+    """The map can't place them (no cost per sale); the page names them under it (spec 6.4)."""
+    deps = _con_with(pack, "UPDATE fct_unified_marketing_performance SET conversions = 0 WHERE campaign_id = "
+                           "(SELECT MIN(campaign_id) FROM fct_unified_marketing_performance)")
+    r = next(x for x in run_page(deps, cfg, "overview", FLT, TtlCache(0)) if x.id == "efficiency")
+    zero = [row for row in r.rows if row["conversions"] == 0]
+    assert len(zero) == 1 and zero[0]["cpa"] is None and zero[0]["spend"] > 0
+
+
+def _plan(rows):
+    values = ", ".join(f"(TIMESTAMP '2024-01-30 06:00:00', '{p}', {c}, {r})" for p, c, r in rows)
+    return ("INSERT INTO tbl_budget_recommendations (generated_at, platform, current_spend, recommended_spend) "
+            "VALUES " + values)
+
+
+@pytest.mark.parametrize("plan", [
+    [("Facebook", 100, 60), ("Google", 200, 260), ("TikTok", 300, 280)],  # totals equal
+    [("Facebook", 100, 0), ("Google", 200, 250), ("TikTok", 300, 300)],   # cut to zero; totals differ (review focus 3)
+    [("Facebook", 100, 100), ("Google", 200, 200)],                       # nothing moves
+])
+def test_budget_flows_add_up_to_the_recommended_plan(pack, cfg, plan):
+    from collections import defaultdict
+
+    deps = _con_with(pack, _plan(plan))
+    r = run_panel(deps, cfg, next(p for p in cfg.panels if p.id == "budget_flow"), FLT)
+    assert r.error is None and all(row["spend"] > 0 for row in r.rows)
+    into = defaultdict(float)
+    for row in r.rows:
+        into[row["target"]] += row["spend"]
+    assert dict(into) == pytest.approx({f"Recommended: {p}": rec for p, _, rec in plan if rec > 0}, abs=0.02)
+
+
+@pytest.mark.parametrize("platform", [(), ("Google",)])
+def test_where_the_money_goes_adds_up_to_the_spend(deps, cfg, platform):
+    d = {r.id: r for r in run_page(deps, cfg, "deep_dive", _flt(*platform), TtlCache(0))}
+    flow, kpi = d["money_flow"], d["dd_kpis"].rows[0]
+    assert flow.error is None
+    assert sum(row["spend"] for row in flow.rows) == pytest.approx(kpi["spend"], abs=0.01 * len(flow.rows))
+    assert {row["source"] for row in flow.rows} == ({"Google"} if platform else {"Facebook", "Google", "TikTok"})
+    per_source = {}
+    for row in flow.rows:
+        per_source[row["source"]] = per_source.get(row["source"], 0) + 1
+    assert max(per_source.values()) <= 7  # 6 campaigns and "Other <platform>"
+
+
+def test_money_flow_folds_campaigns_past_the_sixth_into_other(pack, cfg):
+    """Each fixture platform has 4 campaigns; give Google 8 by splitting ids, then look for "Other Google"."""
+    deps = _con_with(pack, "UPDATE fct_unified_marketing_performance SET campaign_id = campaign_id || '_' || "
+                           "CAST(EXTRACT(day FROM date) % 2 AS VARCHAR) WHERE platform = 'Google'")
+    r = next(x for x in run_page(deps, cfg, "deep_dive", _flt("Google"), TtlCache(0)) if x.id == "money_flow")
+    targets = [row["target"] for row in r.rows]
+    assert len(targets) == 7 and "Other Google" in targets
+    other = next(row for row in r.rows if row["target"] == "Other Google")
+    assert other["campaign_id"] is None
+
+
+def test_the_deep_dive_funnel_matches_the_overviews(deps, cfg):
+    ov = next(r for r in run_page(deps, cfg, "overview", _flt("TikTok"), TtlCache(0)) if r.id == "funnel")
+    dd = next(r for r in run_page(deps, cfg, "deep_dive", _flt("TikTok"), TtlCache(0)) if r.id == "dd_funnel")
+    assert dd.rows == ov.rows and dd.chart.chart_type == "funnel"
+
+
+def test_a_campaign_with_no_revenue_has_no_roas_not_zero(pack, cfg):
+    """Live checklist: TikTok and Facebook campaigns (no revenue tracked) showed ROAS 0.00x."""
+    deps = _con_with(pack, "SELECT 1")
+    r = next(x for x in run_page(deps, cfg, "deep_dive", FLT, TtlCache(0)) if x.id == "dd_campaigns")
+    by_platform = {row["platform"]: row["roas"] for row in r.rows}
+    assert all(row["roas"] is None or row["roas"] > 0 for row in r.rows) and by_platform["Google"] is not None
+    assert [row["roas"] for row in r.rows if row["platform"] == "TikTok"] == [None] * 4
+
+
+def test_every_range_filter_on_a_table_is_read_in_one_query(deps, cfg, monkeypatch):
+    """Live pass 2026-10-06: the deep dive's /filters ran one MIN/MAX query per range filter (10 of its 12 queries,
+    three rounds of four on BigQuery). The bounds must not change."""
+    from adpilot.dashboard.filters import build_where
+
+    sqls: list[str] = []
+    real = panels.execute
+    monkeypatch.setattr(panels, "execute", lambda d, sql, **k: sqls.append(sql) or real(d, sql, **k))
+    out = filter_options(deps, cfg, "deep_dive", FLT, TtlCache(0))
+    ranges = [f for f in cfg.filters_for("deep_dive") if f.type == "range"]
+    assert len(ranges) > 1 and sum("MIN(" in s for s in sqls) == 1
+    where = build_where(cfg, "gold", "date", FLT, "duckdb", only={f.column for f in cfg.filters if f.type == "categorical"})
+    for f in ranges:  # the bounds a query of its own gives
+        own = real(fresh_deps(deps), deps.pack.render(
+            f"SELECT MIN({f.column}) AS lo, MAX({f.column}) AS hi FROM {{gold}} WHERE {{where}}", "duckdb", where=where))
+        assert (out[f.column]["min"], out[f.column]["max"]) == (own.rows[0]["lo"], own.rows[0]["hi"]), f.column
+
+
+def test_a_failed_range_query_is_each_range_filters_error(deps, cfg, monkeypatch):
+    real = panels.execute
+
+    def no_ranges(d, sql, **k):
+        return SqlError(kind="SqlSchema", message="boom") if "MIN(" in sql else real(d, sql, **k)
+
+    monkeypatch.setattr(panels, "execute", no_ranges)
+    out = filter_options(deps, cfg, "deep_dive", FLT, TtlCache(0))
+    assert out["spend"] == {"error": "SqlSchema: this panel could not be read"}
+    assert out["campaign_name"]["values"]  # the categorical options still load

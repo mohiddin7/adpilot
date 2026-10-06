@@ -7,6 +7,7 @@ import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -34,6 +35,10 @@ MAX_RETRIES = 2
 RETRY_DELAYS = (2, 5)
 MAX_RETRY_DELAY = 10
 DAILY_RESET_MIN_S = 120  # a per-minute window resets within 60 s
+REQUEST_TIMEOUT_S = 60  # one model HTTP call; the OpenAI SDK's default read timeout is 10 minutes
+# (time.monotonic() after which the current answer starts no model call, its length in s); None: no deadline, as for
+# evals and the CLI. Set per answer by agent.ask(); the async run inherits it.
+DEADLINE: ContextVar[tuple[float, float] | None] = ContextVar("answer_deadline", default=None)
 
 Disposition = Literal["retry", "next", "stop"]
 _TRANSIENT = {408, 429, 500, 502, 503, 504}
@@ -57,6 +62,19 @@ def renamed_env(name: str, *legacy: str, env: Mapping[str, str] | None = None, d
     return env[name] if name in env else default
 
 
+class AnswerDeadline(Exception):
+    """The answer's deadline passed: no further model call starts, and no other model is tried."""
+
+    def __init__(self, seconds: float) -> None:
+        super().__init__(f"the models took longer than {seconds:g} s")
+
+
+def _check_deadline() -> None:
+    deadline = DEADLINE.get()
+    if deadline is not None and time.monotonic() >= deadline[0]:
+        raise AnswerDeadline(deadline[1])
+
+
 class RateLimited(WrapperModel):
     """Blocks until the 20 rpm bucket has room, on both the request and the streaming path.
 
@@ -64,14 +82,18 @@ class RateLimited(WrapperModel):
     """
 
     async def request(self, messages, model_settings, model_request_parameters):
+        _check_deadline()  # every attempt (retries included) passes here: past the deadline, none starts
         MODEL_RATE_LIMITER.acquire()  # ponytail: blocking sleep inside async; fine for CLI + single-worker API
+        _check_deadline()
         return await super().request(messages, model_settings, model_request_parameters)
 
     @asynccontextmanager
     async def request_stream(self, messages, model_settings, model_request_parameters, run_context=None):
         # WrapperModel.request_stream delegates straight through, so without this override the streaming path
         # (ask() with an event_stream_handler, i.e. GET /ask/stream) would bypass the bucket entirely.
+        _check_deadline()
         MODEL_RATE_LIMITER.acquire()
+        _check_deadline()
         async with super().request_stream(messages, model_settings, model_request_parameters, run_context) as stream:
             yield stream
 
@@ -117,6 +139,8 @@ def classify_error(exc: BaseException) -> Disposition:
     retry: a retry can fix it (timeout, overload, per-model limit, network). next: this model cannot serve this
     request (schema rejected, withdrawn, harness-only). stop: no model can — the free daily cap and the key are
     per account, so falling over only burns time."""
+    if isinstance(exc, AnswerDeadline):  # the answer's time is up: another model only burns more of it
+        return "stop"
     if isinstance(exc, ModelHTTPError):
         code = exc.status_code
         if code == 401 or daily_cap(exc):
@@ -180,12 +204,14 @@ def build_chain(names: Sequence[str], make: Callable[[str], Model]) -> Model | N
 
 
 def openrouter_factory(api_key: str) -> Callable[[str], Model]:
+    from openai import Timeout
     from pydantic_ai.models.openrouter import OpenRouterModel
     from pydantic_ai.providers.openrouter import OpenRouterProvider
 
     provider = OpenRouterProvider(api_key=api_key)
     # Retrying is the only retry layer: the SDK's own retried the daily-cap 429 for hours (evals-nightly, 2026-09-23).
     provider.client.max_retries = 0
+    provider.client.timeout = Timeout(REQUEST_TIMEOUT_S, connect=10)  # per phase: connect, read, write, pool
     return lambda name: OpenRouterModel(name, provider=provider)
 
 

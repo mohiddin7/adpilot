@@ -20,6 +20,7 @@ secrets/
 *-key-*.json
 *.pem
 streamlit_app/.streamlit/secrets.toml
+.streamlit/secrets.toml
 
 # OS / IDE
 .DS_Store

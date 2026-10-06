@@ -17,18 +17,37 @@ import pandas as pd
 NUM = ["impressions", "clicks", "spend", "conversions"]
 CONFIDENCE = ("low", "medium", "high")
 
-# driver -> (what moved, likely cause, the fix)
+# driver -> (what moved, likely cause, the fix), for a cost per sale that rose
 CAUSES = {
     "price": ("ads got pricier", "more competition in the ad auction", "Review bids, or wait a few days for prices to settle."),
-    "clicks": ("fewer people clicked", "the ads are wearing out", "Refresh the ad creative."),
+    "clicks": ("fewer people clicked", "worn-out ad creative", "Refresh the ad creative."),
     "buyers": ("fewer clickers bought", "a landing page, offer or tracking problem", "Check the landing page, the offer and the conversion tracking."),
 }
+# the same, for a cost per sale that fell
+CHEAPER = {
+    "price": ("ads got cheaper", "less competition in the ad auction"),
+    "clicks": ("more people clicked", "creative that is landing well"),
+    "buyers": ("more clickers bought", "a better landing page or offer, or a change in tracking"),
+}
+
+# An anomaly card's own actions: a flagged day is about that day, so explain()'s window advice never applies.
+HIGH_DO = "Check what changed in this campaign that day (bids, budget, creative, targeting or the landing page) and undo what doesn't belong."
+LOW_DO = "If it stays this cheap for another day, give it more budget."
+NO_DAY_CAUSE = "The day's cost per sale differs from normal without a single rate behind it."
+
+
+def agreeing(kind: str, sp: dict | None) -> dict | None:
+    """The flagged day's split when it moves the way the flag says (a high day dearer, a low day cheaper), else None:
+    the detector's baseline and this one can differ, and the card must not argue with itself."""
+    if sp is None or sp["total"] == 0 or (sp["total"] > 0) != (kind == "high"):
+        return None
+    return sp
 
 
 @dataclass
 class Item:
     id: str  # stable across briefs: the follow-up key
-    kind: str  # cost | anomaly | pace | move
+    kind: str  # cost | anomaly | pace | move | mover | outlier | mix
     subject: str
     stake: float  # USD at stake; the ranking key
     happened: str
@@ -96,14 +115,17 @@ def drivers(sp: dict) -> list[str]:
 
 
 def explain(sp: dict | None) -> tuple[str, str]:
-    """(checked, do) templates from a split."""
+    """(checked, do) templates from a split, in the direction the cost per sale moved: drivers() picks the falling
+    terms when it fell, so their phrases must say cheaper, not pricier."""
     if sp is None or not drivers(sp):
         return "The change has no single clear cause in ad price, clicks or sales per click.", "Look at the campaign's recent changes."
     ch, ds = sp["changes"], drivers(sp)
-    what = " and ".join(CAUSES[d][0] for d in ds)
-    cause = " or ".join(CAUSES[d][1] for d in ds)
+    phrases = CAUSES if sp["total"] > 0 else CHEAPER
+    what = " and ".join(phrases[d][0] for d in ds)
+    cause = " or ".join(phrases[d][1] for d in ds)
+    do = " ".join(CAUSES[d][2] for d in ds) if sp["total"] > 0 else "Keep what is working, and watch whether it holds."
     return (f"Ad price {pct(ch['price'])}, clicks per view {pct(ch['clicks'])}, sales per click {pct(ch['buyers'])}. "
-            f"Mostly {what}, which points to {cause}.", " ".join(CAUSES[d][2] for d in ds))
+            f"Mostly {what}, which points to {cause}.", do)
 
 
 # ---------- 1. cost changes by platform ----------
@@ -138,7 +160,10 @@ def cost_items(gold: pd.DataFrame, as_of: date, t: dict) -> tuple[list[Item], li
 
 
 def _campaign_days(gold: pd.DataFrame) -> pd.DataFrame:
-    return gold.groupby(["platform", "campaign_id", "campaign_name", "date"], as_index=False)[NUM].sum()
+    """Daily sums per (platform, campaign_id): a renamed campaign keeps one history, under its newest name."""
+    days = gold.groupby(["platform", "campaign_id", "date"], as_index=False)[NUM].sum()
+    newest = gold.sort_values("date").groupby(["platform", "campaign_id"])["campaign_name"].last()
+    return days.join(newest, on=["platform", "campaign_id"])
 
 
 def anomaly_items(gold: pd.DataFrame, flags: pd.DataFrame, as_of: date, t: dict) -> tuple[list[Item], str | None]:
@@ -148,7 +173,8 @@ def anomaly_items(gold: pd.DataFrame, flags: pd.DataFrame, as_of: date, t: dict)
     groups: dict[tuple, list[dict]] = {}
     shape: dict[tuple, str] = {}  # (platform, campaign_id, date) -> tracking | double
     daily = _campaign_days(gold)
-    by_campaign = {k: g.set_index("date") for k, g in daily.groupby(["platform", "campaign_id", "campaign_name"])}
+    by_campaign = {k: g.set_index("date") for k, g in daily.groupby(["platform", "campaign_id"])}
+    names = {k: g["campaign_name"].iloc[-1] for k, g in by_campaign.items()}
 
     def base(key, d):
         g = by_campaign.get(key)
@@ -181,7 +207,7 @@ def anomaly_items(gold: pd.DataFrame, flags: pd.DataFrame, as_of: date, t: dict)
     for f in flags.itertuples():
         if not f.is_anomaly or f.date not in week or (f.platform, f.campaign_id, f.date) in shape:
             continue
-        key = (f.platform, f.campaign_id, f.campaign_name)
+        key = (f.platform, f.campaign_id)
         row, prior = base(key, f.date)
         sales = row["conversions"] if row is not None else 0.0
         kind = "high" if f.anomaly_direction == "HIGH_CPA" else "low"
@@ -189,19 +215,19 @@ def anomaly_items(gold: pd.DataFrame, flags: pd.DataFrame, as_of: date, t: dict)
             "date": f.date, "spend": row["spend"] if row is not None else f.observed_cpa * sales, "sales": sales,
             "clicks": row["clicks"] if row is not None else 0.0, "normal_spend": prior["spend"].median() if prior is not None else 0.0,
             "cpa": f.observed_cpa, "normal_cpa": f.rolling_mean_cpa, "stake": abs(f.observed_cpa - f.rolling_mean_cpa) * sales,
-            "confidence": f.confidence or "low",
+            "confidence": f.confidence or "low", "name": f.campaign_name,
             "split": split(_sums(prior), {k: float(row[k]) for k in NUM}) if row is not None and prior is not None else None})
 
     items, noise = [], []
     recent = {as_of - timedelta(days=i) for i in range(3)}
-    for (plat, cid, name, kind), days in groups.items():
+    for (plat, cid, kind), days in groups.items():
         stake = sum(x["stake"] for x in days)
         dates = {x["date"] for x in days}
         persistent = as_of in dates or len(dates & recent) >= 2
         if kind in ("high", "low") and not (persistent and stake >= t["anomaly_persist_usd"]) and stake < t["anomaly_any_usd"]:
             noise.append(stake)
             continue
-        items.append(_anomaly_item(plat, cid, name, kind, days, stake))
+        items.append(_anomaly_item(plat, cid, names.get((plat, cid)) or days[0].get("name"), kind, days, stake))
     line = None
     if noise:
         line = f"{len(noise)} other anomaly flag{'s' if len(noise) > 1 else ''}: small ({under(max(noise))} each) or one-day"
@@ -228,18 +254,18 @@ def _anomaly_item(plat, cid, name, kind, days, stake) -> Item:
         do = "Look for a duplicate conversion tag before trusting this campaign's results or giving it more budget."
     else:
         happened = f"On {when} it paid {money(worst['cpa'])} per sale; its normal is about {money(worst['normal_cpa'])}."
-        checked, do = explain(worst["split"])
+        sp = agreeing(kind, worst["split"])
+        checked = explain(sp)[0] if sp else NO_DAY_CAUSE
         if kind == "high":
-            title, check_line = f"Look into {subject}", "whether its cost per sale returns to normal"
+            title, check_line, do = f"Look into {subject}", "whether its cost per sale returns to normal", HIGH_DO
         else:
-            title, check_line = f"Consider more budget for {subject}", "whether it stays this cheap"
-            do = "If it stays this cheap for another day, give it more budget."
+            title, check_line, do = f"Consider more budget for {subject}", "whether it stays this cheap", LOW_DO
     return Item(
         id=f"anomaly:{plat}:{cid}:{kind}", kind="anomaly", subject=subject, stake=stake, happened=happened + more,
         title=title, checked=checked, do=do,
         confidence=f"{conf} ({'one day' if len(days) == 1 else f'{len(days)} days this week'})", check_line=check_line,
         check={"platform": plat, "campaign_id": cid, "kind": kind, "normal_sales": float(worst.get("normal_sales") or 0),
-               "normal_spend": float(worst.get("normal_spend") or 0)},
+               "normal_spend": float(worst.get("normal_spend") or 0), "split": worst.get("split")},
         numbers=[{"date": day(x["date"]), "spend": money(x["spend"]), "sales": f"{x['sales']:,.0f}",
                   "cost per sale": money(x["cpa"]) if x["cpa"] else "–", "normal cost per sale": money(x["normal_cpa"])}
                  for x in sorted(days, key=lambda x: x["date"])],
@@ -435,6 +461,171 @@ def follow_up(stored: list[dict], today: dict[str, Item], gold: pd.DataFrame, as
         out.append({**s, "status": status, "outcome": outcome, "stake": stake, "stored_stake": s["stake"],
                     "line": f"{day(first)} · \"{s['advice']}\" → {outcome}"})
     return out
+
+
+# ---------- 6. this window vs the previous one (the dashboard's /insights feed) ----------
+
+
+def _by_campaign(df: pd.DataFrame) -> pd.DataFrame:
+    """Sums per (platform, campaign_id). campaign_name is carried as a data column, not grouped on, so a rename
+    mid-window or between windows doesn't split one campaign into two rows."""
+    g = df.groupby(["platform", "campaign_id"])
+    out = g[["spend", "conversions"]].sum()
+    out["campaign_name"] = g["campaign_name"].last()
+    return out
+
+
+def _period_numbers(before: tuple[float, float], after: tuple[float, float]) -> list[dict]:
+    return [{"period": name, "spend": money(s), "sales": f"{v:,.0f}", "cost per sale": money(s / v) if v else "–"}
+            for name, (s, v) in (("previous", before), ("this", after))]
+
+
+def top_movers(cur: pd.DataFrame, prev: pd.DataFrame, t: dict) -> list[Item]:
+    """Campaigns whose spend or cost per sale moved most against the previous window, by dollars at stake. A campaign
+    new to this window counts from zero spend, a stopped one to zero; a cost-per-sale move needs enough sales in both
+    windows to mean anything."""
+    both = _by_campaign(cur).join(_by_campaign(prev), rsuffix="_prev", how="outer")
+    names = both["campaign_name"].fillna(both["campaign_name_prev"])  # this window's name, else the previous one's
+    both = both.drop(columns=["campaign_name", "campaign_name_prev"]).fillna(0.0)
+    items = []
+    for (plat, cid), r in both.iterrows():
+        subject = f'{plat} campaign "{names[plat, cid]}"'
+        s0, s1, v0, v1 = r["spend_prev"], r["spend"], r["conversions_prev"], r["conversions"]
+        nums = _period_numbers((s0, v0), (s1, v1))
+        d = s1 - s0
+        if abs(d) >= t["mover_min_usd"] and (s0 == 0 or abs(d) / s0 >= t["mover_min_pct"] / 100):
+            happened = (f"{subject} started spending: {money(s1)} this period, nothing the period before." if s0 == 0
+                        else f"{subject} stopped spending: {money(s0)} the period before, nothing now." if s1 == 0
+                        else f"{subject} spent {money(s1)}, {pct(d / s0)} from {money(s0)} the period before.")
+            items.append(Item(
+                id=f"mover:{plat}:{cid}:spend", kind="mover", subject=subject, stake=abs(d), happened=happened,
+                title=f"Check why {subject}'s spend {'rose' if d > 0 else 'fell'}",
+                checked="Spend moved more than usual between the two periods.",
+                do="Confirm the change was intended; if not, check the campaign's budget, bids and schedule.",
+                confidence="high (spend is exact)", check_line="",
+                check={"platform": plat, "campaign_id": cid, "metric": "spend", "before": s0, "after": s1},
+                numbers=nums))
+        if min(v0, v1) >= t["mover_min_conversions"]:
+            c0, c1 = s0 / v0, s1 / v1
+            stake = abs(c1 - c0) * v1
+            if stake >= t["mover_min_usd"] and abs(c1 / c0 - 1) >= t["mover_min_pct"] / 100:
+                up = c1 > c0
+                items.append(Item(
+                    id=f"mover:{plat}:{cid}:cpa", kind="mover", subject=subject, stake=stake,
+                    happened=f"{subject} paid {money(c1)} per sale, {pct(c1 / c0 - 1)} from {money(c0)} the period before.",
+                    title=f"Bring {subject}'s cost per sale back down" if up else f"Consider more budget for {subject}",
+                    checked="Cost per sale moved more than usual between the two periods.",
+                    do=("Check its recent changes: bids, audiences, creative and landing page." if up
+                        else "It got cheaper per sale; test a budget increase and watch the cost per sale."),
+                    confidence=f"{'high' if v1 >= 100 else 'medium'} ({v1:,.0f} sales this period)", check_line="",
+                    check={"platform": plat, "campaign_id": cid, "metric": "cpa", "before": c0, "after": c1},
+                    numbers=nums))
+    items.sort(key=lambda i: -i.stake)
+    return items[:3]
+
+
+def efficiency_outliers(cur: pd.DataFrame, t: dict) -> list[Item]:
+    """The "cut" quadrant: campaigns with a real share of spend paying well above the account's cost per sale."""
+    c = _by_campaign(cur)
+    spend, sales = float(c["spend"].sum()), float(c["conversions"].sum())
+    if spend <= 0 or sales <= 0:
+        return []
+    account = spend / sales
+    items = []
+    for (plat, cid), r in c.iterrows():
+        s, v = float(r["spend"]), float(r["conversions"])
+        if s < spend * t["outlier_min_share_pct"] / 100:
+            continue
+        cpa = s / v if v else None
+        if cpa is not None and cpa < account * (1 + t["outlier_cpa_pct"] / 100):
+            continue
+        subject = f'{plat} campaign "{r["campaign_name"]}"'
+        happened = (f"{subject} spent {money(s)} with no sales." if cpa is None else
+                    f"{subject} paid {money(cpa)} per sale on {money(s)} of spend; the account average is {money(account)}.")
+        items.append(Item(
+            id=f"outlier:{plat}:{cid}", kind="outlier", subject=subject, stake=s - account * v, happened=happened,
+            title=f"Cut or fix {subject}",
+            checked="It takes a real share of the budget at a cost per sale well above the account's.",
+            do="Lower its budget, or fix its targeting and creative before it spends more.",
+            confidence=f"{'high' if v >= 100 else 'medium'} ({v:,.0f} sales)", check_line="",
+            check={"platform": plat, "campaign_id": cid, "cpa": cpa, "account": account},
+            numbers=[{"spend": money(s), "sales": f"{v:,.0f}", "cost per sale": money(cpa) if cpa else "–",
+                      "account cost per sale": money(account)}]))
+    items.sort(key=lambda i: -i.stake)
+    return items[:3]
+
+
+def mix_gaps(cur: pd.DataFrame, t: dict) -> list[Item]:
+    """Platforms whose share of spend exceeds their share of sales by at least `mix_gap_pts` points."""
+    p = cur.groupby("platform")[["spend", "conversions"]].sum()
+    spend, sales = float(p["spend"].sum()), float(p["conversions"].sum())
+    if len(p) < 2 or spend <= 0 or sales <= 0:
+        return []
+    account = spend / sales
+    items = []
+    for plat, r in p.iterrows():
+        s, v = float(r["spend"]), float(r["conversions"])
+        ss, vs = s / spend, v / sales
+        if ss - vs < t["mix_gap_pts"] / 100:
+            continue
+        items.append(Item(
+            id=f"mix:{plat}", kind="mix", subject=plat, stake=s - account * v,
+            happened=f"{plat} took {ss:.0%} of spend but brought {vs:.0%} of sales.",
+            title=f"Rebalance spend away from {plat}",
+            checked=f"Its cost per sale is {money(s / v) if v else 'undefined'}, against {money(account)} for the account.",
+            do=f"Move a slice of {plat}'s budget to the platform with the lowest cost per sale, then watch for a week.",
+            confidence=f"{'high' if v >= 100 else 'medium'} ({v:,.0f} sales)", check_line="", check={"platform": plat},
+            numbers=[{"platform": plat, "share of spend": f"{ss:.0%}", "share of sales": f"{vs:.0%}"}]))
+    items.sort(key=lambda i: -i.stake)
+    return items
+
+
+# ---------- 7. why a finding happened (the dashboard's "Why this happened") ----------
+
+RATES = {"price": "Ad price", "clicks": "Clicks per view", "buyers": "Sales per click"}
+# driver -> how a campaign differs from the account: a comparison, where CAUSES describes a change over time
+VERSUS = {"price": "its ads cost more per view", "clicks": "fewer of its viewers click", "buyers": "fewer of its clickers buy"}
+SPEND_PARTS = {"views": ("fewer views", "more views"), "price": ("a lower price per view", "a higher price per view")}
+
+
+def versus(sp: dict | None) -> str:
+    """explain()'s sentence for split(account, campaign): which rate makes the campaign dearer than the account."""
+    if sp is None or not drivers(sp):
+        return "No single rate explains the gap with the account."
+    ch = sp["changes"]
+    return (f"Against the account: ad price {pct(ch['price'])}, clicks per view {pct(ch['clicks'])}, sales per click "
+            f"{pct(ch['buyers'])}. Mostly {' and '.join(VERSUS[d] for d in drivers(sp))}.")
+
+
+def spend_split(before: dict, after: dict) -> dict | None:
+    """Spend = views x price per view, so the log change in spend splits exactly into those two terms (the same shape
+    split() returns, so drivers() reads it). None when a period has no spend or no views."""
+    if any(s[k] <= 0 for s in (before, after) for k in ("spend", "impressions")):
+        return None
+    views = after["impressions"] / before["impressions"]
+    price = (after["spend"] / after["impressions"]) / (before["spend"] / before["impressions"])
+    terms = {"views": math.log(views), "price": math.log(price)}
+    return {"terms": terms, "total": sum(terms.values()), "changes": {"views": views - 1, "price": price - 1}}
+
+
+def explain_spend(sp: dict | None) -> str:
+    if sp is None:
+        return "It had no spend or no views in one of the two periods, so the change can't be split."
+    ch = sp["changes"]
+    carried = " and ".join(SPEND_PARTS[d][ch[d] > 0] for d in drivers(sp)) or "no single cause"
+    return f"Views {pct(ch['views'])}, price per view {pct(ch['price'])}. The change comes mostly from {carried}."
+
+
+def driving_campaigns(cur: pd.DataFrame, plat: str) -> list[tuple[str, float]] | None:
+    """A platform's campaigns that cost more than the account's cost per sale would have: (name, excess), where
+    excess = spend - sales x the account's cost per sale in the window, largest first, positive only. None when the
+    account has no sales to set that reference."""
+    spend, sales = float(cur["spend"].sum()), float(cur["conversions"].sum())
+    if sales <= 0:
+        return None
+    c = _by_campaign(cur[cur["platform"] == plat])
+    excess = (c["spend"] - c["conversions"] * spend / sales).sort_values(ascending=False)
+    return [(c["campaign_name"][k], float(v)) for k, v in excess.items() if v > 0]
 
 
 def rank(candidates: list[Item], followed: list[dict], t: dict) -> tuple[list[Item], list[Item]]:

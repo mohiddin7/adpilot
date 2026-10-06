@@ -34,7 +34,7 @@ def test_trace_records_sql_and_calls(eval_deps_factory):
     assert trace.trace_id
     assert trace.tool_calls == ["run_sql"]
     assert trace.sql_attempted == [GOOD]
-    assert trace.sql_executed[0].startswith("SELECT platform") and trace.sql_executed[0].endswith("LIMIT 100")
+    assert trace.sql_executed[0].startswith("SELECT platform") and trace.sql_executed[0].endswith("LIMIT 101")
     assert trace.model_calls == 2 and trace.repairs == 0 and not trace.refused
     assert trace.answer.answer_md == "done"
 

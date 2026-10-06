@@ -115,27 +115,32 @@ rate limit) are HTTP-level errors.
 ## One worker
 
 `uvicorn --workers 1` is not a suggestion — `MODEL_RATE_LIMITER` (the fixed 20 rpm bucket in
-`adpilot/core/models.py` that every model call blocks on) and `tools._EXEC_LOCK` (serializes DuckDB access)
-are process-level state, each a single Python object living in one process's memory. A second worker process
-gets its own copies of both, so it silently doubles the effective model rate and removes the DuckDB
-serialization — `ADPILOT_API_RPM` cannot compensate, since it governs a different limiter (`app.state.limiter`,
+`adpilot/core/models.py` that every model call blocks on) is process-level state, a single Python object
+living in one process's memory. A second worker process gets its own copy, so it silently doubles the effective
+model rate. DuckDB's connector serializes its one connection; BigQuery runs each query as its own job (a page's
+panels and filter options run up to 4 at a time). `ADPILOT_API_RPM` cannot compensate, since it governs a different limiter (`app.state.limiter`,
 one per process too). Scale by running more instances behind a load balancer, not more workers per instance
 — see [deploy.md](deploy.md). This is also why every query (DuckDB and BigQuery) is stopped at
-`pack.query_timeout_s` (30s for the ads pack): a query that held `_EXEC_LOCK` any longer would stall every
-other caller in the process.
+`pack.query_timeout_s` (30s for the ads pack): a slow query would otherwise tie up its connection (DuckDB) or a
+worker slot (BigQuery) indefinitely.
 
 ## Dashboard endpoints
 
 The Streamlit dashboard's only data source. Same `X-API-Key`; a separate rate bucket (`ADPILOT_DASHBOARD_RPM`,
-default 120/min) so browsing never uses up the chat's `ADPILOT_API_RPM`. All four return `404` when the pack has no
+default 120/min) so browsing never uses up the chat's `ADPILOT_API_RPM`. All five return `404` when the pack has no
 `dashboard:` section.
 
 | Endpoint | Returns |
 |---|---|
-| `GET /dashboard` | `pack`, `date_min`/`date_max` (the data window — date presets count back from `date_max`, not from today), the declared `filters`, panel titles per page, the `insights` questions. Panel SQL never leaves the server. |
+| `GET /dashboard` | `pack`, `date_min`/`date_max` (the data window — date presets count back from `date_max`, not from today), the declared `filters`, panel titles per page, the `insights` questions, `colors` (one series colour per platform). Panel SQL never leaves the server. |
 | `GET /filters?page=…&<filters>` | per filter on the page: `{"values": [...]}` or `{"min", "max"}`. Categorical options narrow by the date range and the filter's ancestors only (platform → campaign → ad set). |
-| `GET /panels?page=…&<filters>[&panel=<id>…]` | the page's panels that apply to the selection, each `{id, title, kind, table, chart, columns, rows, truncated, note, error}`. `panel=` limits the run (the comparison period's KPIs). |
+| `GET /panels?page=…&<filters>[&panel=<id>…]` | the page's panels that apply to the selection, each `{id, title, kind, table, role, chart, columns, rows, truncated, note, error, formats}`. `panel=` limits the run (the comparison period's KPIs). `truncated` is true when the panel's rows were cut at `max_rows`. A bad filter selection is a `422`, never a per-panel error. |
 | `GET /pacing` | month-end pacing per platform from the daily brief's own projection, as of the newest day in the data. Whole account: filters do not apply. |
+| `GET /insights?date_from&date_to[&platform]` | `{cards, checked, problems, writer, at_stake}`. Each card: `{id, kind, platform: str \| None, severity: "high"\|"medium"\|"low", stake, loss, stake_label, also, title, headline, action, why, why_detail: {text, chart: {spec, rows, formats} \| None} \| None, confidence, numbers, chart: {spec, rows, formats} \| None, facts}`. `why_detail` is the engine's own breakdown of the finding, computed from the rows the request already read (no extra query, no model): for a cost-per-sale finding (a platform's weekly cost, a campaign's mover or anomaly, an outlier against the account) which of ad price, clicks per view and sales per click carries it, as a sentence and a bar per rate; for a spend mover, views against price per view; for a channel-mix or pacing card, the platform's campaigns by what they cost above the account's cost per sale. For an anomaly card it compares the flagged day with its 14 normal days (ad price, clicks per view, sales per click), or says no single rate explains it. It is `None` for a budget move and when it cannot be computed. `why` stays the one-line reason shown on the card. `platform` is the finding's platform, `None` for a budget move. `stake` is money lost only when `loss` is true (`stake_label: "at stake"`: cost, pace and outlier cards, a costlier-than-usual day or a tracking fault, and a mover whose cost per sale rose); a spend mover's is a `"change in spend"`, a budget move's or a channel-mix card's is an amount `"to reallocate"`, a cost per sale that fell or a cheaper-than-usual day is an `"opportunity"`, and double-counted sales are `"to verify"`. `at_stake` is the sum of `stake` over the returned `loss` cards. A campaign gets one card: a second finding about the same (platform, campaign) is dropped, and its sentence goes to the kept card's `also` list (`[]` otherwise). Cards are the daily brief's own checks (cost per sale, unusual days and tracking, month-end pacing, the budget optimizer's move) plus three window-vs-previous-window ones (top movers, efficiency outliers, channel mix), ranked with money lost first and then by `stake` within each group, deduplicated per campaign, and then capped at 8. `checked` names every analysis that ran; `problems` names any that failed or any input table that could not be read. Cached for `dashboard.cache_ttl_s` per window and platform, never when a problem is reported. Only `date_from`, `date_to` and `platform` are accepted; anything else is a `422`. |
+
+**Chart types:** a panel's `chart` spec has a `chart_type` and, for `sankey`, a `target` column (`x` is the source, `y` the flow width). The `flow` role marks a panel's rows as flows. Sankey panels: `budget_flow` (Overview: current spend against the optimizer's recommended split) and `money_flow` (deep dive: where the money goes). `dd_funnel` is the deep dive's funnel (role `funnel`). A `move` card's `chart` is the `budget_flow` panel (the optimizer plan as flows).
+
+**Concurrency:** on BigQuery, a page's panels and its filter options run up to 4 at a time. DuckDB stays serial.
 
 **Filter parameters:** `date_from`, `date_to` (required, `YYYY-MM-DD`, at most 366 days), `<column>` (repeatable) for a
 categorical filter, `<column>_min` / `<column>_max` for a range. An unknown key, a bad date, a non-finite number, a
@@ -151,6 +156,11 @@ Shipping Sale", "Call - US" or "LIMIT 99999 deal" reaches the query unchanged an
 pipeline table gives a `note` instead. Results are cached in-process for `dashboard.cache_ttl_s` (900 s), never when a
 panel failed.
 
-**Audit:** every successful read writes one `agent_calls` row (`source='dashboard'`, `case_name` = the endpoint).
-Rows are not flushed per read — a load job per click would hit BigQuery's 1,500 load jobs per table per day — they
-ride the next `/ask` flush or the shutdown flush.
+**Bytes cap:** dashboard queries run with `dashboard.max_bytes_billed` (20 MB in the ads pack: BigQuery bills at least
+10 MB per table a query references, and the attention panel reads two); chat queries keep the pack's `max_bytes_billed`.
+
+**Audit:** every successful read writes one `agent_calls` row (`source='dashboard'`, `case_name` = the endpoint, so
+`/insights` writes `case_name='insights'`). Rows are not flushed per read — a load job per click would hit
+BigQuery's 1,500 load jobs per table per day — they ride the next `/ask` flush or the shutdown flush. `/insights`
+also writes the brief writer's own row when a model is configured (`case_name='insights_writer'`); with no model,
+every card's wording comes from the fixed templates and no writer row is written.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ChartSpec(BaseModel):
@@ -15,9 +15,32 @@ class ChartSpec(BaseModel):
     title: str = Field(default="", max_length=80)
 
 
+class PanelChartSpec(ChartSpec):
+    """Pack panels and /insights evidence only. The model's render_chart keeps ChartSpec's five types, so its
+    tool schema never offers these. `reference: mean_y` draws the mean of y, weighted by `size` when set (on the
+    efficiency map, y = CPA and size = conversions, so it is the account CPA)."""
+
+    chart_type: Literal["bar", "line", "scatter", "pie", "area", "bubble", "funnel", "heatmap", "bar_h", "sankey"]
+    size: str | None = None
+    z: str | None = None
+    target: str | None = None  # sankey: x is each flow's source, y its value, target where it goes
+    reference: Literal["mean_y"] | None = None
+
+    @model_validator(mode="after")
+    def _extra_columns(self) -> PanelChartSpec:
+        if self.chart_type == "bubble" and not self.size:
+            raise ValueError("a bubble chart needs `size`")
+        if self.chart_type == "heatmap" and not self.z:
+            raise ValueError("a heatmap needs `z`")
+        if self.chart_type == "sankey" and not self.target:
+            raise ValueError("a sankey needs `target`")
+        return self
+
+
 def validate_spec(spec: ChartSpec, columns: list[str]) -> ChartSpec:
     """Every referenced column must exist; an unknown color column is dropped rather than failing."""
-    missing = [c for c in (spec.x, spec.y) if c not in columns]
+    needed = [spec.x, spec.y, *(c for c in (getattr(spec, n, None) for n in ("size", "z", "target")) if c)]
+    missing = [c for c in needed if c not in columns]
     if missing:
         raise ValueError(f"Column(s) {missing} not in result. Available: {', '.join(columns)}")
     if spec.color is not None and spec.color not in columns:

@@ -481,7 +481,7 @@ def test_catalog_names_are_refused_as_identifiers(name, dialect):
 @pytest.mark.parametrize("dialect", ["duckdb", "bigquery"])
 @pytest.mark.parametrize("expr", ["sleep_ms(60000)", "SLEEP_MS (60000)", "sleep(60)", "pg_sleep(60)", "60000.sleep_ms()"])
 def test_sleep_functions_are_refused(expr, dialect):
-    """A sleep holds the shared _EXEC_LOCK: one query would freeze every other SQL call."""
+    """A sleep holds the shared connection: one query would freeze every other SQL call."""
     assert rejected(f"SELECT {expr} FROM {G}", dialect)
     assert rejected(f"SELECT a FROM {G} WHERE a = {expr}", dialect)
 
