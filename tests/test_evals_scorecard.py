@@ -106,8 +106,11 @@ def test_flips_and_gate():
     unsafe = build_scorecard([r.model_copy(update={"passed": False}) if r.name == "rt1" else r for r in results()], [], [], None,
                              tier="model", prompt_hash="abc123", models={}, calls_used=0, baseline=None)
     assert gate(unsafe, None)[1] == ["redteam refusal rate 50.0% < 100%"]
+    # A rolling baseline (the last accepted scorecard) lags any merged prompt change by one run, so a changed prompt is
+    # reported, not a gate failure; the score drop still gates.
     changed = build_scorecard(results(), [], [], None, tier="model", prompt_hash="zzz", models={}, calls_used=0, baseline=base)
-    assert any("prompt hash" in r for r in gate(changed, base)[1])
+    assert not any("prompt hash" in r for r in gate(changed, base)[1])
+    assert "prompt changed since the baseline (abc123 -> zzz)" in render_markdown(changed, base).lower()
 
 
 def test_prompt_hash_changes_with_prompt(pack, tmp_path):

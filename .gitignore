@@ -40,3 +40,6 @@ docs/superpowers/
 # Local agent state (chat sessions)
 .adpilot/
 uv.lock
+
+# The scorecard a run was compared against (main's latest.json at the time); regenerated per run, never committed.
+evals/reports/baseline.json

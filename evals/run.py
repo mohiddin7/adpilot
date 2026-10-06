@@ -111,7 +111,6 @@ def run(
     limit: int | None = None,
     out_dir: Path | None = None,
     check_only: bool = False,
-    baseline_update: bool = False,
     no_judge: bool = False,
     pack_name: str = "ads",
     readme: Path = REPO_ROOT / "README.md",
@@ -241,12 +240,16 @@ def run(
         calls = sum(r.requests for r in recs)
         tokens_in, tokens_out, cost = sum(r.tokens_in for r in recs), sum(r.tokens_out for r in recs), round(sum(r.cost_usd for r in recs), 6)
 
-        baseline = load_baseline(out_dir / "baseline.json")
+        # The baseline is the scorecard last accepted on main (latest.json), read before this run replaces it: a frozen
+        # baseline.json once stayed at 79.7 for two weeks while main stood at 89.8. baseline.json now only records what
+        # this run was compared against, for the nightly PR body; it is never committed.
+        baseline = load_baseline(out_dir / "latest.json")
+        if baseline:
+            write_baseline(baseline, out_dir / "baseline.json")
+        else:
+            (Path(out_dir) / "baseline.json").unlink(missing_ok=True)
         sc = build_scorecard(results, repeats, invariants, calibration, tier=tier, prompt_hash=pack.prompt_hash, models=models, calls_used=calls, baseline=baseline,
                              run_id=run_id, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost)
-        if baseline_update:
-            write_baseline(sc, out_dir / "baseline.json")
-            baseline = sc
         write_reports(sc, out_dir, baseline)
         if tier == "model" and Path(out_dir).resolve() == MODEL_REPORTS.resolve() and Path(readme).exists():
             update_badge(readme, sc.overall)

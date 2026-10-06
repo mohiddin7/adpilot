@@ -1,4 +1,5 @@
-"""Render the nightly PR description from latest.json + baseline.json. Structured fields only."""
+"""Render the nightly PR description from latest.json + baseline.json (the scorecard last accepted on main, which
+this run was compared against). Structured fields only."""
 
 from __future__ import annotations
 
@@ -41,7 +42,7 @@ def render(latest: Scorecard, baseline: Scorecard | None, calls_limit: int = 400
         f"{_box(ok)} Gate passed" + (" — " + "; ".join(reasons) if reasons else ""),
         "- [x] Diff limited to `evals/reports/**` and the README badge (enforced by the workflow's add-paths)",
         "- [x] Report contains structured fields only (no model free text)", "",
-        "Merging accepts this run as the new committed scorecard. `baseline.json` changes only when the run was started with `--baseline-update`.",
+        "Merging accepts this run as the new committed scorecard, and so as the baseline the next run is compared against.",
     ]
     return "\n".join(lines)
 

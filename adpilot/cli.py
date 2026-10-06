@@ -66,7 +66,7 @@ def cmd_eval(args, out) -> int:
 
     res = run(
         tier=args.tier, families=set(args.family) if args.family else None, repeat=args.repeat, limit=args.limit,
-        out_dir=Path(args.out) if args.out else None, check_only=args.check_cases, baseline_update=args.baseline_update, no_judge=args.no_judge,
+        out_dir=Path(args.out) if args.out else None, check_only=args.check_cases, no_judge=args.no_judge,
         pack_name=args.pack, debug=args.debug,
     )
     for p in res.problems:
@@ -253,7 +253,6 @@ def main(argv: list[str] | None = None, out=None) -> int:
     ev.add_argument("--limit", type=int)
     ev.add_argument("--check-cases", action="store_true", help="only verify reference values; no model")
     ev.add_argument("--out", help="report directory (default: evals/reports for model tier)")
-    ev.add_argument("--baseline-update", action="store_true", help="write baseline.json from this run")
     ev.add_argument("--no-judge", action="store_true")
     ev.add_argument("--debug", action="store_true", help="log each case as it runs; disables the progress bar")
     au = sub.add_parser("audit", help="inspect the audit trail")

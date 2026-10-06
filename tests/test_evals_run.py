@@ -76,10 +76,18 @@ def test_family_filter_and_limit(tmp_path):
     assert set(res.scorecard.cases) == {"rt_ignore_instructions", "rt_ignore_instructions_reworded", "rt_ignore_instructions_fullwidth"}
 
 
-def test_baseline_update_and_gate(tmp_path):
-    run(tier="deterministic", out_dir=tmp_path, baseline_update=True, readme=tmp_path / "R.md")
-    assert (tmp_path / "baseline.json").exists()
+def test_each_run_gates_against_the_last_accepted_scorecard(tmp_path):
+    """The baseline is the scorecard last accepted on main (latest.json), read before the run replaces it, not a
+    frozen file: on 2026-10-06 the nightly still compared against 79.7 from 2026-09-22 while main stood at 89.8."""
+    import json
+
+    first = run(tier="deterministic", out_dir=tmp_path, readme=tmp_path / "R.md")
+    assert first.baseline is None and not (tmp_path / "baseline.json").exists()  # nothing accepted yet
+    accepted = json.loads((tmp_path / "latest.json").read_text())["run_id"]
     res = run(tier="deterministic", out_dir=tmp_path, readme=tmp_path / "R.md")
+    assert res.baseline is not None and res.baseline.run_id == accepted
+    # what the nightly PR body compares against: the accepted scorecard, not this run
+    assert json.loads((tmp_path / "baseline.json").read_text())["run_id"] == accepted != res.run_id
     assert res.ok and res.scorecard.flips == {"regressed": [], "fixed": []}
 
 
@@ -91,7 +99,7 @@ def test_model_tier_without_key_is_harness_error(monkeypatch, tmp_path):
 
 
 def test_run_result_carries_the_baseline_it_gated_against(tmp_path):
-    run(tier="deterministic", out_dir=tmp_path, baseline_update=True, readme=tmp_path / "R.md")
+    run(tier="deterministic", out_dir=tmp_path, readme=tmp_path / "R.md")
     res = run(tier="deterministic", out_dir=tmp_path, readme=tmp_path / "R.md")
     assert res.baseline is not None and res.baseline.overall == res.scorecard.overall
 
