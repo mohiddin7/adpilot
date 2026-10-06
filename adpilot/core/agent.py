@@ -30,13 +30,16 @@ from adpilot.core.audit import build_record, new_trace_id, primary_model_name, s
 from adpilot.core.chart import ChartSpec, heuristic_chart
 from adpilot.core.errors import AdPilotError, ErrorKind
 from adpilot.core.guardrails import Budget, classify_question, is_in_scope, redact_output, sanitize_question
-from adpilot.core.models import NoNullSchemas, after, daily_cap
+from adpilot.core.models import DEADLINE, AnswerDeadline, NoNullSchemas, after, daily_cap
 from adpilot.core.tools import AgentDeps, SqlError, SqlResult, execute, records, register_tools
 
 log = logging.getLogger(__name__)
 Agent.instrument_all()
 
 MAX_MODEL_CALLS = 4
+# The API's answers stop starting model calls after this; with one call still in flight (models.REQUEST_TIMEOUT_S) the
+# reply lands inside the dashboard's 180 s read timeout and Cloud Run's 300 s request limit.
+ANSWER_DEADLINE_S = 100
 
 
 class AnalystAnswer(BaseModel):
@@ -100,11 +103,14 @@ def ask(
     history: Sequence[ModelMessage] | None = None,
     model: Model | str | None = None,
     event_stream_handler=None,
+    deadline_s: float | None = None,
 ) -> tuple[AnalystAnswer, list[ModelMessage], str]:
     """Guard → run → map failures. Never raises for model/data problems; returns (answer, new_messages, trace_id).
 
     Every exit path buffers one AuditRecord in deps.audit (no I/O here — the caller flushes).
-    event_stream_handler is forwarded to run_sync so a streaming surface needs no second run path; the rule-based fallback emits no events because it makes no model call."""
+    event_stream_handler is forwarded to run_sync so a streaming surface needs no second run path; the rule-based fallback emits no events because it makes no model call.
+    deadline_s: past it no further model call starts and the answer falls back to the rule-based one (the API passes
+    ANSWER_DEADLINE_S; evals and the CLI pass none)."""
     trace_id = new_trace_id()
     started, t0 = datetime.now(UTC), time.perf_counter()
     asked = question
@@ -144,6 +150,7 @@ def ask(
     if model is None and agent.model is None:
         return done(_rule_based(deps, question, "ModelUnavailable", "No model API key configured"), [])
 
+    limit = DEADLINE.set((time.monotonic() + deadline_s, deadline_s) if deadline_s is not None else None)
     try:
         try:
             with _capture() as first:
@@ -163,6 +170,8 @@ def ask(
         kind, detail = _classify(exc)
         log.warning("agent run failed (%s): %s", kind, detail[:300])
         return done(_rule_based(deps, question, kind, detail), [])
+    finally:
+        DEADLINE.reset(limit)
 
     out = result.output
     usage = result.usage() if callable(result.usage) else result.usage
@@ -186,6 +195,8 @@ def _classify(exc: Exception) -> tuple[ErrorKind, str]:
         return "ModelUnavailable", str(exc)
     if isinstance(exc, UsageLimitExceeded):
         return "BudgetExceeded", str(exc)
+    if isinstance(exc, AnswerDeadline):
+        return "ModelUnavailable", str(exc)
     if isinstance(exc, UnexpectedModelBehavior):
         return "ModelUnavailable", str(exc)
     if isinstance(exc, AdPilotError):

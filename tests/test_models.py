@@ -263,3 +263,12 @@ def test_after_is_the_rest_of_the_chain():
 def test_after_prefers_the_most_specific_name():
     chain = named("a/x", "a/x-large", "c/z")
     assert m.after(chain, "a/x-large").model_name == "c/z"   # not a re-run on a/x-large itself
+
+
+def test_a_passed_deadline_ends_the_chain_instead_of_falling_over():
+    assert m.classify_error(m.AnswerDeadline(100)) == "stop"
+
+
+def test_each_openrouter_request_has_its_own_timeout():
+    """The OpenAI SDK's default read timeout is 10 minutes: one slow free model could hold the answer that long."""
+    assert m.openrouter_factory("test-key")("some/model:free").client.timeout == m.REQUEST_TIMEOUT_S

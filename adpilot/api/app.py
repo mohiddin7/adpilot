@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 
-from adpilot.core.agent import ask, build_agent
+from adpilot.core.agent import ANSWER_DEADLINE_S, ask, build_agent
 from adpilot.core.audit import RunContextInfo
 from adpilot.core.errors import AdPilotError
 from adpilot.core.guardrails import RateLimiter
@@ -216,7 +216,8 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         deps = request_deps(app)
         deps.run_context = RunContextInfo(source="api", session_id=req.session_id)
         history = sink.load_session(req.session_id) if req.session_id else None
-        answer, _messages, trace_id = ask(app.state.agent, deps, req.question, history=history)
+        answer, _messages, trace_id = ask(app.state.agent, deps, req.question, history=history,
+                                         deadline_s=ANSWER_DEADLINE_S)
         # ask() has already buffered the record; flushing after the response keeps a BigQuery load job
         # out of the caller's latency. A failure leaves the rows buffered for the next request.
         background.add_task(flush_audit, sink)
@@ -245,7 +246,8 @@ def create_app(pack: str = "ads", connector: str | None = None) -> FastAPI:
         def run() -> None:
             try:
                 answer, _messages, trace_id = ask(
-                    app.state.agent, deps, question, history=history, event_stream_handler=handler
+                    app.state.agent, deps, question, history=history, event_stream_handler=handler,
+                    deadline_s=ANSWER_DEADLINE_S,
                 )
                 events.put(("answer", answer_body(answer, trace_id).model_dump(mode="json")))
             except Exception as exc:  # ask() maps its own failures; anything reaching here is transport or threading

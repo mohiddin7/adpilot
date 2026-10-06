@@ -646,3 +646,18 @@ def test_an_over_long_selection_is_422_not_a_page_of_failed_panels(api):
     assert r.status_code == 422
     assert "too many filter values" in r.json()["detail"]
     assert sink.calls == []
+
+
+def test_both_ask_routes_give_the_answer_a_deadline(api, monkeypatch):
+    """Below Cloud Run's 300 s request limit and the dashboard's 180 s read timeout."""
+    import adpilot.api.app as app_mod
+    from adpilot.core.models import REQUEST_TIMEOUT_S
+
+    seen, real = [], app_mod.ask
+    monkeypatch.setattr(app_mod, "ask", lambda *a, **k: seen.append(k.get("deadline_s")) or real(*a, **k))
+    client, _ = api
+    client.post("/ask", json={"question": "spend by platform"}, headers={"X-API-Key": KEY})
+    with client.stream("GET", "/ask/stream", params={"question": "spend by platform"}, headers={"X-API-Key": KEY}) as r:
+        r.read()
+    assert seen == [app_mod.ANSWER_DEADLINE_S] * 2
+    assert app_mod.ANSWER_DEADLINE_S + REQUEST_TIMEOUT_S < 180
