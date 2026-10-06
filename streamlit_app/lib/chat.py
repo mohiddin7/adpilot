@@ -91,7 +91,7 @@ def render_answer(answer: dict, compact: bool = False, colors: dict | None = Non
         if fig is not None:
             st.plotly_chart(fig, key=f"answer_{key or answer.get('trace_id')}_{'s' if compact else 'm'}")
     elif data and not compact:
-        st.dataframe(data, hide_index=True, column_config=column_config(formats))
+        st.dataframe(data, hide_index=True, column_config=column_config(formats, {c for r in data for c in r}))
     for caveat in answer.get("caveats") or []:
         st.caption(f"Note: {md(caveat_text(caveat))}")
     if answer.get("sql") and not compact:

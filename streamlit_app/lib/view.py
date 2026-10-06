@@ -97,10 +97,12 @@ def insights(params: tuple[tuple[str, str], ...]) -> dict:
     return api_client.insights(list(params))
 
 
-def column_config(formats: dict) -> dict:
-    """Tables formatted from the panel's `formats`: dollars with separators, percent with 2 decimals, ROAS as 1.79x."""
+def column_config(formats: dict, columns=()) -> dict:
+    """Tables formatted from the panel's `formats`: dollars with separators, percent with 2 decimals, ROAS as 1.79x.
+    Every other column in `columns` gets a plain-words header, so none shows as campaign_name next to Spend."""
     kinds = {"currency": "dollar", "percent": "percent", "multiple": "%.2fx", "number": "localized"}
-    return {c: st.column_config.NumberColumn(label(c), format=kinds[k]) for c, k in formats.items() if k in kinds}
+    plain = {c: st.column_config.Column(label(c)) for c in columns}
+    return plain | {c: st.column_config.NumberColumn(label(c), format=kinds[k]) for c, k in formats.items() if k in kinds}
 
 
 KPI_HELP = {"cpa": METRIC_DEFINITIONS.get("CPA"), "ctr": METRIC_DEFINITIONS.get("CTR"),
@@ -247,7 +249,7 @@ def table_card(p: dict | None, flagged: frozenset[tuple[str, str]] = frozenset()
     df = pd.DataFrame(p["rows"])
     if flagged and {"platform", "campaign_id"} <= set(df.columns):
         df.insert(0, "flag", ["⚠ flagged" if k in flagged else "" for k in zip(df["platform"], df["campaign_id"], strict=True)])
-    st.dataframe(df, hide_index=True, column_config={**column_config(p["formats"]), **HIDDEN})
+    st.dataframe(df, hide_index=True, column_config={**column_config(p["formats"], df.columns), **HIDDEN})
 
 
 def leaderboard(p: dict | None, colors: dict) -> None:

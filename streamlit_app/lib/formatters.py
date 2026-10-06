@@ -94,7 +94,8 @@ LABELS = {"spend": "Spend", "conversions": "Conversions", "cpa": "Cost per acqui
           "cpm": "Cost per 1,000 impressions", "impressions": "Impressions", "clicks": "Clicks",
           "quality_score": "Quality score", "impression_share": "Search impression share",
           "search_impression_share": "Search impression share", "frequency": "Frequency",
-          "excess_cost": "Excess cost", "flagged_days": "Flagged days", "vs_account": "Against the account"}
+          "excess_cost": "Excess cost", "flagged_days": "Flagged days", "vs_account": "Against the account",
+          "campaign_name": "Campaign", "sub_group_name": "Ad set / ad group"}
 
 
 def label(column: str) -> str:

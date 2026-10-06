@@ -181,3 +181,12 @@ def test_the_filter_summary_counts_filters_not_values():
               ("spend_min", "10.0"), ("spend_max", "90.0")]
     assert filter_summary(date(2024, 1, 1), date(2024, 1, 30), params) == "2024-01-01 to 2024-01-30 · 2 filters set"
     assert filter_summary(date(2024, 1, 1), date(2024, 1, 30), params[:2]) == "2024-01-01 to 2024-01-30"
+
+
+def test_every_table_column_has_a_plain_header():
+    """Live checklist: the details tables showed platform, campaign_name, sub_group_name beside Spend."""
+    from lib.view import column_config
+
+    cfg = column_config({"spend": "currency"}, ["platform", "campaign_name", "sub_group_name", "spend"])
+    assert [cfg[c]["label"] for c in ("platform", "campaign_name", "sub_group_name", "spend")] == [
+        "Platform", "Campaign", "Ad set / ad group", "Spend"]
