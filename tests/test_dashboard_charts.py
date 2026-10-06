@@ -329,3 +329,11 @@ def test_a_single_day_timeline_ticks_in_days_not_milliseconds():
     spec = {"chart_type": "scatter", "x": "date", "y": "campaign_name", "color": "severity"}
     ax = build_figure(spec, rows, None, SEVERITY).layout.xaxis
     assert ax.dtick == 86400000 and ax.range is not None
+
+
+def test_a_small_number_axis_keeps_its_decimals():
+    """Live checklist: the Ad fatigue frequency axis ticked 1 1 1 1 1 (",.0f" on values near 1.2)."""
+    rows = [{"frequency": 1.2, "ctr": 0.02}, {"frequency": 1.4, "ctr": 0.03}]
+    spec = {"chart_type": "scatter", "x": "frequency", "y": "ctr"}
+    ax = build_figure(spec, rows, {"frequency": "number", "ctr": "percent"}).layout.xaxis
+    assert ax.tickformat == ",.2~f" and ax.hoverformat == ",.2~f"

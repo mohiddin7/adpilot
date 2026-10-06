@@ -15,7 +15,7 @@ from .theme import ACCOUNT, COLORS, GRID, GROUNDS, MUTED, OTHER, SEVERITY, SYMBO
 
 HEIGHT = 320
 AXIS = {"currency": ("$,.0f", "$,.2f", ""), "percent": (".1%", ".2%", ""), "multiple": (".1f", ".2f", "x"),
-        "number": (",.0f", ",.0f", "")}
+        "number": (",.2~f", ",.2~f", "")}  # ~ trims zeros: 40,000 and 1.2 (a frequency) both read right
 WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 UNTITLED_X = {"date", "name", "period", "series", "measure", "week", "plan"}  # category holders: the ticks say it all
 # x = spend, y = cost per acquisition: bottom is cheap, right is big.
