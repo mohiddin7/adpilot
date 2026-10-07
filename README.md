@@ -212,4 +212,4 @@ Started January 2026. The first iteration was lost to a drive failure and rebuil
 | [observability.md](docs/observability.md) | Traces and the BigQuery audit tables |
 | [security.md](docs/security.md) | Every guardrail layer and its limits |
 
-MIT licensed.
+[MIT licensed](LICENSE).
