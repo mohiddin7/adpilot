@@ -191,6 +191,16 @@ and bucket names never enter the repo — everything below reads them from `$BQ_
 set -a; source .env; set +a
 ```
 
+- On a new project, create the three datasets and the raw bucket once. The pipeline creates its own tables, but the
+  grants in step 2 need the datasets to exist. The bucket must be in the functions' region (Eventarc requires it):
+
+```bash
+for DS in "$BQ_BRONZE_DATASET" "$BQ_STAGING_DATASET" "$BQ_PRODUCTION_DATASET"; do
+  bq --location="$BQ_LOCATION" mk --dataset "${BQ_PROJECT_ID}:${DS}"
+done
+gcloud storage buckets create "gs://${RAW_BUCKET}" --location us-east4 --project "$BQ_PROJECT_ID"
+```
+
 ### One-time setup (owner-run, one approval per step)
 
 ```bash
