@@ -37,11 +37,20 @@ from .theme import SEVERITY, SYMBOLS, platform_colors
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 
+# The ⋮ menu's links. Streamlit renders in the browser and gives an app no <meta> tags, so the page title (set below)
+# and these links are the dashboard's only discoverable surface: the repository README is what search engines index.
+MENU_ITEMS = {
+    "Get help": "https://github.com/mohiddin7/adpilot/tree/main/docs",
+    "Report a bug": "https://github.com/mohiddin7/adpilot/issues/new/choose",
+    "About": "**AdPilot** is an open-source AI analyst for ad spend: ask in plain English and get checked SQL, "
+             "an answer and a chart. [Source and docs](https://github.com/mohiddin7/adpilot)",
+}
+
 
 def start(title: str, icon: str) -> None:
     """Page setup and the header that stays on top. The data date comes from /dashboard (cached); if that read fails,
     the header just omits it: the page's own guarded(meta) says why."""
-    st.set_page_config(page_title=f"{title} · AdPilot", page_icon=icon, layout="wide")
+    st.set_page_config(page_title=f"{title} · AdPilot", page_icon=icon, layout="wide", menu_items=MENU_ITEMS)
     st.logo(str(ASSETS / "logo.svg"), size="large", icon_image=str(ASSETS / "logo-mark.svg"))  # the product's name
     inject_page_style()
     try:

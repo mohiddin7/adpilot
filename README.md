@@ -27,6 +27,10 @@ Every morning, a brief tells you what to fix.
 |---|---|---|---|---|
 | Plain English in, one read-only SQL query out. A failed query is repaired by the model itself. | A four-page cockpit: KPIs, trends, pacing, and findings ranked by dollars at stake. | A GitHub issue every day with up to three decisions: what happened, why, what to do. | Input guard, SQL guard, row and byte caps, redaction, and an audit row for every call. | A nightly eval of the free models, graded by a judge from another vendor. |
 
+## What is AdPilot?
+
+AdPilot is an open-source **AI analyst for advertising data**. You ask about spend, cost per acquisition, campaigns or channels in plain English. A [Pydantic AI](https://ai.pydantic.dev/) agent on free [OpenRouter](https://openrouter.ai/) models writes one read-only SQL query, runs it on **BigQuery** or **DuckDB** behind an input guard, a SQL guard and output redaction, and returns the answer with a chart. The same agent is a **Streamlit dashboard**, a **FastAPI** service, an **MCP server** for Claude Desktop and Claude Code, a command-line chat, and a daily brief posted as a GitHub issue. Everything specific to ad data lives in one folder (a "pack"), so it also works on your own tables.
+
 ## ⚡ Every request
 
 <img src="docs/readme/request.svg" width="900" alt="Demo replay of one question travelling through the dashboard, API, input guard, free-model chain, tools, SQL guard and BigQuery, repairing a failed query, then redaction, the answer and an audit row.">
@@ -212,4 +216,4 @@ Started January 2026. The first iteration was lost to a drive failure and rebuil
 | [observability.md](docs/observability.md) | Traces and the BigQuery audit tables |
 | [security.md](docs/security.md) | Every guardrail layer and its limits |
 
-[MIT licensed](LICENSE).
+[Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [MIT licensed](LICENSE).

@@ -1,8 +1,31 @@
 [project]
 name = "adpilot"
 version = "0.1.0"
-description = "Agentic marketing analytics: data-agnostic AI analyst over BigQuery with evals and self-healing guardrails"
+description = "An AI analyst for ad spend: plain-English questions in, guarded read-only SQL, an answer and a chart out. A daily brief, a Streamlit dashboard, a FastAPI service and an MCP server over BigQuery or DuckDB."
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "mohiddin7" }]
+keywords = [
+  "ai-agent", "marketing-analytics", "ad-spend", "advertising-analytics", "text-to-sql",
+  "natural-language-to-sql", "llm", "bigquery", "duckdb", "pydantic-ai", "openrouter",
+  "mcp", "model-context-protocol", "streamlit", "fastapi", "llm-evals", "guardrails",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Information Technology",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+]
 dependencies = [
   "streamlit>=1.64,<1.65",  # see requirements.txt
   "pandas>=2.2",
@@ -29,11 +52,18 @@ api = ["fastapi>=0.115", "uvicorn>=0.53"]
 mcp = ["mcp>=2.2,<3"]
 logfire = ["logfire>=5"]
 
+[project.urls]
+Homepage = "https://github.com/mohiddin7/adpilot"
+Demo = "https://adpilot.streamlit.app/"
+Documentation = "https://github.com/mohiddin7/adpilot/tree/main/docs"
+Source = "https://github.com/mohiddin7/adpilot"
+Issues = "https://github.com/mohiddin7/adpilot/issues"
+
 [project.scripts]
 adpilot = "adpilot.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]  # 77 reads the SPDX `license = "MIT"` above
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

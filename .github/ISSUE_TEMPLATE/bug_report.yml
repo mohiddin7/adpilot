@@ -1,0 +1,38 @@
+name: Bug report
+description: Something in AdPilot does not work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce it
+      description: The question you asked, or the command or request you ran.
+      placeholder: adpilot --connector duckdb chat -q "..."
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did it happen?
+      options: [CLI, HTTP API, Dashboard, MCP server, Daily brief, Evals, Data pipeline]
+    validations:
+      required: true
+  - type: dropdown
+    id: connector
+    attributes:
+      label: Connector
+      options: [DuckDB, BigQuery]
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version, and Python version
+      placeholder: "abc1234, Python 3.12"
+  - type: markdown
+    attributes:
+      value: Please remove API keys and personal data from anything you paste. Security problems go through SECURITY.md, not here.
