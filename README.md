@@ -14,7 +14,7 @@ Every morning, a brief tells you what to fix.
 <a href="docs/">Docs</a>
 </h3>
 
-![ci](https://github.com/mohiddin7/adpilot/actions/workflows/ci.yml/badge.svg) [![evals](https://img.shields.io/badge/evals-90%25-brightgreen)](evals/reports/latest.md) ![python](https://img.shields.io/badge/python-3.11+-3776ab) ![models](https://img.shields.io/badge/LLMs-free%20models%20only-a8515c) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![ci](https://github.com/mohiddin7/adpilot/actions/workflows/ci.yml/badge.svg) [![evals](https://img.shields.io/badge/evals-81%25-brightgreen)](evals/reports/latest.md) ![python](https://img.shields.io/badge/python-3.11+-3776ab) ![models](https://img.shields.io/badge/LLMs-free%20models%20only-a8515c) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 <img src="docs/readme/hero.gif" width="900" alt="The live dashboard: the Overview cockpit, the AI insights feed ranked by dollars at stake, and the Chat page answering which platform had the best cost per acquisition.">
 
